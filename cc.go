@@ -111,7 +111,7 @@ func openAIToCC(req *ChatRequest) CCRequest {
 			Tools:     tools,
 			System:    system,
 			MaxTokens: req.MaxTokens,
-			Stream:    req.Stream,
+			Stream:    true, // CC API 只支持流式
 		},
 	}
 	if cc.Params.MaxTokens <= 0 {
@@ -170,8 +170,20 @@ func contentToCC(m Message) []CCPart {
 					parts = append(parts, CCPart{Type: "text", Text: text})
 				}
 			case "image_url":
-				// CC 支持图片，但格式不同，暂时跳过
-				parts = append(parts, CCPart{Type: "text", Text: "[image]"})
+				// OpenAI → Anthropic 格式
+				img, _ := obj["image_url"].(map[string]any)
+				url, _ := img["url"].(string)
+				if url != "" {
+					mediaType, data := parseDataURL(url)
+					parts = append(parts, CCPart{
+						Type: "image",
+						Source: map[string]any{
+							"type":       "base64",
+							"media_type": mediaType,
+							"data":       data,
+						},
+					})
+				}
 			}
 		}
 	}
@@ -239,4 +251,18 @@ func toolsToCC(tools []Tool) []CCTool {
 		})
 	}
 	return out
+}
+
+// parseDataURL 解析 data:image/png;base64,XXXX，返回 media_type 和纯 base64 数据
+func parseDataURL(url string) (string, string) {
+	if !strings.HasPrefix(url, "data:") {
+		return "image/png", url
+	}
+	after := strings.TrimPrefix(url, "data:")
+	parts := strings.SplitN(after, ",", 2)
+	if len(parts) != 2 {
+		return "image/png", url
+	}
+	mediaType := strings.TrimSuffix(parts[0], ";base64")
+	return mediaType, parts[1]
 }

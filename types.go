@@ -150,6 +150,7 @@ type CCMsg struct {
 type CCPart struct {
 	Type       string         `json:"type"`
 	Text       string         `json:"text,omitempty"`
+	Source     map[string]any `json:"source,omitempty"`
 	ToolCallID string         `json:"toolCallId,omitempty"`
 	ToolName   string         `json:"toolName,omitempty"`
 	Input      map[string]any `json:"input,omitempty"`

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 )
@@ -140,18 +141,19 @@ func runOAuth() (string, error) {
 	authURL := fmt.Sprintf("%s/studio/auth/cli?callback=%s&state=%s",
 		studioBaseURL, callbackURL, state)
 
+	// 写入文件便于后续读取（解决 background 模式下日志不可见的问题）
+	os.WriteFile(".oauth_state", []byte(state), 0600)
+	os.WriteFile(".oauth_url", []byte(authURL), 0600)
+
 	log.Printf("打开浏览器进行 Command Code 授权...")
 	log.Printf("授权页面: %s", authURL)
-
-	if err := openBrowser(authURL); err != nil {
-		server.Close()
-		return "", fmt.Errorf("无法打开浏览器: %w\n请手动访问: %s", err, authURL)
-	}
+	log.Printf("State: %s", state)
 
 	fmt.Println()
-	fmt.Println("⏳ 等待浏览器授权完成...")
-	fmt.Println("   如果浏览器没有自动打开，请手动访问：")
+	fmt.Println("⏳ 等待授权...")
+	fmt.Println("   授权链接：")
 	fmt.Printf("   %s\n", authURL)
+	fmt.Printf("   State: %s\n", state)
 	fmt.Println()
 
 	// 等待结果或错误

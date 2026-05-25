@@ -89,12 +89,17 @@ func ParseStreamEvents(resp *http.Response, onEvent func(CCStreamEvent) error) e
 // ====================== 格式转换 ======================
 
 func openAIToCC(req *ChatRequest) CCRequest {
+	tools := toolsToCC(req.Tools)
+	msgs := messagesToCC(req.Messages)
+	system := extractSystem(req.Messages)
+
 	cc := CCRequest{
 		Config: CCConfig{
-			WorkingDir:  "/",
-			Date:        time.Now().Format("2006-01-02"),
-			Environment: fmt.Sprintf("%s-%s, Go proxy", runtime.GOOS, runtime.GOARCH),
-			Structure:   []string{},
+			WorkingDir:    "/",
+			Date:          time.Now().Format("2006-01-02"),
+			Environment:   fmt.Sprintf("%s-%s, Go proxy", runtime.GOOS, runtime.GOARCH),
+			Structure:     []string{},
+			RecentCommits: []any{},
 		},
 		Memory:         "",
 		Taste:          "",
@@ -102,9 +107,9 @@ func openAIToCC(req *ChatRequest) CCRequest {
 		PermissionMode: "standard",
 		Params: CCParams{
 			Model:     req.Model,
-			Messages:  messagesToCC(req.Messages),
-			Tools:     toolsToCC(req.Tools),
-			System:    extractSystem(req.Messages),
+			Messages:  msgs,
+			Tools:     tools,
+			System:    system,
 			MaxTokens: req.MaxTokens,
 			Stream:    req.Stream,
 		},
@@ -221,7 +226,10 @@ func textFromContent(content any) string {
 }
 
 func toolsToCC(tools []Tool) []CCTool {
-	var out []CCTool
+	if tools == nil {
+		return []CCTool{}
+	}
+	out := make([]CCTool, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, CCTool{
 			Type:        "function",

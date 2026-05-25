@@ -1,3 +1,4 @@
 cc-gateway
 config.yaml
 *.exe
+.oauth_state\n.oauth_url

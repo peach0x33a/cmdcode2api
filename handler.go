@@ -30,14 +30,14 @@ func handleChatCompletions(cc *CCClient, cfg *Config) http.HandlerFunc {
 		}
 
 		if req.Stream {
-			handleStream(w, resp)
+			handleStream(w, resp, req.Model)
 		} else {
-			handleNonStream(w, resp)
+			handleNonStream(w, resp, req.Model)
 		}
 	}
 }
 
-func handleStream(w http.ResponseWriter, resp *http.Response) {
+func handleStream(w http.ResponseWriter, resp *http.Response, model string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, 500, "server_error", "streaming not supported")
@@ -48,19 +48,24 @@ func handleStream(w http.ResponseWriter, resp *http.Response) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	model := ""
+	firstText := true
 	var promptTokens, completionTokens int
 
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
 		switch ev.Type {
 		case "text-delta":
+			delta := StreamDelta{Content: ev.Text}
+			if firstText {
+				delta.Role = "assistant"
+				firstText = false
+			}
 			chunk := ChatStreamChunk{
 				ID:      genStreamID(),
 				Object:  "chat.completion.chunk",
 				Model:   model,
 				Choices: []StreamChoice{{
 					Index: 0,
-					Delta: StreamDelta{Content: ev.Text},
+					Delta: delta,
 				}},
 			}
 			writeSSE(w, flusher, chunk)
@@ -138,10 +143,9 @@ func handleStream(w http.ResponseWriter, resp *http.Response) {
 	}
 }
 
-func handleNonStream(w http.ResponseWriter, resp *http.Response) {
+func handleNonStream(w http.ResponseWriter, resp *http.Response, model string) {
 	var msg Message
 	msg.Role = "assistant"
-	model := ""
 	var promptTokens, completionTokens int
 	var finishReason string
 

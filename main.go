@@ -93,10 +93,12 @@ func main() {
 	}
 
 	cc := NewCCClient(cfg.CommandCode.APIKey, cfg.CommandCode.BaseURL)
+	usage := loadUsage()
 
-	if err := runServer(cc, cfg); err != nil {
+	if err := runServer(cc, cfg, usage); err != nil {
 		log.Fatalf("server: %v", err)
 	}
+	usage.save()
 }
 
 func findConfig() string {

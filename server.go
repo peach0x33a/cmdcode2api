@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,8 +15,8 @@ import (
 func authMiddleware(cfg *Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// /health 不需要认证
-			if r.URL.Path == "/health" {
+			// /health 和 /usage 不需要认证
+			if r.URL.Path == "/health" || r.URL.Path == "/usage" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -61,15 +62,19 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func runServer(cc *CCClient, cfg *Config) error {
+func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"status":"ok"}`)
 	})
-	mux.HandleFunc("/v1/chat/completions", handleChatCompletions(cc, cfg))
+	mux.HandleFunc("/v1/chat/completions", handleChatCompletions(cc, cfg, usage))
 	mux.HandleFunc("/v1/models", handleModels)
+	mux.HandleFunc("/usage", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(usage.Snapshot())
+	})
 
 	var handler http.Handler = mux
 	handler = corsMiddleware(handler)

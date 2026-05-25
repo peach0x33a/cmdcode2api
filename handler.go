@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func handleChatCompletions(cc *CCClient, cfg *Config) http.HandlerFunc {
+func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req ChatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -30,14 +30,16 @@ func handleChatCompletions(cc *CCClient, cfg *Config) http.HandlerFunc {
 		}
 
 		if req.Stream {
-			handleStream(w, resp, req.Model)
+			handleStream(w, resp, req.Model, usage)
+			usage.save()
 		} else {
-			handleNonStream(w, resp, req.Model)
+			handleNonStream(w, resp, req.Model, usage)
+			usage.save()
 		}
 	}
 }
 
-func handleStream(w http.ResponseWriter, resp *http.Response, model string) {
+func handleStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, 500, "server_error", "streaming not supported")
@@ -49,7 +51,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string) {
 	w.Header().Set("Connection", "keep-alive")
 
 	firstText := true
-	var promptTokens, completionTokens int
+	var promptTokens, completionTokens, cacheRead, cacheWrite int
 
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
 		switch ev.Type {
@@ -105,13 +107,17 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string) {
 			}
 			finish := reason
 
-			usage := &Usage{}
+			usageInfo := &Usage{}
 			if ev.TotalUsage != nil {
 				promptTokens = ev.TotalUsage.InputTokens
 				completionTokens = ev.TotalUsage.OutputTokens
-				usage.PromptTokens = promptTokens
-				usage.CompletionTokens = completionTokens
-				usage.TotalTokens = promptTokens + completionTokens
+				if ev.TotalUsage.InputTokenDetails != nil {
+					cacheRead = ev.TotalUsage.InputTokenDetails.CacheReadTokens
+					cacheWrite = ev.TotalUsage.InputTokenDetails.CacheWriteTokens
+				}
+				usageInfo.PromptTokens = promptTokens
+				usageInfo.CompletionTokens = completionTokens
+				usageInfo.TotalTokens = promptTokens + completionTokens
 			}
 
 			chunk := ChatStreamChunk{
@@ -123,7 +129,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string) {
 					Delta:        StreamDelta{},
 					FinishReason: &finish,
 				}},
-				Usage: usage,
+				Usage: usageInfo,
 			}
 			writeSSE(w, flusher, chunk)
 
@@ -141,12 +147,13 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string) {
 	if err != nil {
 		log.Printf("[ERROR] stream parse: %v", err)
 	}
+	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
 }
 
-func handleNonStream(w http.ResponseWriter, resp *http.Response, model string) {
+func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker) {
 	var msg Message
 	msg.Role = "assistant"
-	var promptTokens, completionTokens int
+	var promptTokens, completionTokens, cacheRead, cacheWrite int
 	var finishReason string
 
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
@@ -196,6 +203,10 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string) {
 			if ev.TotalUsage != nil {
 				promptTokens = ev.TotalUsage.InputTokens
 				completionTokens = ev.TotalUsage.OutputTokens
+				if ev.TotalUsage.InputTokenDetails != nil {
+					cacheRead = ev.TotalUsage.InputTokenDetails.CacheReadTokens
+					cacheWrite = ev.TotalUsage.InputTokenDetails.CacheWriteTokens
+				}
 			}
 		}
 		return nil
@@ -206,6 +217,8 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string) {
 		writeError(w, 502, "server_error", "upstream stream error")
 		return
 	}
+
+	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
 
 	// 如果只有 text，展平 content
 	if parts, ok := msg.Content.([]ContentPart); ok && len(parts) == 1 && parts[0].Type == "text" {

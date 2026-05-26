@@ -160,18 +160,22 @@ func runOAuth(opts OAuthOptions) (string, error) {
 		return "", fmt.Errorf("write oauth url: %w", err)
 	}
 
-	log.Printf("等待 Command Code 授权...")
-	log.Printf("授权页面: %s", authURL)
-	log.Printf("State: %s", state)
+	log.Printf("waiting for Command Code OAuth callback on http://127.0.0.1:%d/callback", port)
 
-	fmt.Println()
-	fmt.Println("⏳ 等待授权...")
-	fmt.Println("   授权链接：")
-	fmt.Printf("   %s\n", authURL)
-	fmt.Println("   回调地址：")
-	fmt.Printf("   %s\n", callbackURL)
-	fmt.Printf("   State: %s\n", state)
-	fmt.Println()
+	fmt.Printf(`Command Code OAuth
+
+Open this URL in your browser:
+  %s
+
+Callback URL:
+  %s
+
+If this is running on a remote server, make sure that callback URL reaches:
+  http://127.0.0.1:%d/callback
+
+Waiting for authorization, timeout: %s
+
+`, authURL, callbackURL, port, oauthTimeout)
 
 	// 等待结果或错误
 	select {

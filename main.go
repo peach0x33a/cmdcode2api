@@ -58,30 +58,24 @@ func main() {
 		if err := saveConfig(cfgPath, &cfg2); err != nil {
 			log.Fatalf("create config: %v", err)
 		}
-		fmt.Printf(`
-╔══════════════════════════════════════════════════╗
-║          cmdcode2api — 首次运行                   ║
-╠══════════════════════════════════════════════════╣
-║                                                   ║
-║  配置已生成：%s
-║                                                   ║
-║  接下来用浏览器登录获取 API Key：                  ║
-║                                                   ║
-║    ./cmdcode2api --oauth                           ║
-║                                                   ║
-║  登录成功后重新运行即可启动服务。                   ║
-║                                                   ║
-║  对外 API Key（自动生成）：%s
-║                                                   ║
-╚══════════════════════════════════════════════════╝
+		fmt.Printf(`cmdcode2api initialized.
+
+Created config: %s
+Local client key: %s
+
+Next:
+  1. Run ./cmdcode2api --oauth to connect Command Code.
+  2. Run ./cmdcode2api again to start the local OpenAI-compatible API.
+
+Use the local client key above as the Bearer token for your OpenAI client.
 `, cfgPath, cfg2.APIKey)
 		os.Exit(0)
 	}
 
 	// 检查是否填了 CC API Key
 	if cfg.CommandCode.APIKey == "" {
-		fmt.Printf("❌ 尚未配置 Command Code API Key\n")
-		fmt.Printf("   请运行：./cmdcode2api --oauth\n")
+		fmt.Println("Command Code API key is not configured.")
+		fmt.Println("Run ./cmdcode2api --oauth, then start cmdcode2api again.")
 		os.Exit(1)
 	}
 

@@ -15,8 +15,8 @@ import (
 func authMiddleware(cfg *Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// /health 和 /usage 不需要认证
-			if r.URL.Path == "/health" || r.URL.Path == "/usage" {
+			// /health、/usage 和 CORS preflight 不需要认证
+			if r.Method == http.MethodOptions || r.URL.Path == "/health" || r.URL.Path == "/usage" {
 				next.ServeHTTP(w, r)
 				return
 			}

@@ -15,15 +15,13 @@ type Config struct {
 		APIKey  string `yaml:"api_key"`
 		BaseURL string `yaml:"base_url"`
 	} `yaml:"commandcode"`
-	Port         int    `yaml:"port"`
-	DefaultModel string `yaml:"default_model"`
+	Port int `yaml:"port"`
 }
 
 func defaultConfig() Config {
 	c := Config{
-		APIKey:       genAPIKey(),
-		Port:         11434,
-		DefaultModel: "deepseek/deepseek-v4-pro",
+		APIKey: genAPIKey(),
+		Port:   11434,
 	}
 	c.CommandCode.BaseURL = "https://api.commandcode.ai"
 	return c

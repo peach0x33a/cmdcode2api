@@ -3,4 +3,5 @@ cc-gateway
 config.yaml
 usage.json
 *.exe
-.oauth_state\n.oauth_url
+.oauth_state
+.oauth_url

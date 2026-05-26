@@ -77,7 +77,7 @@ func ParseStreamEvents(resp *http.Response, onEvent func(CCStreamEvent) error) e
 		}
 		var ev CCStreamEvent
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			continue
+			return fmt.Errorf("parse sse data: %w", err)
 		}
 		if err := onEvent(ev); err != nil {
 			return err

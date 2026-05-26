@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"sync"
 	"sync/atomic"
 )
 
@@ -12,6 +13,7 @@ type UsageTracker struct {
 	CompletionTokens atomic.Int64 `json:"completion_tokens"`
 	CacheReadTokens  atomic.Int64 `json:"cache_read_tokens"`
 	CacheWriteTokens atomic.Int64 `json:"cache_write_tokens"`
+	saveMu           sync.Mutex
 }
 
 func (u *UsageTracker) Record(prompt, completion, cacheRead, cacheWrite int) {
@@ -85,10 +87,17 @@ func loadUsage() *UsageTracker {
 }
 
 func (u *UsageTracker) save() error {
+	u.saveMu.Lock()
+	defer u.saveMu.Unlock()
+
 	snap := u.Snapshot()
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(usageFile, data, 0644)
+	tmp := usageFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, usageFile)
 }

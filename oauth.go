@@ -9,8 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
-	"runtime"
 )
 
 const (
@@ -34,21 +32,7 @@ func generateState() string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-// openBrowser 在默认浏览器中打开 URL
-func openBrowser(url string) error {
-	switch runtime.GOOS {
-	case "linux":
-		return exec.Command("xdg-open", url).Start()
-	case "darwin":
-		return exec.Command("open", url).Start()
-	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
-	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
-}
-
-// runOAuth 启动本地 HTTP server，打开浏览器，等待 CC 回调，返回 API Key。
+// runOAuth 启动本地 HTTP server，打印授权链接，等待 CC 回调，返回 API Key。
 func runOAuth() (string, error) {
 	// 找一个可用端口
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", oauthPortStart))
@@ -145,7 +129,7 @@ func runOAuth() (string, error) {
 	os.WriteFile(".oauth_state", []byte(state), 0600)
 	os.WriteFile(".oauth_url", []byte(authURL), 0600)
 
-	log.Printf("打开浏览器进行 Command Code 授权...")
+	log.Printf("等待 Command Code 授权...")
 	log.Printf("授权页面: %s", authURL)
 	log.Printf("State: %s", state)
 

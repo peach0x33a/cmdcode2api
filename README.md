@@ -52,7 +52,6 @@ commandcode:
   api_key: your-command-code-api-key
   base_url: https://api.commandcode.ai
 port: 11434
-default_model: deepseek/deepseek-v4-pro
 ```
 
 Fields:
@@ -61,7 +60,6 @@ Fields:
 - `commandcode.api_key` — Command Code API key obtained via `--oauth`.
 - `commandcode.base_url` — Command Code API base URL.
 - `port` — local listen port. Defaults to `11434`.
-- `default_model` — model used when the client does not provide one.
 
 ## Run
 

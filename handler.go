@@ -19,7 +19,12 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 		}
 
 		if req.Model == "" {
-			req.Model = cfg.DefaultModel
+			writeError(w, 400, "invalid_request_error", "model is required")
+			return
+		}
+		if len(req.Messages) == 0 {
+			writeError(w, 400, "invalid_request_error", "messages is required")
+			return
 		}
 
 		resp, err := cc.Send(&req)

@@ -81,7 +81,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 	handler = loggingMiddleware(handler)
 	handler = corsMiddleware(handler)
 
-	addr := fmt.Sprintf(":%d", cfg.Port)
+	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      handler,
@@ -103,7 +103,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 		close(idleConnsClosed)
 	}()
 
-	log.Printf("cmdcode2api starting on http://localhost%s", addr)
+	log.Printf("cmdcode2api starting on http://%s", addr)
 	log.Printf("models: %d available", len(availableModels()))
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		return err

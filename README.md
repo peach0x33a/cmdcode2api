@@ -72,6 +72,7 @@ api_key: ccgw-generated-local-client-key
 commandcode:
   api_key: your-command-code-api-key
   base_url: https://api.commandcode.ai
+host: localhost
 port: 11434
 ```
 
@@ -80,12 +81,19 @@ Fields:
 - `api_key` — local bearer token required by clients calling this gateway.
 - `commandcode.api_key` — Command Code API key obtained via `--oauth`.
 - `commandcode.base_url` — Command Code API base URL.
+- `host` — HTTP listen host. Defaults to `localhost`. Use `0.0.0.0` to listen on all interfaces.
 - `port` — local listen port. Defaults to `11434`.
 
 ## Run
 
 ```bash
 ./cmdcode2api
+```
+
+To listen on all interfaces, useful for systemd or a remote server:
+
+```bash
+./cmdcode2api --host 0.0.0.0
 ```
 
 The server listens on:

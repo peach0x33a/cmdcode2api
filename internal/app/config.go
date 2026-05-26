@@ -13,7 +13,8 @@ type Config struct {
 		APIKey  string `yaml:"api_key"`
 		BaseURL string `yaml:"base_url"`
 	} `yaml:"commandcode"`
-	Port int `yaml:"port"`
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
 }
 
 func defaultConfig() (Config, error) {
@@ -23,6 +24,7 @@ func defaultConfig() (Config, error) {
 	}
 	c := Config{
 		APIKey: apiKey,
+		Host:   "localhost",
 		Port:   11434,
 	}
 	c.CommandCode.BaseURL = "https://api.commandcode.ai"

@@ -12,6 +12,8 @@ const configFile = "config.yaml"
 func Run() {
 	oauthMode := flag.Bool("oauth", false, "通过浏览器 OAuth 获取 Command Code API Key")
 	oauthCallback := flag.String("oauth-callback", "", "OAuth callback URL，例如 http://server.example.com:5959/callback")
+	host := flag.String("host", "", "HTTP listen host，例如 localhost 或 0.0.0.0")
+	port := flag.Int("port", 0, "HTTP listen port")
 	flag.Parse()
 
 	cfgPath := findConfig()
@@ -87,6 +89,15 @@ Use the local client key above as the Bearer token for your OpenAI client.
 
 	if cfg.Port == 0 {
 		cfg.Port = 11434
+	}
+	if cfg.Host == "" {
+		cfg.Host = "localhost"
+	}
+	if *host != "" {
+		cfg.Host = *host
+	}
+	if *port != 0 {
+		cfg.Port = *port
 	}
 	if cfg.CommandCode.BaseURL == "" {
 		cfg.CommandCode.BaseURL = "https://api.commandcode.ai"

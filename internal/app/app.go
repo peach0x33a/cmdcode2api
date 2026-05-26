@@ -11,6 +11,7 @@ const configFile = "config.yaml"
 
 func Run() {
 	oauthMode := flag.Bool("oauth", false, "通过浏览器 OAuth 获取 Command Code API Key")
+	oauthCallback := flag.String("oauth-callback", "", "OAuth callback URL，例如 http://server.example.com:5959/callback")
 	flag.Parse()
 
 	cfgPath := findConfig()
@@ -33,7 +34,7 @@ func Run() {
 			cfg = &cfg2
 		}
 
-		apiKey, err := runOAuth()
+		apiKey, err := runOAuth(OAuthOptions{CallbackURL: *oauthCallback})
 		if err != nil {
 			log.Fatalf("OAuth 失败: %v", err)
 		}

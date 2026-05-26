@@ -7,7 +7,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -26,6 +28,10 @@ type oauthCallback struct {
 	KeyName  string `json:"keyName"`
 }
 
+type OAuthOptions struct {
+	CallbackURL string
+}
+
 // generateState 生成随机 state token 防 CSRF
 func generateState() (string, error) {
 	state, err := randomHex(32)
@@ -36,14 +42,23 @@ func generateState() (string, error) {
 }
 
 // runOAuth 启动本地 HTTP server，打印授权链接，等待 CC 回调，返回 API Key。
-func runOAuth() (string, error) {
+func runOAuth(opts OAuthOptions) (string, error) {
 	// 找一个可用端口
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", oauthPortStart))
+	listenHost := "127.0.0.1"
+	listenPort := oauthPortStart
+	if opts.CallbackURL != "" {
+		if err := validateCallbackURL(opts.CallbackURL); err != nil {
+			return "", err
+		}
+	}
+
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", listenHost, listenPort))
 	if err != nil {
 		// 尝试下一个端口
 		for port := oauthPortStart + 1; port < oauthPortStart+oauthPortRange; port++ {
-			listener, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+			listener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", listenHost, port))
 			if err == nil {
+				listenPort = port
 				break
 			}
 		}
@@ -128,7 +143,10 @@ func runOAuth() (string, error) {
 		server.Close()
 		return "", err
 	}
-	callbackURL := fmt.Sprintf("http://localhost:%d/callback", port)
+	callbackURL := opts.CallbackURL
+	if callbackURL == "" {
+		callbackURL = fmt.Sprintf("http://localhost:%d/callback", port)
+	}
 	authURL := fmt.Sprintf("%s/studio/auth/cli?callback=%s&state=%s",
 		studioBaseURL, callbackURL, state)
 
@@ -150,6 +168,8 @@ func runOAuth() (string, error) {
 	fmt.Println("⏳ 等待授权...")
 	fmt.Println("   授权链接：")
 	fmt.Printf("   %s\n", authURL)
+	fmt.Println("   回调地址：")
+	fmt.Printf("   %s\n", callbackURL)
 	fmt.Printf("   State: %s\n", state)
 	fmt.Println()
 
@@ -169,4 +189,21 @@ func runOAuth() (string, error) {
 		server.Close()
 		return "", fmt.Errorf("OAuth timed out after %s", oauthTimeout)
 	}
+}
+
+func validateCallbackURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse oauth callback url: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("oauth callback url must use http or https")
+	}
+	if parsed.Hostname() == "" {
+		return fmt.Errorf("oauth callback url must include a host")
+	}
+	if !strings.HasSuffix(parsed.Path, "/callback") {
+		return fmt.Errorf("oauth callback url path must end with /callback")
+	}
+	return nil
 }

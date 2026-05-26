@@ -47,6 +47,20 @@ Then complete Command Code OAuth:
 
 The OAuth flow writes the Command Code API key into `config.yaml`.
 
+On a remote server without a browser, keep the callback server bound to
+`127.0.0.1` and provide the callback URL that Command Code should call:
+
+```bash
+./cmdcode2api --oauth --oauth-callback http://localhost:5959/callback
+```
+
+If your browser is on a different machine, forward that callback URL to the
+server, for example:
+
+```bash
+ssh -L 5959:127.0.0.1:5959 user@server
+```
+
 ## Configuration
 
 `config.yaml` is created automatically and intentionally ignored by git.

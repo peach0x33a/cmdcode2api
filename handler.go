@@ -62,9 +62,9 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 				firstText = false
 			}
 			chunk := ChatStreamChunk{
-				ID:      genStreamID(),
-				Object:  "chat.completion.chunk",
-				Model:   model,
+				ID:     genStreamID(),
+				Object: "chat.completion.chunk",
+				Model:  model,
 				Choices: []StreamChoice{{
 					Index: 0,
 					Delta: delta,

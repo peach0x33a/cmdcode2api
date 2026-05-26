@@ -103,7 +103,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 		close(idleConnsClosed)
 	}()
 
-	log.Printf("cc-gateway starting on http://localhost%s", addr)
+	log.Printf("cmdcode2api starting on http://localhost%s", addr)
 	log.Printf("models: %d available", len(availableModels()))
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		return err

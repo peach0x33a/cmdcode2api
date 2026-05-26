@@ -1,4 +1,4 @@
-module cc-gateway
+module cmdcode2api
 
 go 1.26.3
 

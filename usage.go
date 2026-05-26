@@ -7,11 +7,11 @@ import (
 )
 
 type UsageTracker struct {
-	TotalRequests    atomic.Int64  `json:"total_requests"`
-	PromptTokens     atomic.Int64  `json:"prompt_tokens"`
-	CompletionTokens atomic.Int64  `json:"completion_tokens"`
-	CacheReadTokens  atomic.Int64  `json:"cache_read_tokens"`
-	CacheWriteTokens atomic.Int64  `json:"cache_write_tokens"`
+	TotalRequests    atomic.Int64 `json:"total_requests"`
+	PromptTokens     atomic.Int64 `json:"prompt_tokens"`
+	CompletionTokens atomic.Int64 `json:"completion_tokens"`
+	CacheReadTokens  atomic.Int64 `json:"cache_read_tokens"`
+	CacheWriteTokens atomic.Int64 `json:"cache_write_tokens"`
 }
 
 func (u *UsageTracker) Record(prompt, completion, cacheRead, cacheWrite int) {

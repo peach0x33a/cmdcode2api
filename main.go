@@ -42,7 +42,7 @@ func main() {
 		}
 
 		fmt.Printf("\n✅ API Key 已写入 %s\n", cfgPath)
-		fmt.Println("   现在可以直接运行 cc-gateway 启动服务了。")
+		fmt.Println("   现在可以直接运行 cmdcode2api 启动服务了。")
 		return
 	}
 
@@ -60,14 +60,14 @@ func main() {
 		}
 		fmt.Printf(`
 ╔══════════════════════════════════════════════════╗
-║          cc-gateway — 首次运行                    ║
+║          cmdcode2api — 首次运行                   ║
 ╠══════════════════════════════════════════════════╣
 ║                                                   ║
 ║  配置已生成：%s
 ║                                                   ║
 ║  接下来用浏览器登录获取 API Key：                  ║
 ║                                                   ║
-║    ./cc-gateway --oauth                            ║
+║    ./cmdcode2api --oauth                           ║
 ║                                                   ║
 ║  登录成功后重新运行即可启动服务。                   ║
 ║                                                   ║
@@ -81,7 +81,7 @@ func main() {
 	// 检查是否填了 CC API Key
 	if cfg.CommandCode.APIKey == "" {
 		fmt.Printf("❌ 尚未配置 Command Code API Key\n")
-		fmt.Printf("   请运行：./cc-gateway --oauth\n")
+		fmt.Printf("   请运行：./cmdcode2api --oauth\n")
 		os.Exit(1)
 	}
 

@@ -14,14 +14,14 @@ type ChatRequest struct {
 
 type Message struct {
 	Role       string     `json:"role"`
-	Content    any        `json:"content"`            // string | []ContentPart | null
+	Content    any        `json:"content"` // string | []ContentPart | null
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
 }
 
 type ContentPart struct {
-	Type     string    `json:"type"`               // "text" | "image_url"
+	Type     string    `json:"type"` // "text" | "image_url"
 	Text     string    `json:"text,omitempty"`
 	ImageURL *ImageURL `json:"image_url,omitempty"`
 }
@@ -84,9 +84,9 @@ type ChatStreamChunk struct {
 }
 
 type StreamChoice struct {
-	Index        int          `json:"index"`
-	Delta        StreamDelta  `json:"delta"`
-	FinishReason *string      `json:"finish_reason"`
+	Index        int         `json:"index"`
+	Delta        StreamDelta `json:"delta"`
+	FinishReason *string     `json:"finish_reason"`
 }
 
 type StreamDelta struct {
@@ -134,12 +134,12 @@ type CCConfig struct {
 }
 
 type CCParams struct {
-	Model    string  `json:"model"`
-	Messages []CCMsg `json:"messages"`
-	Tools    []CCTool `json:"tools"`
-	System   string  `json:"system,omitempty"`
-	MaxTokens int    `json:"max_tokens"`
-	Stream    bool   `json:"stream"`
+	Model     string   `json:"model"`
+	Messages  []CCMsg  `json:"messages"`
+	Tools     []CCTool `json:"tools"`
+	System    string   `json:"system,omitempty"`
+	MaxTokens int      `json:"max_tokens"`
+	Stream    bool     `json:"stream"`
 }
 
 type CCMsg struct {
@@ -184,9 +184,9 @@ type CCStreamEvent struct {
 }
 
 type CCUsage struct {
-	InputTokens        int               `json:"inputTokens"`
-	OutputTokens       int               `json:"outputTokens"`
-	InputTokenDetails  *CCTokenDetails   `json:"inputTokenDetails,omitempty"`
+	InputTokens       int             `json:"inputTokens"`
+	OutputTokens      int             `json:"outputTokens"`
+	InputTokenDetails *CCTokenDetails `json:"inputTokenDetails,omitempty"`
 }
 
 type CCTokenDetails struct {

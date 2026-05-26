@@ -21,7 +21,14 @@ The project was originally named `cc-gateway`; it was renamed to avoid confusion
 ## Build
 
 ```bash
-go build -o cmdcode2api .
+go build -o cmdcode2api ./cmd/cmdcode2api
+```
+
+## Project layout
+
+```text
+cmd/cmdcode2api/   CLI entrypoint
+internal/app/      gateway implementation
 ```
 
 ## First run

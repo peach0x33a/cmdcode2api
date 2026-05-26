@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -77,9 +77,9 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 	})
 
 	var handler http.Handler = mux
-	handler = corsMiddleware(handler)
 	handler = authMiddleware(cfg)(handler)
 	handler = loggingMiddleware(handler)
+	handler = corsMiddleware(handler)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
@@ -110,19 +110,4 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 	}
 	<-idleConnsClosed
 	return nil
-}
-
-func availableModels() []string {
-	// 与 handler.go 里硬编码的列表同步
-	return []string{
-		"claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5",
-		"gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gpt-5.4-mini",
-		"gemini-3.5-flash", "gemini-3.1-flash-lite",
-		"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash",
-		"moonshotai/Kimi-K2.6", "moonshotai/Kimi-K2.5",
-		"zai-org/GLM-5.1", "zai-org/GLM-5",
-		"MiniMaxAI/MiniMax-M2.7", "MiniMaxAI/MiniMax-M2.5",
-		"Qwen/Qwen3.6-Max-Preview", "Qwen/Qwen3.6-Plus", "Qwen/Qwen3.7-Max",
-		"step-3.5-flash",
-	}
 }

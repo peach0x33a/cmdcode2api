@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"encoding/json"
@@ -49,19 +49,6 @@ type UsageSnapshot struct {
 // TotalTokens returns prompt + completion (not counting cache separately)
 func (s UsageSnapshot) TotalTokens() int64 {
 	return s.PromptTokens + s.CompletionTokens
-}
-
-// EstimatedCredits returns rough credit estimate for a model.
-// Credits = cost per 1M tokens. Go plan: e.g. deepseek-v4-pro is heavily discounted.
-// These are just estimates — actual CC billing may differ.
-func (s UsageSnapshot) EstimatedCredits() float64 {
-	// Budget rate: ~$0.0001 per 1K prompt tokens (rough average for open-source models)
-	// More accurate: use deepseek-v4-flash pricing: $0.14/1M input, $0.28/1M output
-	inputCost := float64(s.PromptTokens) / 1_000_000 * 0.14
-	outputCost := float64(s.CompletionTokens) / 1_000_000 * 0.28
-	cacheCost := float64(s.CacheReadTokens)/1_000_000*0.01 +
-		float64(s.CacheWriteTokens)/1_000_000*0.01
-	return inputCost + outputCost + cacheCost
 }
 
 // ====== persistence ======

@@ -1,5 +1,5 @@
-cmdcode2api
-cc-gateway
+/cmdcode2api
+/cc-gateway
 config.yaml
 usage.json
 *.exe

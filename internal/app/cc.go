@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bufio"
@@ -191,7 +191,17 @@ func contentToCC(m Message) []CCPart {
 	// 工具调用
 	for _, tc := range m.ToolCalls {
 		var input map[string]any
-		json.Unmarshal([]byte(tc.Function.Arguments), &input)
+		if tc.Function.Arguments != "" {
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
+				parts = append(parts, CCPart{
+					Type:       "text",
+					Text:       fmt.Sprintf("invalid tool arguments for %s: %v", tc.Function.Name, err),
+					ToolCallID: tc.ID,
+					ToolName:   tc.Function.Name,
+				})
+				continue
+			}
+		}
 		parts = append(parts, CCPart{
 			Type:       "tool-call",
 			ToolCallID: tc.ID,

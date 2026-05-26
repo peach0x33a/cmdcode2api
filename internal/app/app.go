@@ -1,16 +1,15 @@
-package main
+package app
 
 import (
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 )
 
 const configFile = "config.yaml"
 
-func main() {
+func Run() {
 	oauthMode := flag.Bool("oauth", false, "通过浏览器 OAuth 获取 Command Code API Key")
 	flag.Parse()
 
@@ -24,7 +23,10 @@ func main() {
 		}
 		if cfg == nil {
 			// 没有配置，先生成一份
-			cfg2 := defaultConfig()
+			cfg2, err := defaultConfig()
+			if err != nil {
+				log.Fatalf("create config: %v", err)
+			}
 			if err := saveConfig(cfgPath, &cfg2); err != nil {
 				log.Fatalf("create config: %v", err)
 			}
@@ -54,7 +56,10 @@ func main() {
 
 	// 首次运行 — 生成配置
 	if cfg == nil {
-		cfg2 := defaultConfig()
+		cfg2, err := defaultConfig()
+		if err != nil {
+			log.Fatalf("create config: %v", err)
+		}
 		if err := saveConfig(cfgPath, &cfg2); err != nil {
 			log.Fatalf("create config: %v", err)
 		}
@@ -96,18 +101,5 @@ Use the local client key above as the Bearer token for your OpenAI client.
 }
 
 func findConfig() string {
-	// 1. 当前目录
-	if _, err := os.Stat(configFile); err == nil {
-		return configFile
-	}
-	// 2. 可执行文件同目录
-	exe, err := os.Executable()
-	if err == nil {
-		p := filepath.Join(filepath.Dir(exe), configFile)
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	// 3. 默认当前目录（用于首次生成）
 	return configFile
 }

@@ -1,7 +1,6 @@
-package main
+package app
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,12 +8,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"time"
 )
 
 const (
 	oauthPortStart = 5959
 	oauthPortRange = 10
 	studioBaseURL  = "https://commandcode.ai"
+	oauthTimeout   = 10 * time.Minute
 )
 
 type oauthCallback struct {
@@ -26,10 +27,12 @@ type oauthCallback struct {
 }
 
 // generateState 生成随机 state token 防 CSRF
-func generateState() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return base64.URLEncoding.EncodeToString(b)
+func generateState() (string, error) {
+	state, err := randomHex(32)
+	if err != nil {
+		return "", fmt.Errorf("generate oauth state: %w", err)
+	}
+	return base64.URLEncoding.EncodeToString([]byte(state)), nil
 }
 
 // runOAuth 启动本地 HTTP server，打印授权链接，等待 CC 回调，返回 API Key。
@@ -120,14 +123,24 @@ func runOAuth() (string, error) {
 	}()
 
 	port := listener.Addr().(*net.TCPAddr).Port
-	state := generateState()
+	state, err := generateState()
+	if err != nil {
+		server.Close()
+		return "", err
+	}
 	callbackURL := fmt.Sprintf("http://localhost:%d/callback", port)
 	authURL := fmt.Sprintf("%s/studio/auth/cli?callback=%s&state=%s",
 		studioBaseURL, callbackURL, state)
 
 	// 写入文件便于后续读取（解决 background 模式下日志不可见的问题）
-	os.WriteFile(".oauth_state", []byte(state), 0600)
-	os.WriteFile(".oauth_url", []byte(authURL), 0600)
+	if err := os.WriteFile(".oauth_state", []byte(state), 0600); err != nil {
+		server.Close()
+		return "", fmt.Errorf("write oauth state: %w", err)
+	}
+	if err := os.WriteFile(".oauth_url", []byte(authURL), 0600); err != nil {
+		server.Close()
+		return "", fmt.Errorf("write oauth url: %w", err)
+	}
 
 	log.Printf("等待 Command Code 授权...")
 	log.Printf("授权页面: %s", authURL)
@@ -152,5 +165,8 @@ func runOAuth() (string, error) {
 	case err := <-errCh:
 		server.Close()
 		return "", err
+	case <-time.After(oauthTimeout):
+		server.Close()
+		return "", fmt.Errorf("OAuth timed out after %s", oauthTimeout)
 	}
 }

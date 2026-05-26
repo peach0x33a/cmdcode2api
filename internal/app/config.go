@@ -1,8 +1,6 @@
-package main
+package app
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 
@@ -18,19 +16,25 @@ type Config struct {
 	Port int `yaml:"port"`
 }
 
-func defaultConfig() Config {
+func defaultConfig() (Config, error) {
+	apiKey, err := genAPIKey()
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
-		APIKey: genAPIKey(),
+		APIKey: apiKey,
 		Port:   11434,
 	}
 	c.CommandCode.BaseURL = "https://api.commandcode.ai"
-	return c
+	return c, nil
 }
 
-func genAPIKey() string {
-	b := make([]byte, 24)
-	rand.Read(b)
-	return "ccgw-" + hex.EncodeToString(b)
+func genAPIKey() (string, error) {
+	key, err := randomHex(24)
+	if err != nil {
+		return "", fmt.Errorf("generate api key: %w", err)
+	}
+	return "ccgw-" + key, nil
 }
 
 func loadConfig(path string) (*Config, error) {

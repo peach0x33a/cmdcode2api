@@ -161,13 +161,9 @@ func contentToCC(m Message) []CCPart {
 	if m.Role == "tool" {
 		text := textFromContent(m.Content)
 		return []CCPart{{
-			Type:       "tool-result",
-			ToolCallID: m.ToolCallID,
-			ToolName:   m.Name,
-			Output: &CCOutput{
-				Type:  "text",
-				Value: text,
-			},
+			Type:      "tool_result",
+			ToolUseID: m.ToolCallID,
+			Content:   text,
 		}}
 	}
 

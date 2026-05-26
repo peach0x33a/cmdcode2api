@@ -47,11 +47,14 @@ func TestMessagesToCCMapsToolRoleToUser(t *testing.T) {
 	if got[0].Role != "user" {
 		t.Fatalf("role = %q", got[0].Role)
 	}
-	if len(got[0].Content) != 1 || got[0].Content[0].Type != "tool-result" {
+	if len(got[0].Content) != 1 || got[0].Content[0].Type != "tool_result" {
 		t.Fatalf("content = %#v", got[0].Content)
 	}
-	if got[0].Content[0].Output.Value != "tool output" {
-		t.Fatalf("tool output = %#v", got[0].Content[0].Output)
+	if got[0].Content[0].ToolUseID != "call-1" {
+		t.Fatalf("tool_use_id = %q", got[0].Content[0].ToolUseID)
+	}
+	if got[0].Content[0].Content != "tool output" {
+		t.Fatalf("tool output = %#v", got[0].Content[0].Content)
 	}
 }
 

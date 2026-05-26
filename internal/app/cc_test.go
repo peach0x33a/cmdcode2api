@@ -47,18 +47,15 @@ func TestMessagesToCCMapsToolRoleToUser(t *testing.T) {
 	if got[0].Role != "user" {
 		t.Fatalf("role = %q", got[0].Role)
 	}
-	if len(got[0].Content) != 1 || got[0].Content[0].Type != "tool_result" {
+	if len(got[0].Content) != 1 || got[0].Content[0].Type != "text" {
 		t.Fatalf("content = %#v", got[0].Content)
 	}
-	if got[0].Content[0].ToolUseID != "call-1" {
-		t.Fatalf("tool_use_id = %q", got[0].Content[0].ToolUseID)
-	}
-	if got[0].Content[0].Content != "tool output" {
-		t.Fatalf("tool output = %#v", got[0].Content[0].Content)
+	if !strings.Contains(got[0].Content[0].Text, "tool output") {
+		t.Fatalf("tool output = %#v", got[0].Content[0].Text)
 	}
 }
 
-func TestAssistantToolCallUsesCommandCodeSchema(t *testing.T) {
+func TestAssistantToolCallIsFlattenedAsHistoryText(t *testing.T) {
 	got := contentToCC(Message{
 		Role: "assistant",
 		ToolCalls: []ToolCall{{
@@ -74,14 +71,11 @@ func TestAssistantToolCallUsesCommandCodeSchema(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("parts len = %d", len(got))
 	}
-	if got[0].Type != "tool_use" {
+	if got[0].Type != "text" {
 		t.Fatalf("type = %q", got[0].Type)
 	}
-	if got[0].ID != "call-1" || got[0].Name != "lookup" {
-		t.Fatalf("tool call id/name = %#v", got[0])
-	}
-	if got[0].Input["query"] != "kimi" {
-		t.Fatalf("input = %#v", got[0].Input)
+	if !strings.Contains(got[0].Text, "lookup") || !strings.Contains(got[0].Text, "kimi") {
+		t.Fatalf("text = %q", got[0].Text)
 	}
 }
 
@@ -113,7 +107,7 @@ func TestContentToCCDoesNotDropInvalidToolArguments(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("parts len = %d", len(parts))
 	}
-	if parts[0].Type != "text" || !strings.Contains(parts[0].Text, "invalid tool arguments") {
+	if parts[0].Type != "text" || !strings.Contains(parts[0].Text, "invalid arguments") {
 		t.Fatalf("unexpected part: %#v", parts[0])
 	}
 }

@@ -161,9 +161,8 @@ func contentToCC(m Message) []CCPart {
 	if m.Role == "tool" {
 		text := textFromContent(m.Content)
 		return []CCPart{{
-			Type:      "tool_result",
-			ToolUseID: m.ToolCallID,
-			Content:   text,
+			Type: "text",
+			Text: fmt.Sprintf("Tool result from %s (%s):\n%s", m.Name, m.ToolCallID, text),
 		}}
 	}
 
@@ -212,19 +211,16 @@ func contentToCC(m Message) []CCPart {
 		if tc.Function.Arguments != "" {
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
 				parts = append(parts, CCPart{
-					Type:       "text",
-					Text:       fmt.Sprintf("invalid tool arguments for %s: %v", tc.Function.Name, err),
-					ToolCallID: tc.ID,
-					ToolName:   tc.Function.Name,
+					Type: "text",
+					Text: fmt.Sprintf("Assistant requested tool %s (%s) with invalid arguments: %v", tc.Function.Name, tc.ID, err),
 				})
 				continue
 			}
 		}
+		argsJSON, _ := json.Marshal(input)
 		parts = append(parts, CCPart{
-			Type:  "tool_use",
-			ID:    tc.ID,
-			Name:  tc.Function.Name,
-			Input: input,
+			Type: "text",
+			Text: fmt.Sprintf("Assistant requested tool %s (%s) with arguments: %s", tc.Function.Name, tc.ID, string(argsJSON)),
 		})
 	}
 

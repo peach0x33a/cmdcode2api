@@ -149,21 +149,11 @@ type CCMsg struct {
 
 type CCPart struct {
 	Type       string         `json:"type"`
-	ID         string         `json:"id,omitempty"`
-	Name       string         `json:"name,omitempty"`
 	Text       string         `json:"text,omitempty"`
-	Content    any            `json:"content,omitempty"`
 	Source     map[string]any `json:"source,omitempty"`
 	ToolCallID string         `json:"toolCallId,omitempty"`
-	ToolUseID  string         `json:"tool_use_id,omitempty"`
 	ToolName   string         `json:"toolName,omitempty"`
 	Input      map[string]any `json:"input,omitempty"`
-	Output     *CCOutput      `json:"output,omitempty"`
-}
-
-type CCOutput struct {
-	Type  string `json:"type"`
-	Value string `json:"value"`
 }
 
 type CCTool struct {

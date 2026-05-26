@@ -221,10 +221,10 @@ func contentToCC(m Message) []CCPart {
 			}
 		}
 		parts = append(parts, CCPart{
-			Type:       "tool-call",
-			ToolCallID: tc.ID,
-			ToolName:   tc.Function.Name,
-			Input:      input,
+			Type:  "tool_use",
+			ID:    tc.ID,
+			Name:  tc.Function.Name,
+			Input: input,
 		})
 	}
 

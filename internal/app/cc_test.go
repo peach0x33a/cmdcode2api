@@ -58,6 +58,33 @@ func TestMessagesToCCMapsToolRoleToUser(t *testing.T) {
 	}
 }
 
+func TestAssistantToolCallUsesCommandCodeSchema(t *testing.T) {
+	got := contentToCC(Message{
+		Role: "assistant",
+		ToolCalls: []ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: CallFunc{
+				Name:      "lookup",
+				Arguments: `{"query":"kimi"}`,
+			},
+		}},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("parts len = %d", len(got))
+	}
+	if got[0].Type != "tool_use" {
+		t.Fatalf("type = %q", got[0].Type)
+	}
+	if got[0].ID != "call-1" || got[0].Name != "lookup" {
+		t.Fatalf("tool call id/name = %#v", got[0])
+	}
+	if got[0].Input["query"] != "kimi" {
+		t.Fatalf("input = %#v", got[0].Input)
+	}
+}
+
 func TestParseDataURL(t *testing.T) {
 	mediaType, data := parseDataURL("data:image/jpeg;base64,abc123")
 	if mediaType != "image/jpeg" || data != "abc123" {

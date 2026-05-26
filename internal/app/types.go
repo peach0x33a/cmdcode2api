@@ -149,6 +149,8 @@ type CCMsg struct {
 
 type CCPart struct {
 	Type       string         `json:"type"`
+	ID         string         `json:"id,omitempty"`
+	Name       string         `json:"name,omitempty"`
 	Text       string         `json:"text,omitempty"`
 	Content    any            `json:"content,omitempty"`
 	Source     map[string]any `json:"source,omitempty"`

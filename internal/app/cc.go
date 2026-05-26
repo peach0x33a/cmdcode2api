@@ -142,13 +142,35 @@ func messagesToCC(msgs []Message) []CCMsg {
 		if m.Role == "system" {
 			continue // 已提取到 top-level system
 		}
-		cc := CCMsg{Role: m.Role, Content: contentToCC(m)}
+		cc := CCMsg{Role: roleToCC(m.Role), Content: contentToCC(m)}
 		out = append(out, cc)
 	}
 	return out
 }
 
+func roleToCC(role string) string {
+	switch role {
+	case "assistant":
+		return "assistant"
+	default:
+		return "user"
+	}
+}
+
 func contentToCC(m Message) []CCPart {
+	if m.Role == "tool" {
+		text := textFromContent(m.Content)
+		return []CCPart{{
+			Type:       "tool-result",
+			ToolCallID: m.ToolCallID,
+			ToolName:   m.Name,
+			Output: &CCOutput{
+				Type:  "text",
+				Value: text,
+			},
+		}}
+	}
+
 	var parts []CCPart
 
 	switch v := m.Content.(type) {
@@ -207,20 +229,6 @@ func contentToCC(m Message) []CCPart {
 			ToolCallID: tc.ID,
 			ToolName:   tc.Function.Name,
 			Input:      input,
-		})
-	}
-
-	// 工具结果
-	if m.Role == "tool" {
-		text := textFromContent(m.Content)
-		parts = append(parts, CCPart{
-			Type:       "tool-result",
-			ToolCallID: m.ToolCallID,
-			ToolName:   m.Name,
-			Output: &CCOutput{
-				Type:  "text",
-				Value: text,
-			},
 		})
 	}
 

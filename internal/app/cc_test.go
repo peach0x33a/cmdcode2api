@@ -31,6 +31,30 @@ func TestOpenAIToCCExtractsSystemAndContent(t *testing.T) {
 	}
 }
 
+func TestMessagesToCCMapsToolRoleToUser(t *testing.T) {
+	got := messagesToCC([]Message{
+		{
+			Role:       "tool",
+			ToolCallID: "call-1",
+			Name:       "lookup",
+			Content:    "tool output",
+		},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("messages len = %d", len(got))
+	}
+	if got[0].Role != "user" {
+		t.Fatalf("role = %q", got[0].Role)
+	}
+	if len(got[0].Content) != 1 || got[0].Content[0].Type != "tool-result" {
+		t.Fatalf("content = %#v", got[0].Content)
+	}
+	if got[0].Content[0].Output.Value != "tool output" {
+		t.Fatalf("tool output = %#v", got[0].Content[0].Output)
+	}
+}
+
 func TestParseDataURL(t *testing.T) {
 	mediaType, data := parseDataURL("data:image/jpeg;base64,abc123")
 	if mediaType != "image/jpeg" || data != "abc123" {

@@ -69,11 +69,30 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 
 	firstText := true
 	var promptTokens, completionTokens, cacheRead, cacheWrite int
+	var reasoningTokens int
 
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
 		switch ev.Type {
 		case "text-delta":
 			delta := StreamDelta{Content: ev.Text}
+			if firstText {
+				delta.Role = "assistant"
+				firstText = false
+			}
+			chunk := ChatStreamChunk{
+				ID:     genStreamID(),
+				Object: "chat.completion.chunk",
+				Model:  model,
+				Choices: []StreamChoice{{
+					Index: 0,
+					Delta: delta,
+				}},
+			}
+			writeSSE(w, flusher, chunk)
+
+		case "reasoning-delta":
+			reasoningTokens++
+			delta := StreamDelta{ReasoningContent: ev.Text}
 			if firstText {
 				delta.Role = "assistant"
 				firstText = false
@@ -116,9 +135,8 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			}
 			writeSSE(w, flusher, chunk)
 
-		case "finish":
+		case "finish", "finish-step":
 			reason := ev.FinishReason
-			// CC 的 finishReason 可能是 "tool-calls" → 转为 OpenAI 的 "tool_calls"
 			if reason == "tool-calls" {
 				reason = "tool_calls"
 			}
@@ -134,7 +152,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 				}
 				usageInfo.PromptTokens = promptTokens
 				usageInfo.CompletionTokens = completionTokens
-				usageInfo.TotalTokens = promptTokens + completionTokens
+				usageInfo.TotalTokens = promptTokens + completionTokens + reasoningTokens
 			}
 
 			chunk := ChatStreamChunk{
@@ -150,13 +168,20 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			}
 			writeSSE(w, flusher, chunk)
 
-			// 最后发 [DONE]
 			fmt.Fprintf(w, "data: [DONE]\n\n")
 			flusher.Flush()
 
 		case "error":
 			log.Printf("[ERROR] cc stream event: %v", ev.Error)
 			return fmt.Errorf("cc stream error")
+
+		case "start", "start-step", "reasoning-start", "reasoning-end",
+			"text-start", "text-end", "provider-metadata":
+			if cfg.Debug {
+				raw, _ := json.Marshal(ev)
+				log.Printf("[DEBUG] << cc event type=%q raw=%s", ev.Type, string(raw))
+			}
+
 		default:
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
@@ -177,11 +202,11 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 	msg.Role = "assistant"
 	var promptTokens, completionTokens, cacheRead, cacheWrite int
 	var finishReason string
+	var reasoningContent string
 
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
 		switch ev.Type {
 		case "text-delta":
-			// 往最后一个 text content 追加
 			found := false
 			switch parts := msg.Content.(type) {
 			case []ContentPart:
@@ -203,6 +228,8 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 			default:
 				msg.Content = ev.Text
 			}
+		case "reasoning-delta":
+			reasoningContent += ev.Text
 		case "tool-call":
 			input := ev.Input
 			if input == nil {
@@ -220,7 +247,7 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 					Arguments: string(argsJSON),
 				},
 			})
-		case "finish":
+		case "finish", "finish-step":
 			if ev.FinishReason == "tool-calls" {
 				finishReason = "tool_calls"
 			} else {
@@ -234,6 +261,13 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 					cacheWrite = ev.TotalUsage.InputTokenDetails.CacheWriteTokens
 				}
 			}
+		case "start", "start-step", "reasoning-start", "reasoning-end",
+			"text-start", "text-end", "provider-metadata":
+			if cfg.Debug {
+				raw, _ := json.Marshal(ev)
+				log.Printf("[DEBUG] << cc event type=%q raw=%s", ev.Type, string(raw))
+			}
+
 		default:
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
@@ -258,6 +292,9 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 	if msg.Content == nil {
 		msg.Content = ""
 	}
+	if reasoningContent != "" {
+		msg.ReasoningContent = reasoningContent
+	}
 
 	res := ChatResponse{
 		ID:     genStreamID(),
@@ -269,9 +306,9 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 			FinishReason: finishReason,
 		}},
 		Usage: Usage{
-			PromptTokens:     promptTokens,
-			CompletionTokens: completionTokens,
-			TotalTokens:      promptTokens + completionTokens,
+			PromptTokens:       promptTokens,
+			CompletionTokens:   completionTokens,
+			TotalTokens:        promptTokens + completionTokens,
 		},
 	}
 

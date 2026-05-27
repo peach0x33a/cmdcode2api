@@ -52,6 +52,17 @@ func (c *CCClient) Send(req *ChatRequest) (*http.Response, error) {
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
+
+		var ccErr struct {
+			Success bool `json:"success"`
+			Error   struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &ccErr) == nil && ccErr.Error.Message != "" {
+			return nil, fmt.Errorf("cc api error %d: %s", resp.StatusCode, ccErr.Error.Message)
+		}
 		return nil, fmt.Errorf("cc api error %d: %s", resp.StatusCode, string(body))
 	}
 	return resp, nil
@@ -88,6 +99,35 @@ func ParseStreamEvents(resp *http.Response, onEvent func(CCStreamEvent) error) e
 
 // ====================== 格式转换 ======================
 
+// resolveModelName 将客户端传来的 model ID 映射为 CC API 期望的格式。
+// 优先使用动态 modelCatalog（来自 /provider/v1/models），
+// 回退到根据模型名推断 provider 前缀。
+func resolveModelName(model string) string {
+	// 已有 provider 前缀（含 /），直接使用
+	if strings.Contains(model, "/") {
+		return model
+	}
+
+	// 在动态 catalog 中查找匹配的 ID（catalog 中的 ID 已含正确前缀）
+	for _, m := range modelCatalog {
+		if m.ID == model || strings.HasSuffix(m.ID, "/"+model) {
+			return m.ID
+		}
+	}
+
+	// catalog 中未找到，根据模型名前缀推断 provider
+	switch {
+	case strings.HasPrefix(model, "gemini-"):
+		return "google/" + model
+	case strings.HasPrefix(model, "claude-"):
+		return "anthropic/" + model
+	case strings.HasPrefix(model, "gpt-"):
+		return "openai/" + model
+	default:
+		return model
+	}
+}
+
 func openAIToCC(req *ChatRequest) CCRequest {
 	tools := toolsToCC(req.Tools)
 	msgs := messagesToCC(req.Messages)
@@ -106,7 +146,7 @@ func openAIToCC(req *ChatRequest) CCRequest {
 		Skills:         nil,
 		PermissionMode: "standard",
 		Params: CCParams{
-			Model:     req.Model,
+			Model:     resolveModelName(req.Model),
 			Messages:  msgs,
 			Tools:     tools,
 			System:    system,

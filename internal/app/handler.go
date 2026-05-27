@@ -176,7 +176,8 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			return fmt.Errorf("cc stream error")
 
 		case "start", "start-step", "reasoning-start", "reasoning-end",
-			"text-start", "text-end", "provider-metadata":
+			"text-start", "text-end", "provider-metadata",
+			"tool-input-start", "tool-input-delta", "tool-input-end":
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
 				log.Printf("[DEBUG] << cc event type=%q raw=%s", ev.Type, string(raw))
@@ -262,7 +263,8 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 				}
 			}
 		case "start", "start-step", "reasoning-start", "reasoning-end",
-			"text-start", "text-end", "provider-metadata":
+			"text-start", "text-end", "provider-metadata",
+			"tool-input-start", "tool-input-delta", "tool-input-end":
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
 				log.Printf("[DEBUG] << cc event type=%q raw=%s", ev.Type, string(raw))

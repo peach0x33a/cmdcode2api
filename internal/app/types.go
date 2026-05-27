@@ -184,9 +184,9 @@ type CCStreamEvent struct {
 	Text         string         `json:"text,omitempty"`
 	ToolCallID   string         `json:"toolCallId,omitempty"`
 	ToolName     string         `json:"toolName,omitempty"`
-	Input        map[string]any `json:"input,omitempty"`
-	Args         map[string]any `json:"args,omitempty"`
-	Arguments    map[string]any `json:"arguments,omitempty"`
+	Input        any            `json:"input,omitempty"`
+	Args         any            `json:"args,omitempty"`
+	Arguments    any            `json:"arguments,omitempty"`
 	FinishReason string         `json:"finishReason,omitempty"`
 	TotalUsage   *CCUsage       `json:"totalUsage,omitempty"`
 	Error        any            `json:"error,omitempty"`

@@ -1,30 +1,55 @@
 package app
 
-var modelCatalog = []ModelInfo{
-	// Premium
-	{ID: "claude-opus-4-7", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "claude-opus-4-6", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "claude-sonnet-4-6", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "claude-haiku-4-5", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "gpt-5.5", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "gpt-5.4", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "gpt-5.3-codex", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "gpt-5.4-mini", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "gemini-3.5-flash", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "gemini-3.1-flash-lite", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	// Open-source
-	{ID: "deepseek/deepseek-v4-pro", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "deepseek/deepseek-v4-flash", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "moonshotai/Kimi-K2.6", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "moonshotai/Kimi-K2.5", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "zai-org/GLM-5.1", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "zai-org/GLM-5", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "MiniMaxAI/MiniMax-M2.7", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "MiniMaxAI/MiniMax-M2.5", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "Qwen/Qwen3.6-Max-Preview", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "Qwen/Qwen3.6-Plus", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "Qwen/Qwen3.7-Max", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
-	{ID: "step-3.5-flash", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"time"
+)
+
+var modelCatalog []ModelInfo
+
+// FetchProviderModels 从 CC API 拉取模型列表，填充 modelCatalog。
+func FetchProviderModels(baseURL, apiKey string) {
+	url := baseURL + "/provider/v1/models"
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("[WARN] fetch models: create request: %v", err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[WARN] fetch models: %v (using empty catalog)", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		log.Printf("[WARN] fetch models: http %d (using empty catalog)", resp.StatusCode)
+		return
+	}
+
+	var list CCProviderModelList
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		log.Printf("[WARN] fetch models: decode: %v (using empty catalog)", err)
+		return
+	}
+
+	catalog := make([]ModelInfo, 0, len(list.Data))
+	for _, m := range list.Data {
+		catalog = append(catalog, ModelInfo{
+			ID:      m.ID,
+			Object:  "model",
+			Created: 1700000000,
+			OwnedBy: "commandcode",
+		})
+	}
+	modelCatalog = catalog
+	log.Printf("models: %d loaded from %s", len(modelCatalog), url)
 }
 
 func availableModels() []string {

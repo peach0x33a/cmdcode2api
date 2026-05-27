@@ -40,6 +40,11 @@ func TestCorsPreflightBypassesAuth(t *testing.T) {
 }
 
 func TestAvailableModelsUsesCatalog(t *testing.T) {
+	modelCatalog = []ModelInfo{
+		{ID: "test-model-1", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
+		{ID: "test-model-2", Object: "model", Created: 1700000000, OwnedBy: "commandcode"},
+	}
+
 	models := availableModels()
 	if len(models) != len(modelCatalog) {
 		t.Fatalf("models len = %d, catalog len = %d", len(models), len(modelCatalog))

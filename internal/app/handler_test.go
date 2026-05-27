@@ -49,7 +49,7 @@ func TestHandleNonStreamAppendsTextDeltas(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	handleNonStream(rec, resp, "test-model", &UsageTracker{})
+	handleNonStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())

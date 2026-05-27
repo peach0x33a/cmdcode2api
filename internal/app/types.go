@@ -108,6 +108,19 @@ type ModelList struct {
 	Data   []ModelInfo `json:"data"`
 }
 
+// CCProviderModel CC API /provider/v1/models 返回的单个模型
+type CCProviderModel struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	ContextLength  int    `json:"context_length"`
+}
+
+// CCProviderModelList CC API /provider/v1/models 响应
+type CCProviderModelList struct {
+	Object string            `json:"object"`
+	Data   []CCProviderModel `json:"data"`
+}
+
 // ============================================================================
 // Command Code 内部格式（我们 ↔ CC 服务器）
 // ============================================================================

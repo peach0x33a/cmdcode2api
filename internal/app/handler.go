@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 )
@@ -12,7 +14,17 @@ const maxChatRequestBytes = 50 * 1024 * 1024
 func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxChatRequestBytes)
+
 		var req ChatRequest
+		if cfg.Debug {
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeError(w, 400, "invalid_request_error", "bad request body: "+err.Error())
+				return
+			}
+			log.Printf("[DEBUG] >> POST /v1/chat/completions body: %s", string(bodyBytes))
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, 400, "invalid_request_error", "bad request body: "+err.Error())
 			return
@@ -35,16 +47,16 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 		}
 
 		if req.Stream {
-			handleStream(w, resp, req.Model, usage)
+			handleStream(w, resp, req.Model, usage, cfg)
 			usage.save()
 		} else {
-			handleNonStream(w, resp, req.Model, usage)
+			handleNonStream(w, resp, req.Model, usage, cfg)
 			usage.save()
 		}
 	}
 }
 
-func handleStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker) {
+func handleStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, 500, "server_error", "streaming not supported")
@@ -145,6 +157,11 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 		case "error":
 			log.Printf("[ERROR] cc stream event: %v", ev.Error)
 			return fmt.Errorf("cc stream error")
+		default:
+			if cfg.Debug {
+				raw, _ := json.Marshal(ev)
+				log.Printf("[DEBUG] << cc unknown event type=%q raw=%s", ev.Type, string(raw))
+			}
 		}
 		return nil
 	})
@@ -155,7 +172,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
 }
 
-func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker) {
+func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config) {
 	var msg Message
 	msg.Role = "assistant"
 	var promptTokens, completionTokens, cacheRead, cacheWrite int
@@ -216,6 +233,11 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 					cacheRead = ev.TotalUsage.InputTokenDetails.CacheReadTokens
 					cacheWrite = ev.TotalUsage.InputTokenDetails.CacheWriteTokens
 				}
+			}
+		default:
+			if cfg.Debug {
+				raw, _ := json.Marshal(ev)
+				log.Printf("[DEBUG] << cc unknown event type=%q raw=%s", ev.Type, string(raw))
 			}
 		}
 		return nil

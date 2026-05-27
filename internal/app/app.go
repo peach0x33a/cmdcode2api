@@ -14,6 +14,7 @@ func Run() {
 	oauthCallback := flag.String("oauth-callback", "", "OAuth callback URL，例如 http://server.example.com:5959/callback")
 	host := flag.String("host", "", "HTTP listen host，例如 localhost 或 0.0.0.0")
 	port := flag.Int("port", 0, "HTTP listen port")
+	debug := flag.Bool("debug", false, "print request body and all CC SSE events to stderr")
 	flag.Parse()
 
 	cfgPath := findConfig()
@@ -102,9 +103,14 @@ Use the local client key above as the Bearer token for your OpenAI client.
 	if cfg.CommandCode.BaseURL == "" {
 		cfg.CommandCode.BaseURL = "https://api.commandcode.ai"
 	}
+	if *debug {
+		cfg.Debug = true
+	}
 
 	cc := NewCCClient(cfg.CommandCode.APIKey, cfg.CommandCode.BaseURL)
 	usage := loadUsage()
+
+	FetchProviderModels(cfg.CommandCode.BaseURL, cfg.CommandCode.APIKey)
 
 	if err := runServer(cc, cfg, usage); err != nil {
 		log.Fatalf("server: %v", err)

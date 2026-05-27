@@ -24,7 +24,7 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 				writeError(w, 400, "invalid_request_error", "bad request body: "+err.Error())
 				return
 			}
-			log.Printf("[DEBUG] >> POST /v1/chat/completions body: %s", string(bodyBytes))
+			log.Printf("%s %s %s", colorize("[DEBUG]", ansiDim), colorize(">> body", ansiGreen), colorize(string(bodyBytes), ansiCyan))
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -43,7 +43,7 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 
 		resp, err := cc.Send(&req)
 		if err != nil {
-			log.Printf("[ERROR] cc send: %v", err)
+			log.Printf("%s cc send: %v", colorize("[ERROR]", ansiRed), err)
 			writeError(w, 502, "server_error", "upstream error: "+err.Error())
 			return
 		}
@@ -172,12 +172,12 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 
 			fmt.Fprintf(w, "data: [DONE]\n\n")
 			if debugMode {
-				log.Printf("[DEBUG] >> sse [DONE]")
+				log.Printf("%s %s", colorize("[DEBUG]", ansiDim), colorize(">> [DONE]", ansiGreen))
 			}
 			flusher.Flush()
 
 		case "error":
-			log.Printf("[ERROR] cc stream event: %v", ev.Error)
+			log.Printf("%s stream event: %v", colorize("[ERROR]", ansiRed), ev.Error)
 			return fmt.Errorf("cc stream error")
 
 		case "start", "start-step", "reasoning-start", "reasoning-end",
@@ -185,20 +185,20 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			"tool-input-start", "tool-input-delta", "tool-input-end":
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
-				log.Printf("[DEBUG] << cc event type=%q raw=%s", ev.Type, string(raw))
+				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
 			}
 
 		default:
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
-				log.Printf("[DEBUG] << cc unknown event type=%q raw=%s", ev.Type, string(raw))
+				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc ?", ansiYellow), ev.Type, colorize(string(raw), ansiYellow))
 			}
 		}
 		return nil
 	})
 
 	if err != nil {
-		log.Printf("[ERROR] stream parse: %v", err)
+		log.Printf("%s stream parse: %v", colorize("[ERROR]", ansiRed), err)
 	}
 	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
 }
@@ -272,20 +272,20 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 			"tool-input-start", "tool-input-delta", "tool-input-end":
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
-				log.Printf("[DEBUG] << cc event type=%q raw=%s", ev.Type, string(raw))
+				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
 			}
 
 		default:
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
-				log.Printf("[DEBUG] << cc unknown event type=%q raw=%s", ev.Type, string(raw))
+				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc ?", ansiYellow), ev.Type, colorize(string(raw), ansiYellow))
 			}
 		}
 		return nil
 	})
 
 	if err != nil {
-		log.Printf("[ERROR] non-stream parse: %v", err)
+		log.Printf("%s non-stream parse: %v", colorize("[ERROR]", ansiRed), err)
 		writeError(w, 502, "server_error", "upstream stream error")
 		return
 	}
@@ -321,7 +321,7 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 
 	if cfg.Debug {
 		raw, _ := json.Marshal(res)
-		log.Printf("[DEBUG] >> response %s", string(raw))
+		log.Printf("%s %s %s", colorize("[DEBUG]", ansiDim), colorize(">> response", ansiGreen), colorize(string(raw), ansiCyan))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -337,7 +337,7 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 
 func writeError(w http.ResponseWriter, status int, typ, msg string) {
 	if debugMode {
-		log.Printf("[DEBUG] >> error %d %s: %s", status, typ, msg)
+		log.Printf("%s %s %d %s: %s", colorize("[DEBUG]", ansiDim), colorize(">> error", ansiRed), status, typ, msg)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -352,7 +352,7 @@ func writeError(w http.ResponseWriter, status int, typ, msg string) {
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, chunk ChatStreamChunk) {
 	data, _ := json.Marshal(chunk)
 	if debugMode {
-		log.Printf("[DEBUG] >> sse %s", string(data))
+		log.Printf("%s %s %s", colorize("[DEBUG]", ansiDim), colorize(">> sse", ansiGreen), colorize(string(data), ansiCyan))
 	}
 	fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()

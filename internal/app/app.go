@@ -105,6 +105,7 @@ Use the local client key above as the Bearer token for your OpenAI client.
 	}
 	if *debug {
 		cfg.Debug = true
+		debugMode = true
 	}
 
 	cc := NewCCClient(cfg.CommandCode.APIKey, cfg.CommandCode.BaseURL)

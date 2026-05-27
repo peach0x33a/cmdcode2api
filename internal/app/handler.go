@@ -11,6 +11,8 @@ import (
 
 const maxChatRequestBytes = 50 * 1024 * 1024
 
+var debugMode bool
+
 func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxChatRequestBytes)
@@ -169,6 +171,9 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			writeSSE(w, flusher, chunk)
 
 			fmt.Fprintf(w, "data: [DONE]\n\n")
+			if debugMode {
+				log.Printf("[DEBUG] >> sse [DONE]")
+			}
 			flusher.Flush()
 
 		case "error":
@@ -314,6 +319,11 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		},
 	}
 
+	if cfg.Debug {
+		raw, _ := json.Marshal(res)
+		log.Printf("[DEBUG] >> response %s", string(raw))
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
 }
@@ -326,6 +336,9 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 // ====================== helpers ======================
 
 func writeError(w http.ResponseWriter, status int, typ, msg string) {
+	if debugMode {
+		log.Printf("[DEBUG] >> error %d %s: %s", status, typ, msg)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]any{
@@ -338,6 +351,9 @@ func writeError(w http.ResponseWriter, status int, typ, msg string) {
 
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, chunk ChatStreamChunk) {
 	data, _ := json.Marshal(chunk)
+	if debugMode {
+		log.Printf("[DEBUG] >> sse %s", string(data))
+	}
 	fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()
 }

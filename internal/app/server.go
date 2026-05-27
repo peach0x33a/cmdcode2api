@@ -51,13 +51,10 @@ func corsMiddleware(next http.Handler) http.Handler {
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		// skip health check logging
+		recorder, wrapped := newStatusRecorder(w)
+		next.ServeHTTP(wrapped, r)
 		if r.URL.Path != "/health" {
-			log.Printf("[%s] %s", r.Method, r.URL.Path)
-		}
-		next.ServeHTTP(w, r)
-		if r.URL.Path != "/health" {
-			log.Printf("[%s] %s — %v", r.Method, r.URL.Path, time.Since(start))
+			log.Print(formatHTTPLog(r.Method, r.URL.Path, recorder.status, time.Since(start), r.RemoteAddr))
 		}
 	})
 }

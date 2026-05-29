@@ -76,6 +76,10 @@ commandcode:
   base_url: https://api.commandcode.ai
 host: localhost
 port: 11434
+exclude_models:
+  - gpt-
+  - claude-
+  - gemini-
 ```
 
 Fields:
@@ -85,6 +89,15 @@ Fields:
 - `commandcode.base_url` — Command Code API base URL.
 - `host` — HTTP listen host. Defaults to `localhost`. Use `0.0.0.0` to listen on all interfaces.
 - `port` — local listen port. Defaults to `11434`.
+- `exclude_models` — model ID prefixes hidden from `/v1/models` and rejected by `/v1/chat/completions`.
+
+New configs exclude `gpt-`, `claude-`, and `gemini-` by default. These prefixes match both plain model IDs such as `gpt-4` and provider-qualified IDs such as `openai/gpt-4` by checking the part after the final `/`.
+
+To make all models available, remove the entries or set an empty list:
+
+```yaml
+exclude_models: []
+```
 
 ## Run
 
@@ -172,11 +185,12 @@ Usage is persisted to `usage.json`, which is ignored by git.
 
 ### `GET /v1/models`
 
-Returns the built-in model list.
+Returns the model list after applying `exclude_models` filtering.
 
 ### `POST /v1/chat/completions`
 
 Accepts OpenAI-style chat completion requests and forwards them to Command Code.
+Requests for excluded models return `404` with the existing OpenAI-compatible error JSON shape.
 
 Supported request styles:
 

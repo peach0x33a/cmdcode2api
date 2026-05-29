@@ -68,6 +68,9 @@ func TestChatCompletionsAllowsNonExcludedModel(t *testing.T) {
 	if rec.Code == http.StatusBadRequest {
 		t.Fatalf("status = %d: exclusion gate blocked non-excluded model", rec.Code)
 	}
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("status = %d: exclusion gate blocked non-excluded model", rec.Code)
+	}
 }
 
 func TestChatCompletionsBlocksProviderQualified(t *testing.T) {

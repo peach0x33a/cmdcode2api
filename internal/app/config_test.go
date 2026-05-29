@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -55,5 +57,42 @@ func TestLoadConfigEmptyExcludeModels(t *testing.T) {
 	}
 	if len(cfg.ExcludeModels) != 0 {
 		t.Fatalf("len(ExcludeModels) = %d, want 0", len(cfg.ExcludeModels))
+	}
+}
+
+func TestWriteConfigTemplateIncludesComment(t *testing.T) {
+	cfg := &Config{APIKey: "test-key"}
+	tmp := t.TempDir() + "/config.yaml"
+	if err := writeConfigTemplate(tmp, cfg); err != nil {
+		t.Fatalf("writeConfigTemplate: %v", err)
+	}
+	data, err := os.ReadFile(tmp)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "# exclude_models:") {
+		t.Fatalf("missing commented exclude_models in:\n%s", content)
+	}
+	if !strings.Contains(content, "#     - gpt-") {
+		t.Fatalf("missing commented gpt- entry in:\n%s", content)
+	}
+	if !strings.Contains(content, "test-key") {
+		t.Fatalf("missing actual config content in:\n%s", content)
+	}
+}
+
+func TestWriteConfigTemplateExcludeCommented(t *testing.T) {
+	cfg := &Config{APIKey: "test-key"}
+	tmp := t.TempDir() + "/config.yaml"
+	if err := writeConfigTemplate(tmp, cfg); err != nil {
+		t.Fatalf("writeConfigTemplate: %v", err)
+	}
+	loaded, err := loadConfig(tmp)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(loaded.ExcludeModels) != 0 {
+		t.Fatalf("ExcludeModels = %v, want empty (template is commented out)", loaded.ExcludeModels)
 	}
 }

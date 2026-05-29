@@ -31,7 +31,7 @@ func Run() {
 			if err != nil {
 				log.Fatalf("create config: %v", err)
 			}
-			if err := saveConfig(cfgPath, &cfg2); err != nil {
+			if err := writeConfigTemplate(cfgPath, &cfg2); err != nil {
 				log.Fatalf("create config: %v", err)
 			}
 			cfg = &cfg2
@@ -64,7 +64,7 @@ func Run() {
 		if err != nil {
 			log.Fatalf("create config: %v", err)
 		}
-		if err := saveConfig(cfgPath, &cfg2); err != nil {
+		if err := writeConfigTemplate(cfgPath, &cfg2); err != nil {
 			log.Fatalf("create config: %v", err)
 		}
 		fmt.Printf(`cmdcode2api initialized.

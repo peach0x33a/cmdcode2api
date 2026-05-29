@@ -25,9 +25,10 @@ func defaultConfig() (Config, error) {
 		return Config{}, err
 	}
 	c := Config{
-		APIKey: apiKey,
-		Host:   "localhost",
-		Port:   11434,
+		APIKey:        apiKey,
+		Host:          "localhost",
+		Port:          11434,
+		ExcludeModels: []string{"gpt-", "claude-", "gemini-"},
 	}
 	c.CommandCode.BaseURL = "https://api.commandcode.ai"
 	return c, nil

@@ -8,6 +8,22 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestDefaultConfigHasExcludeModels(t *testing.T) {
+	cfg, err := defaultConfig()
+	if err != nil {
+		t.Fatalf("defaultConfig error: %v", err)
+	}
+	want := []string{"gpt-", "claude-", "gemini-"}
+	if len(cfg.ExcludeModels) != len(want) {
+		t.Fatalf("len(ExcludeModels) = %d, want %d", len(cfg.ExcludeModels), len(want))
+	}
+	for i, v := range want {
+		if cfg.ExcludeModels[i] != v {
+			t.Fatalf("ExcludeModels[%d] = %q, want %q", i, cfg.ExcludeModels[i], v)
+		}
+	}
+}
+
 func TestDefaultConfigUsesLocalhost(t *testing.T) {
 	cfg, err := defaultConfig()
 	if err != nil {

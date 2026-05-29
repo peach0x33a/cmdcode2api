@@ -67,7 +67,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 		fmt.Fprint(w, `{"status":"ok"}`)
 	})
 	mux.HandleFunc("/v1/chat/completions", handleChatCompletions(cc, cfg, usage))
-	mux.HandleFunc("/v1/models", handleModels)
+	mux.HandleFunc("/v1/models", handleModels(cfg))
 	mux.HandleFunc("/usage", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(usage.Snapshot())

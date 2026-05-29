@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,55 @@ func TestChatCompletionsRequiresMessages(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsBlocksExcludedModel(t *testing.T) {
+	handler := handleChatCompletions(&CCClient{Client: &http.Client{}}, &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "not available") {
+		t.Fatalf("body missing 'not available': %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid_request_error") {
+		t.Fatalf("body missing error type: %s", rec.Body.String())
+	}
+}
+
+func TestChatCompletionsAllowsNonExcludedModel(t *testing.T) {
+	handler := handleChatCompletions(&CCClient{Client: &http.Client{}}, &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hello"}]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	// Exclusion gate should pass. cc.Send will fail with empty client → 502, not 400.
+	if rec.Code == http.StatusBadRequest {
+		t.Fatalf("status = %d: exclusion gate blocked non-excluded model", rec.Code)
+	}
+}
+
+func TestChatCompletionsBlocksProviderQualified(t *testing.T) {
+	handler := handleChatCompletions(&CCClient{Client: &http.Client{}}, &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"openai/gpt-4","messages":[{"role":"user","content":"hello"}]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "openai/gpt-4") {
+		t.Fatalf("body missing model name: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid_request_error") {
+		t.Fatalf("body missing error type: %s", rec.Body.String())
+	}
+}
+
 func TestHandleNonStreamAppendsTextDeltas(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
@@ -56,5 +106,94 @@ func TestHandleNonStreamAppendsTextDeltas(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"content":"hello world"`) {
 		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestHandleModelsExcludesPrefixes(t *testing.T) {
+	oldCatalog := modelCatalog
+	t.Cleanup(func() { modelCatalog = oldCatalog })
+
+	modelCatalog = []ModelInfo{
+		{ID: "openai/gpt-4"},
+		{ID: "anthropic/claude-3"},
+		{ID: "google/gemini-1.5-pro"},
+		{ID: "deepseek/deepseek-chat"},
+	}
+	cfg := &Config{ExcludeModels: []string{"gpt-", "claude-", "gemini-"}}
+	handler := handleModels(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp ModelList
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Object != "list" {
+		t.Fatalf("object = %q, want list", resp.Object)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("len(data) = %d, want 1", len(resp.Data))
+	}
+	if resp.Data[0].ID != "deepseek/deepseek-chat" {
+		t.Fatalf("data[0].ID = %q, want deepseek/deepseek-chat", resp.Data[0].ID)
+	}
+}
+
+func TestHandleModelsNoExclusions(t *testing.T) {
+	oldCatalog := modelCatalog
+	t.Cleanup(func() { modelCatalog = oldCatalog })
+
+	modelCatalog = []ModelInfo{
+		{ID: "openai/gpt-4"},
+		{ID: "anthropic/claude-3"},
+	}
+	cfg := &Config{}
+	handler := handleModels(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp ModelList
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("len(data) = %d, want 2", len(resp.Data))
+	}
+}
+
+func TestHandleModelsAllExcluded(t *testing.T) {
+	oldCatalog := modelCatalog
+	t.Cleanup(func() { modelCatalog = oldCatalog })
+
+	modelCatalog = []ModelInfo{
+		{ID: "openai/gpt-4"},
+		{ID: "anthropic/claude-3"},
+	}
+	cfg := &Config{ExcludeModels: []string{"gpt-", "claude-"}}
+	handler := handleModels(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp ModelList
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("len(data) = %d, want 0", len(resp.Data))
 	}
 }

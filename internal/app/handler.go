@@ -36,6 +36,10 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 			writeError(w, 400, "invalid_request_error", "model is required")
 			return
 		}
+		if isModelExcluded(req.Model, cfg.ExcludeModels) {
+			writeError(w, 400, "invalid_request_error", fmt.Sprintf("model %q is not available", req.Model))
+			return
+		}
 		if len(req.Messages) == 0 {
 			writeError(w, 400, "invalid_request_error", "messages is required")
 			return
@@ -328,9 +332,17 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 	json.NewEncoder(w).Encode(res)
 }
 
-func handleModels(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ModelList{Object: "list", Data: modelCatalog})
+func handleModels(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		filtered := make([]ModelInfo, 0, len(modelCatalog))
+		for _, m := range modelCatalog {
+			if !isModelExcluded(m.ID, cfg.ExcludeModels) {
+				filtered = append(filtered, m)
+			}
+		}
+		json.NewEncoder(w).Encode(ModelList{Object: "list", Data: filtered})
+	}
 }
 
 // ====================== helpers ======================

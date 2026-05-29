@@ -13,9 +13,10 @@ type Config struct {
 		APIKey  string `yaml:"api_key"`
 		BaseURL string `yaml:"base_url"`
 	} `yaml:"commandcode"`
-	Host  string `yaml:"host"`
-	Port  int    `yaml:"port"`
-	Debug bool   `yaml:"-"` // runtime flag, not persisted
+	Host          string   `yaml:"host"`
+	Port          int      `yaml:"port"`
+	ExcludeModels []string `yaml:"exclude_models"`
+	Debug         bool     `yaml:"-"` // runtime flag, not persisted
 }
 
 func defaultConfig() (Config, error) {

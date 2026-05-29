@@ -37,7 +37,7 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 			return
 		}
 		if isModelExcluded(req.Model, cfg.ExcludeModels) {
-			writeError(w, 400, "invalid_request_error", fmt.Sprintf("model %q is not available", req.Model))
+			writeError(w, 404, "invalid_request_error", fmt.Sprintf("model %q is not available", req.Model))
 			return
 		}
 		if len(req.Messages) == 0 {

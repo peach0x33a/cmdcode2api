@@ -46,8 +46,8 @@ func TestChatCompletionsBlocksExcludedModel(t *testing.T) {
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), "not available") {
 		t.Fatalf("body missing 'not available': %s", rec.Body.String())
@@ -77,8 +77,8 @@ func TestChatCompletionsBlocksProviderQualified(t *testing.T) {
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), "openai/gpt-4") {
 		t.Fatalf("body missing model name: %s", rec.Body.String())

@@ -101,7 +101,14 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 	}()
 
 	log.Printf("cmdcode2api starting on http://%s", addr)
-	log.Printf("models: %d available", len(availableModels()))
+	loadedModels := len(availableModels())
+	availableModels := 0
+	for _, model := range modelCatalog {
+		if !isModelExcluded(model.ID, cfg.ExcludeModels) {
+			availableModels++
+		}
+	}
+	log.Printf("models: %d loaded, %d available", loadedModels, availableModels)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		return err
 	}

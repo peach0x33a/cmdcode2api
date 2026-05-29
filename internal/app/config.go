@@ -73,13 +73,9 @@ func writeConfigTemplate(path string, cfg *Config) error {
 	template := "# cmdcode2api configuration\n" +
 		"# See README.md for all options.\n" +
 		"\n" +
-		"# Optional: exclude models from /v1/models and /v1/chat/completions.\n" +
-		"# Uncomment the lines below to hide premium/non-open-source models\n" +
+		"# exclude_models is enabled by default for premium/non-open-source models\n" +
 		"# (e.g., GPT, Claude, Gemini) that may be unavailable on certain plans.\n" +
-		"# exclude_models:\n" +
-		"#     - gpt-\n" +
-		"#     - claude-\n" +
-		"#     - gemini-\n" +
+		"# Remove entries below or set exclude_models: [] to make all models available.\n" +
 		"\n" +
 		string(data)
 	return os.WriteFile(path, []byte(template), 0600)

@@ -76,10 +76,13 @@ func TestLoadConfigEmptyExcludeModels(t *testing.T) {
 	}
 }
 
-func TestWriteConfigTemplateIncludesComment(t *testing.T) {
-	cfg := &Config{APIKey: "test-key"}
+func TestWriteConfigTemplateIncludesDefaultExclusionComment(t *testing.T) {
+	cfg, err := defaultConfig()
+	if err != nil {
+		t.Fatalf("defaultConfig: %v", err)
+	}
 	tmp := t.TempDir() + "/config.yaml"
-	if err := writeConfigTemplate(tmp, cfg); err != nil {
+	if err := writeConfigTemplate(tmp, &cfg); err != nil {
 		t.Fatalf("writeConfigTemplate: %v", err)
 	}
 	data, err := os.ReadFile(tmp)
@@ -87,28 +90,40 @@ func TestWriteConfigTemplateIncludesComment(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "# exclude_models:") {
-		t.Fatalf("missing commented exclude_models in:\n%s", content)
+	if !strings.Contains(content, "# exclude_models is enabled by default") {
+		t.Fatalf("missing default exclusion comment in:\n%s", content)
 	}
-	if !strings.Contains(content, "#     - gpt-") {
-		t.Fatalf("missing commented gpt- entry in:\n%s", content)
+	if strings.Contains(content, "# exclude_models:") {
+		t.Fatalf("template should not include a duplicate commented exclude_models key:\n%s", content)
 	}
-	if !strings.Contains(content, "test-key") {
+	if !strings.Contains(content, "exclude_models:\n    - gpt-") {
+		t.Fatalf("missing active default exclude_models in:\n%s", content)
+	}
+	if !strings.Contains(content, cfg.APIKey) {
 		t.Fatalf("missing actual config content in:\n%s", content)
 	}
 }
 
-func TestWriteConfigTemplateExcludeCommented(t *testing.T) {
-	cfg := &Config{APIKey: "test-key"}
+func TestWriteConfigTemplateDefaultExclusionLoadsActive(t *testing.T) {
+	cfg, err := defaultConfig()
+	if err != nil {
+		t.Fatalf("defaultConfig: %v", err)
+	}
 	tmp := t.TempDir() + "/config.yaml"
-	if err := writeConfigTemplate(tmp, cfg); err != nil {
+	if err := writeConfigTemplate(tmp, &cfg); err != nil {
 		t.Fatalf("writeConfigTemplate: %v", err)
 	}
 	loaded, err := loadConfig(tmp)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if len(loaded.ExcludeModels) != 0 {
-		t.Fatalf("ExcludeModels = %v, want empty (template is commented out)", loaded.ExcludeModels)
+	want := []string{"gpt-", "claude-", "gemini-"}
+	if len(loaded.ExcludeModels) != len(want) {
+		t.Fatalf("len(ExcludeModels) = %d, want %d", len(loaded.ExcludeModels), len(want))
+	}
+	for i := range want {
+		if loaded.ExcludeModels[i] != want[i] {
+			t.Fatalf("ExcludeModels[%d] = %q, want %q", i, loaded.ExcludeModels[i], want[i])
+		}
 	}
 }

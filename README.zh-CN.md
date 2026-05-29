@@ -53,6 +53,10 @@ commandcode:
   base_url: https://api.commandcode.ai
 host: localhost
 port: 11434
+exclude_models:
+  - gpt-
+  - claude-
+  - gemini-
 ```
 
 字段说明：
@@ -62,6 +66,15 @@ port: 11434
 - `commandcode.base_url`：Command Code API 地址。
 - `host`：HTTP 监听地址，默认 `localhost`。需要对外监听时设置为 `0.0.0.0`。
 - `port`：HTTP 监听端口，默认 `11434`。
+- `exclude_models`：要从 `/v1/models` 隐藏、并在 `/v1/chat/completions` 中拒绝调用的模型 ID 前缀。
+
+新生成的配置默认排除 `gpt-`、`claude-`、`gemini-` 前缀。匹配时会同时支持普通模型 ID（例如 `gpt-4`）和带 provider 的 ID（例如 `openai/gpt-4`，会匹配最后一个 `/` 后面的 `gpt-4`）。
+
+如果需要开放所有模型，删除这些条目，或显式设置为空列表：
+
+```yaml
+exclude_models: []
+```
 
 ## 启动服务
 
@@ -102,7 +115,7 @@ https://example.com/ai/v1
 
 ## 模型 ID
 
-请求里的 `model` 必须使用 `/v1/models` 返回的 ID。
+请求里的 `model` 必须使用 `/v1/models` 返回的 ID。`/v1/models` 会先应用 `exclude_models` 过滤，因此被排除的模型不会出现在列表里。
 
 例如：
 
@@ -116,6 +129,8 @@ deepseek/deepseek-v4-flash
 deepseek-v4-flash
 deepseek-ai/deepseek-v4-flash
 ```
+
+如果 `/v1/chat/completions` 请求命中 `exclude_models`，服务会返回 `404` 和 OpenAI 兼容的错误 JSON，表示该模型不可用。
 
 ## 测试请求
 

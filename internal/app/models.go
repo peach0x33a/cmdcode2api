@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -58,4 +59,29 @@ func availableModels() []string {
 		out = append(out, model.ID)
 	}
 	return out
+}
+
+func isModelExcluded(model string, excludes []string) bool {
+	if len(excludes) == 0 {
+		return false
+	}
+	candidates := []string{model}
+	if idx := strings.LastIndex(model, "/"); idx >= 0 {
+		candidates = append(candidates, model[idx+1:])
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		for _, e := range excludes {
+			e = strings.TrimSpace(e)
+			if e == "" {
+				continue
+			}
+			if strings.HasPrefix(c, e) {
+				return true
+			}
+		}
+	}
+	return false
 }

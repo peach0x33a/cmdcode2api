@@ -76,11 +76,12 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	firstText := true
 	var promptTokens, completionTokens, cacheRead, cacheWrite int
 	var reasoningTokens int
+	var done bool
 
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
 		switch ev.Type {
 		case "text-delta":
-			delta := StreamDelta{Content: ev.Text}
+			delta := StreamDelta{Content: streamEventText(ev)}
 			if firstText {
 				delta.Role = "assistant"
 				firstText = false
@@ -98,7 +99,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 
 		case "reasoning-delta":
 			reasoningTokens++
-			delta := StreamDelta{ReasoningContent: ev.Text}
+			delta := StreamDelta{ReasoningContent: streamEventText(ev)}
 			if firstText {
 				delta.Role = "assistant"
 				firstText = false
@@ -141,11 +142,18 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			}
 			writeSSE(w, flusher, chunk)
 
-		case "finish", "finish-step":
-			reason := ev.FinishReason
-			if reason == "tool-calls" {
-				reason = "tool_calls"
+		case "finish-step":
+			if ev.Usage != nil {
+				promptTokens = ev.Usage.InputTokens
+				completionTokens = ev.Usage.OutputTokens
+				if ev.Usage.InputTokenDetails != nil {
+					cacheRead = ev.Usage.InputTokenDetails.CacheReadTokens
+					cacheWrite = ev.Usage.InputTokenDetails.CacheWriteTokens
+				}
 			}
+
+		case "finish":
+			reason := normalizeFinishReason(ev.FinishReason)
 			finish := reason
 
 			usageInfo := &Usage{}
@@ -158,7 +166,11 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 				}
 				usageInfo.PromptTokens = promptTokens
 				usageInfo.CompletionTokens = completionTokens
-				usageInfo.TotalTokens = promptTokens + completionTokens + reasoningTokens
+				if ev.TotalUsage.TotalTokens > 0 {
+					usageInfo.TotalTokens = ev.TotalUsage.TotalTokens
+				} else {
+					usageInfo.TotalTokens = promptTokens + completionTokens
+				}
 			}
 
 			chunk := ChatStreamChunk{
@@ -174,11 +186,17 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			}
 			writeSSE(w, flusher, chunk)
 
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			if debugMode {
-				log.Printf("%s %s", colorize("[DEBUG]", ansiDim), colorize(">> [DONE]", ansiGreen))
+			// OpenAI SSE protocol: `data: [DONE]` must appear exactly once
+			// per response. finish-step may fire repeatedly (one per agent
+			// step); only finish terminates the stream.
+			if !done {
+				done = true
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				if debugMode {
+					log.Printf("%s %s", colorize("[DEBUG]", ansiDim), colorize(">> [DONE]", ansiGreen))
+				}
+				flusher.Flush()
 			}
-			flusher.Flush()
 
 		case "error":
 			log.Printf("%s stream event: %v", colorize("[ERROR]", ansiRed), ev.Error)
@@ -186,7 +204,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 
 		case "start", "start-step", "reasoning-start", "reasoning-end",
 			"text-start", "text-end", "provider-metadata",
-			"tool-input-start", "tool-input-delta", "tool-input-end":
+			"tool-input-start", "tool-input-delta", "tool-input-end", "tool-input-available", "tool-result":
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
 				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
@@ -217,29 +235,30 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
 		switch ev.Type {
 		case "text-delta":
+			text := streamEventText(ev)
 			found := false
 			switch parts := msg.Content.(type) {
 			case []ContentPart:
 				for i := len(parts) - 1; i >= 0; i-- {
 					if parts[i].Type == "text" {
-						parts[i].Text += ev.Text
+						parts[i].Text += text
 						found = true
 						break
 					}
 				}
 				if !found {
-					parts = append(parts, ContentPart{Type: "text", Text: ev.Text})
+					parts = append(parts, ContentPart{Type: "text", Text: text})
 					msg.Content = parts
 				}
 			case nil:
-				msg.Content = []ContentPart{{Type: "text", Text: ev.Text}}
+				msg.Content = []ContentPart{{Type: "text", Text: text}}
 			case string:
-				msg.Content = parts + ev.Text
+				msg.Content = parts + text
 			default:
-				msg.Content = ev.Text
+				msg.Content = text
 			}
 		case "reasoning-delta":
-			reasoningContent += ev.Text
+			reasoningContent += streamEventText(ev)
 		case "tool-call":
 			input := ev.Input
 			if input == nil {
@@ -257,12 +276,8 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 					Arguments: string(argsJSON),
 				},
 			})
-		case "finish", "finish-step":
-			if ev.FinishReason == "tool-calls" {
-				finishReason = "tool_calls"
-			} else {
-				finishReason = ev.FinishReason
-			}
+		case "finish":
+			finishReason = normalizeFinishReason(ev.FinishReason)
 			if ev.TotalUsage != nil {
 				promptTokens = ev.TotalUsage.InputTokens
 				completionTokens = ev.TotalUsage.OutputTokens
@@ -272,8 +287,8 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 				}
 			}
 		case "start", "start-step", "reasoning-start", "reasoning-end",
-			"text-start", "text-end", "provider-metadata",
-			"tool-input-start", "tool-input-delta", "tool-input-end":
+			"text-start", "text-end", "finish-step", "provider-metadata",
+			"tool-input-start", "tool-input-delta", "tool-input-end", "tool-input-available", "tool-result":
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
 				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
@@ -317,9 +332,9 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 			FinishReason: finishReason,
 		}},
 		Usage: Usage{
-			PromptTokens:       promptTokens,
-			CompletionTokens:   completionTokens,
-			TotalTokens:        promptTokens + completionTokens,
+			PromptTokens:     promptTokens,
+			CompletionTokens: completionTokens,
+			TotalTokens:      promptTokens + completionTokens,
 		},
 	}
 
@@ -368,6 +383,24 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, chunk ChatStreamChunk
 	}
 	fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()
+}
+
+func streamEventText(ev CCStreamEvent) string {
+	if ev.Text != "" {
+		return ev.Text
+	}
+	return ev.Delta
+}
+
+func normalizeFinishReason(reason string) string {
+	switch reason {
+	case "tool-calls":
+		return "tool_calls"
+	case "max_tokens", "max_output_tokens":
+		return "length"
+	default:
+		return reason
+	}
 }
 
 func genStreamID() string {

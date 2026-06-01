@@ -112,9 +112,9 @@ type ModelList struct {
 
 // CCProviderModel CC API /provider/v1/models 返回的单个模型
 type CCProviderModel struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	ContextLength  int    `json:"context_length"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ContextLength int    `json:"context_length"`
 }
 
 // CCProviderModelList CC API /provider/v1/models 响应
@@ -180,21 +180,28 @@ type CCTool struct {
 
 // CC SSE 事件
 type CCStreamEvent struct {
-	Type         string         `json:"type"`
-	Text         string         `json:"text,omitempty"`
-	ToolCallID   string         `json:"toolCallId,omitempty"`
-	ToolName     string         `json:"toolName,omitempty"`
-	Input        any            `json:"input,omitempty"`
-	Args         any            `json:"args,omitempty"`
-	Arguments    any            `json:"arguments,omitempty"`
-	FinishReason string         `json:"finishReason,omitempty"`
-	TotalUsage   *CCUsage       `json:"totalUsage,omitempty"`
-	Error        any            `json:"error,omitempty"`
+	Type            string   `json:"type"`
+	ID              string   `json:"id,omitempty"`
+	MessageID       string   `json:"messageId,omitempty"`
+	Text            string   `json:"text,omitempty"`
+	Delta           string   `json:"delta,omitempty"`
+	ToolCallID      string   `json:"toolCallId,omitempty"`
+	ToolName        string   `json:"toolName,omitempty"`
+	Input           any      `json:"input,omitempty"`
+	Args            any      `json:"args,omitempty"`
+	Arguments       any      `json:"arguments,omitempty"`
+	FinishReason    string   `json:"finishReason,omitempty"`
+	RawFinishReason string   `json:"rawFinishReason,omitempty"`
+	Usage           *CCUsage `json:"usage,omitempty"`
+	TotalUsage      *CCUsage `json:"totalUsage,omitempty"`
+	Error           any      `json:"error,omitempty"`
 }
 
 type CCUsage struct {
 	InputTokens       int             `json:"inputTokens"`
 	OutputTokens      int             `json:"outputTokens"`
+	TotalTokens       int             `json:"totalTokens"`
+	ReasoningTokens   int             `json:"reasoningTokens"`
 	InputTokenDetails *CCTokenDetails `json:"inputTokenDetails,omitempty"`
 }
 

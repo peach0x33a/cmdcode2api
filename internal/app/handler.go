@@ -125,6 +125,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 						}},
 					}
 					writeSSE(w, flusher, chunk)
+					parsedToolCallFromText = true
 				}
 			}
 

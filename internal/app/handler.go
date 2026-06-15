@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 )
 
 const maxChatRequestBytes = 50 * 1024 * 1024
@@ -78,24 +79,54 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	var reasoningTokens int
 	var done bool
 
+	tcp := NewToolCallParser()
+	parsedToolCallFromText := false
+	structuredToolCallIDs := make(map[string]bool)
+
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
 		switch ev.Type {
 		case "text-delta":
-			delta := StreamDelta{Content: streamEventText(ev)}
-			if firstText {
-				delta.Role = "assistant"
-				firstText = false
+			text := streamEventText(ev)
+			content, calls := tcp.Feed(text, false)
+			if content != "" || len(calls) > 0 {
+				if content != "" {
+					delta := StreamDelta{Content: content}
+					if firstText {
+						delta.Role = "assistant"
+						firstText = false
+					}
+					chunk := ChatStreamChunk{
+						ID:     genStreamID(),
+						Object: "chat.completion.chunk",
+						Model:  model,
+						Choices: []StreamChoice{{
+							Index: 0,
+							Delta: delta,
+						}},
+					}
+					writeSSE(w, flusher, chunk)
+				}
+				for _, tc := range calls {
+					if structuredToolCallIDs[tc.ID] {
+						continue
+					}
+					delta := StreamDelta{ToolCalls: []ToolCall{tc}}
+					if firstText {
+						delta.Role = "assistant"
+						firstText = false
+					}
+					chunk := ChatStreamChunk{
+						ID:     genStreamID(),
+						Object: "chat.completion.chunk",
+						Model:  model,
+						Choices: []StreamChoice{{
+							Index: 0,
+							Delta: delta,
+						}},
+					}
+					writeSSE(w, flusher, chunk)
+				}
 			}
-			chunk := ChatStreamChunk{
-				ID:     genStreamID(),
-				Object: "chat.completion.chunk",
-				Model:  model,
-				Choices: []StreamChoice{{
-					Index: 0,
-					Delta: delta,
-				}},
-			}
-			writeSSE(w, flusher, chunk)
 
 		case "reasoning-delta":
 			reasoningTokens++
@@ -116,6 +147,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			writeSSE(w, flusher, chunk)
 
 		case "tool-call":
+			structuredToolCallIDs[ev.ToolCallID] = true
 			input := ev.Input
 			if input == nil {
 				input = ev.Args
@@ -156,6 +188,47 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			reason := normalizeFinishReason(ev.FinishReason)
 			finish := reason
 
+			// Flush remaining buffered text through the tool-call parser.
+			flushContent, flushCalls := tcp.Feed("", true)
+			if flushContent != "" {
+				delta := StreamDelta{Content: flushContent}
+				if firstText {
+					delta.Role = "assistant"
+					firstText = false
+				}
+				chunk := ChatStreamChunk{
+					ID:     genStreamID(),
+					Object: "chat.completion.chunk",
+					Model:  model,
+					Choices: []StreamChoice{{
+						Index: 0,
+						Delta: delta,
+					}},
+				}
+				writeSSE(w, flusher, chunk)
+			}
+			for _, tc := range flushCalls {
+				if structuredToolCallIDs[tc.ID] {
+					continue
+				}
+				delta := StreamDelta{ToolCalls: []ToolCall{tc}}
+				if firstText {
+					delta.Role = "assistant"
+					firstText = false
+				}
+				chunk := ChatStreamChunk{
+					ID:     genStreamID(),
+					Object: "chat.completion.chunk",
+					Model:  model,
+					Choices: []StreamChoice{{
+						Index: 0,
+						Delta: delta,
+					}},
+				}
+				writeSSE(w, flusher, chunk)
+				parsedToolCallFromText = true
+			}
+
 			usageInfo := &Usage{}
 			if ev.TotalUsage != nil {
 				promptTokens = ev.TotalUsage.InputTokens
@@ -171,6 +244,12 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 				} else {
 					usageInfo.TotalTokens = promptTokens + completionTokens
 				}
+			}
+
+			// If tool calls were parsed from text-delta events, override
+			// the finish reason so the client knows to expect tool results.
+			if parsedToolCallFromText {
+				finish = "tool_calls"
 			}
 
 			chunk := ChatStreamChunk{
@@ -310,6 +389,39 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 	}
 
 	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
+
+	// Extract text content and parse embedded tool calls
+	var textContent string
+	switch c := msg.Content.(type) {
+	case string:
+		textContent = c
+	case []ContentPart:
+		var sb strings.Builder
+		for _, p := range c {
+			if p.Type == "text" {
+				sb.WriteString(p.Text)
+			}
+		}
+		textContent = sb.String()
+	}
+	if textContent != "" {
+		tcp := NewToolCallParser()
+		strippedContent, parsedCalls := tcp.Feed(textContent, true)
+		if len(parsedCalls) > 0 {
+			// Deduplicate against tool calls from structured events
+			existingIDs := make(map[string]bool)
+			for _, tc := range msg.ToolCalls {
+				existingIDs[tc.ID] = true
+			}
+			for _, pc := range parsedCalls {
+				if !existingIDs[pc.ID] {
+					msg.ToolCalls = append(msg.ToolCalls, pc)
+				}
+			}
+			msg.Content = strippedContent
+			finishReason = normalizeFinishReason("tool_calls")
+		}
+	}
 
 	// 如果只有 text，展平 content
 	if parts, ok := msg.Content.([]ContentPart); ok && len(parts) == 1 && parts[0].Type == "text" {

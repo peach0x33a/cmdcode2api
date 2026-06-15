@@ -388,3 +388,225 @@ func TestHandleModelsAllExcluded(t *testing.T) {
 		t.Fatalf("len(data) = %d, want 0", len(resp.Data))
 	}
 }
+
+// =============================================================================
+// ToolCallParser integration tests
+// =============================================================================
+
+func TestHandleNonStreamToolCallFromText(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"Assistant requested tool read (call_abc) with arguments: {\"file\":\"test.go\"}"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleNonStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got ChatResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v body = %s", err, rec.Body.String())
+	}
+	if len(got.Choices) != 1 {
+		t.Fatalf("got %d choices, want 1", len(got.Choices))
+	}
+	if got.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", got.Choices[0].FinishReason)
+	}
+	if len(got.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("got %d tool calls, want 1", len(got.Choices[0].Message.ToolCalls))
+	}
+	if got.Choices[0].Message.ToolCalls[0].Function.Name != "read" {
+		t.Fatalf("tool call name = %q, want read", got.Choices[0].Message.ToolCalls[0].Function.Name)
+	}
+	if got.Choices[0].Message.Content != nil && got.Choices[0].Message.Content != "" {
+		t.Fatalf("content = %v, want empty", got.Choices[0].Message.Content)
+	}
+}
+
+func TestHandleStreamToolCallFromText(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"Assistant requested tool read (call_abc) with arguments: {\"file\":\"test.go\"}"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `"tool_calls"`) || !strings.Contains(body, `"function"`) {
+		t.Fatalf("expected tool_calls delta chunk, got body = %s", body)
+	}
+	if !strings.Contains(body, `"name":"read"`) {
+		t.Fatalf("expected tool name 'read' in output, got body = %s", body)
+	}
+	if strings.Contains(body, `Assistant requested tool`) {
+		t.Fatalf("raw tool-call text leaked into stream output: %s", body)
+	}
+	if n := strings.Count(body, "data: [DONE]"); n != 1 {
+		t.Fatalf("got %d [DONE] markers, want 1. body = %s", n, body)
+	}
+}
+
+func TestHandleStreamToolCallFromTextFragmented(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"Assistant requested tool "}`,
+			`data: {"type":"text-delta","text":"read (call_frag) with arguments: "}`,
+			`data: {"type":"text-delta","text":"{\"file\":\"frag.go\"}"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `"tool_calls"`) {
+		t.Fatalf("expected tool_calls chunk from fragmented text, got body = %s", body)
+	}
+	if !strings.Contains(body, `"name":"read"`) {
+		t.Fatalf("expected tool name 'read', got body = %s", body)
+	}
+	if strings.Contains(body, `Assistant requested tool`) {
+		t.Fatalf("raw tool-call text leaked into stream output: %s", body)
+	}
+}
+
+func TestHandleStreamTextBeforeAndAfterToolCall(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"prefix "}`,
+			`data: {"type":"text-delta","text":"Assistant requested tool read (call_both) with arguments: {\"z\":9}"}`,
+			`data: {"type":"text-delta","text":" suffix"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `"content":"prefix "`) {
+		t.Fatalf("expected prefix content chunk, got body = %s", body)
+	}
+	if !strings.Contains(body, `"content":" suffix"`) {
+		t.Fatalf("expected suffix content chunk, got body = %s", body)
+	}
+	if !strings.Contains(body, `"tool_calls"`) {
+		t.Fatalf("expected tool_calls delta chunk, got body = %s", body)
+	}
+	if strings.Contains(body, `Assistant requested tool`) {
+		t.Fatalf("raw tool-call text leaked into stream output: %s", body)
+	}
+}
+
+func TestHandleStreamStructuredAndTextToolCall(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"tool-call","toolCallId":"call_abc","toolName":"read","input":{"file":"test.go"}}`,
+			`data: {"type":"text-delta","text":"Assistant requested tool read (call_abc) with arguments: {\"file\":\"test.go\"}"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	// Tool call with ID "call_abc" must appear exactly ONCE — from the
+	// structured event.  The text-parsed duplicate is suppressed.
+	if n := strings.Count(body, `"id":"call_abc"`); n != 1 {
+		t.Fatalf("got %d tool-call chunks with id=call_abc, want 1. body = %s", n, body)
+	}
+	if strings.Contains(body, `Assistant requested tool`) {
+		t.Fatalf("raw tool-call text leaked into stream output: %s", body)
+	}
+}
+
+func TestHandleNonStreamMultipleToolCallsFromText(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"Assistant requested tool read (call_1) with arguments: {\"a\":1}\nAssistant requested tool write (call_2) with arguments: {\"b\":2}"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleNonStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got ChatResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v body = %s", err, rec.Body.String())
+	}
+	if len(got.Choices[0].Message.ToolCalls) != 2 {
+		t.Fatalf("got %d tool calls, want 2", len(got.Choices[0].Message.ToolCalls))
+	}
+	if got.Choices[0].Message.ToolCalls[0].Function.Name != "read" {
+		t.Fatalf("tool call[0] name = %q, want read", got.Choices[0].Message.ToolCalls[0].Function.Name)
+	}
+	if got.Choices[0].Message.ToolCalls[1].Function.Name != "write" {
+		t.Fatalf("tool call[1] name = %q, want write", got.Choices[0].Message.ToolCalls[1].Function.Name)
+	}
+	if got.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", got.Choices[0].FinishReason)
+	}
+}
+
+func TestHandleStreamPureTextUnchanged(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"Hello"}`,
+			`data: {"type":"text-delta","text":" world"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `"content":"Hello world"`) {
+		t.Fatalf("expected 'Hello world' content chunk: %s", body)
+	}
+	if strings.Contains(body, `"tool_calls"`) {
+		t.Fatalf("unexpected tool_calls in pure text output: %s", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("expected finish_reason stop: %s", body)
+	}
+}
+
+func TestHandleStreamInvalidArgumentsVariant(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"Assistant requested tool read (call_bad) with invalid arguments: some parse error"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if strings.Contains(body, `"tool_calls"`) {
+		t.Fatalf("unexpected tool_calls for invalid arguments variant: %s", body)
+	}
+	if !strings.Contains(body, `invalid arguments`) {
+		t.Fatalf("expected invalid arguments text in output content: %s", body)
+	}
+	if !strings.Contains(body, `Assistant requested tool`) {
+		t.Fatalf("expected tool-call text to pass through as content: %s", body)
+	}
+}

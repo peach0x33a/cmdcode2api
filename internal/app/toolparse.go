@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -151,6 +152,10 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 		p.buf.Reset()
 	} else if len(remaining) > maxToolCallTail {
 		cut := len(remaining) - maxToolCallTail
+		// 确保不在多字节 UTF-8 字符中间截断
+		for cut > 0 && !utf8.RuneStart(remaining[cut]) {
+			cut--
+		}
 		contentBuf.WriteString(remaining[:cut])
 		p.buf.Reset()
 		p.buf.WriteString(remaining[cut:])

@@ -431,6 +431,22 @@ func TestToolCallParser(t *testing.T) {
 			wantContent: "1234567890abcdefghijk",
 			wantCalls:   nil,
 		},
+
+		// -----------------------------------------------------------------------
+		// Bonus: CJK text accumulating past maxToolCallTail — verifies UTF‑8
+		//        byte-level truncation does not split multi-byte characters
+		// -----------------------------------------------------------------------
+		{
+			name: "bonus_cjk_tail_truncation",
+			feeds: []feed{
+				{chunk: "你好世界这是一个测试文本用来", done: false}, // 13 chars = 39 bytes
+				{chunk: "触发缓冲区尾部截断逻辑", done: false},      // 10 chars = 30 bytes → total 69 > 64
+				{chunk: "确保UTF8不会被截断", done: false},          // more CJK
+				{chunk: "", done: true},
+			},
+			wantContent: "你好世界这是一个测试文本用来触发缓冲区尾部截断逻辑确保UTF8不会被截断",
+			wantCalls:   nil,
+		},
 	}
 
 	for _, tt := range tests {

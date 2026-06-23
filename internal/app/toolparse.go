@@ -38,6 +38,7 @@ var toolCallPrefixRe = regexp.MustCompile(
 	`(?i)Assistant\s+requested\s+tool\s+([^\s(]+)\s*\(([^)]+)\)\s+with\s+(invalid\s+)?arguments:`)
 
 const defaultMaxBuf = 128 * 1024 // 128 KB
+const maxToolCallTail = 64
 
 // ToolCallParser buffers incoming text chunks, scanning for embedded
 // tool-call lines.  Non-tool text is returned as ordinary content;
@@ -144,13 +145,19 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 	}
 
 	// ----- preserve unprocessed tail in buffer ---------------------------
+	remaining := raw[pos:]
 	if done {
-		contentBuf.WriteString(raw[pos:])
+		contentBuf.WriteString(remaining)
 		p.buf.Reset()
+	} else if len(remaining) > maxToolCallTail {
+		cut := len(remaining) - maxToolCallTail
+		contentBuf.WriteString(remaining[:cut])
+		p.buf.Reset()
+		p.buf.WriteString(remaining[cut:])
 	} else {
 		p.buf.Reset()
-		if pos < len(raw) {
-			p.buf.WriteString(raw[pos:])
+		if len(remaining) > 0 {
+			p.buf.WriteString(remaining)
 		}
 	}
 

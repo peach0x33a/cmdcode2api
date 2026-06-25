@@ -82,6 +82,9 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	tcp := NewToolCallParser()
 	parsedToolCallFromText := false
 	structuredToolCallIDs := make(map[string]bool)
+	toolCallIndex := 0
+	toolInputBuf := make(map[string]string)      // accumulated JSON per tool call ID
+	toolInputToolName := make(map[string]string) // tool name per ID
 
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
 		switch ev.Type {
@@ -110,7 +113,13 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 					if structuredToolCallIDs[tc.ID] {
 						continue
 					}
-					delta := StreamDelta{ToolCalls: []ToolCall{tc}}
+					delta := StreamDelta{ToolCalls: []StreamToolCall{{
+						Index:    toolCallIndex,
+						ID:       tc.ID,
+						Type:     tc.Type,
+						Function: &tc.Function,
+					}}}
+					toolCallIndex++
 					if firstText {
 						delta.Role = "assistant"
 						firstText = false
@@ -131,21 +140,52 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 
 		case "reasoning-delta":
 			reasoningTokens++
-			delta := StreamDelta{ReasoningContent: streamEventText(ev)}
-			if firstText {
-				delta.Role = "assistant"
-				firstText = false
+			text := streamEventText(ev)
+			content, calls := tcp.Feed(text, false)
+			if content != "" {
+				delta := StreamDelta{ReasoningContent: content}
+				if firstText {
+					delta.Role = "assistant"
+					firstText = false
+				}
+				chunk := ChatStreamChunk{
+					ID:     genStreamID(),
+					Object: "chat.completion.chunk",
+					Model:  model,
+					Choices: []StreamChoice{{
+						Index: 0,
+						Delta: delta,
+					}},
+				}
+				writeSSE(w, flusher, chunk)
 			}
-			chunk := ChatStreamChunk{
-				ID:     genStreamID(),
-				Object: "chat.completion.chunk",
-				Model:  model,
-				Choices: []StreamChoice{{
-					Index: 0,
-					Delta: delta,
-				}},
+			for _, tc := range calls {
+				if structuredToolCallIDs[tc.ID] {
+					continue
+				}
+				delta := StreamDelta{ToolCalls: []StreamToolCall{{
+					Index:    toolCallIndex,
+					ID:       tc.ID,
+					Type:     tc.Type,
+					Function: &tc.Function,
+				}}}
+				toolCallIndex++
+				if firstText {
+					delta.Role = "assistant"
+					firstText = false
+				}
+				chunk := ChatStreamChunk{
+					ID:     genStreamID(),
+					Object: "chat.completion.chunk",
+					Model:  model,
+					Choices: []StreamChoice{{
+						Index: 0,
+						Delta: delta,
+					}},
+				}
+				writeSSE(w, flusher, chunk)
+				parsedToolCallFromText = true
 			}
-			writeSSE(w, flusher, chunk)
 
 		case "tool-call":
 			structuredToolCallIDs[ev.ToolCallID] = true
@@ -163,10 +203,11 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 				Model:  model,
 				Choices: []StreamChoice{{
 					Index: 0,
-					Delta: StreamDelta{ToolCalls: []ToolCall{{
-						ID:   ev.ToolCallID,
-						Type: "function",
-						Function: CallFunc{
+					Delta: StreamDelta{ToolCalls: []StreamToolCall{{
+						Index: toolCallIndex,
+						ID:    ev.ToolCallID,
+						Type:  "function",
+						Function: &CallFunc{
 							Name:      ev.ToolName,
 							Arguments: string(argsJSON),
 						},
@@ -174,6 +215,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 				}},
 			}
 			writeSSE(w, flusher, chunk)
+			toolCallIndex++
 
 		case "finish-step":
 			if ev.Usage != nil {
@@ -212,7 +254,13 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 				if structuredToolCallIDs[tc.ID] {
 					continue
 				}
-				delta := StreamDelta{ToolCalls: []ToolCall{tc}}
+				delta := StreamDelta{ToolCalls: []StreamToolCall{{
+					Index:    toolCallIndex,
+					ID:       tc.ID,
+					Type:     tc.Type,
+					Function: &tc.Function,
+				}}}
+				toolCallIndex++
 				if firstText {
 					delta.Role = "assistant"
 					firstText = false
@@ -283,11 +331,66 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			return fmt.Errorf("cc stream error")
 
 		case "start", "start-step", "reasoning-start", "reasoning-end",
-			"text-start", "text-end", "provider-metadata",
-			"tool-input-start", "tool-input-delta", "tool-input-end", "tool-input-available", "tool-result":
+			"text-start", "text-end", "provider-metadata", "tool-result":
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
 				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
+			}
+
+		case "tool-input-start":
+			toolInputBuf[ev.ID] = ""
+			toolInputToolName[ev.ID] = ev.ToolName
+			if cfg.Debug {
+				log.Printf("%s %s tool-input-start id=%s tool=%s",
+					colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.ID, ev.ToolName)
+			}
+
+		case "tool-input-delta":
+			if cur, ok := toolInputBuf[ev.ID]; ok {
+				toolInputBuf[ev.ID] = cur + ev.Delta
+			}
+			if cfg.Debug {
+				log.Printf("%s %s tool-input-delta id=%s delta=%q",
+					colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.ID, ev.Delta)
+			}
+
+		case "tool-input-end", "tool-input-available":
+			args, ok := toolInputBuf[ev.ID]
+			toolName, nameOk := toolInputToolName[ev.ID]
+			if ok && nameOk && args != "" {
+				var v any
+				if err := json.Unmarshal([]byte(args), &v); err == nil {
+					if !structuredToolCallIDs[ev.ID] {
+						structuredToolCallIDs[ev.ID] = true
+						chunk := ChatStreamChunk{
+							ID:     genStreamID(),
+							Object: "chat.completion.chunk",
+							Model:  model,
+							Choices: []StreamChoice{{
+								Index: 0,
+								Delta: StreamDelta{ToolCalls: []StreamToolCall{{
+									Index: toolCallIndex,
+									ID:    ev.ID,
+									Type:  "function",
+									Function: &CallFunc{
+										Name:      toolName,
+										Arguments: args,
+									},
+								}}},
+							}},
+						}
+						toolCallIndex++
+						writeSSE(w, flusher, chunk)
+						parsedToolCallFromText = true
+					}
+				}
+			}
+			// clean up to avoid unbounded memory growth
+			delete(toolInputBuf, ev.ID)
+			delete(toolInputToolName, ev.ID)
+			if cfg.Debug {
+				log.Printf("%s %s tool-input-end id=%s name=%s args=%q",
+					colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.ID, toolName, args)
 			}
 
 		default:
@@ -420,6 +523,25 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 				}
 			}
 			msg.Content = strippedContent
+			finishReason = normalizeFinishReason("tool_calls")
+		}
+	}
+
+	// Also parse reasoning text for embedded tool calls
+	if reasoningContent != "" {
+		tcp := NewToolCallParser()
+		strippedReasoning, parsedCalls := tcp.Feed(reasoningContent, true)
+		if len(parsedCalls) > 0 {
+			existingIDs := make(map[string]bool)
+			for _, tc := range msg.ToolCalls {
+				existingIDs[tc.ID] = true
+			}
+			for _, pc := range parsedCalls {
+				if !existingIDs[pc.ID] {
+					msg.ToolCalls = append(msg.ToolCalls, pc)
+				}
+			}
+			reasoningContent = strippedReasoning
 			finishReason = normalizeFinishReason("tool_calls")
 		}
 	}

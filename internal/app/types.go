@@ -90,11 +90,22 @@ type StreamChoice struct {
 	FinishReason *string     `json:"finish_reason"`
 }
 
+// StreamToolCall is the streaming delta variant of ToolCall.
+// Unlike the non-streaming ToolCall (used in Message), it includes an
+// index field required by the OpenAI streaming protocol so that AI SDK
+// clients can associate delta chunks to the correct tool call position.
+type StreamToolCall struct {
+	Index    int       `json:"index"`
+	ID       string    `json:"id,omitempty"`
+	Type     string    `json:"type,omitempty"`
+	Function *CallFunc `json:"function,omitempty"`
+}
+
 type StreamDelta struct {
-	Role             string     `json:"role,omitempty"`
-	Content          string     `json:"content,omitempty"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role,omitempty"`
+	Content          string           `json:"content,omitempty"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	ToolCalls        []StreamToolCall `json:"tool_calls,omitempty"`
 }
 
 // MODELS 列表

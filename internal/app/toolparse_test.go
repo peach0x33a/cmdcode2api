@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -43,9 +44,7 @@ func TestToolCallParser(t *testing.T) {
 				{chunk: ` {"a":1} More text.`, done: false},
 				{chunk: "", done: true}, // flush
 			},
-			// Prefix match without JSON flushes pre‑match content eagerly;
-			// the same prefix is re‑matched when JSON arrives.
-			wantContent: "Some text. Some text.  More text.",
+			wantContent: "Some text.  More text.",
 			wantCalls: []ToolCall{
 				{ID: "call_x", Type: "function", Function: CallFunc{Name: "read", Arguments: `{"a":1}`}},
 			},
@@ -350,9 +349,7 @@ func TestToolCallParser(t *testing.T) {
 				{chunk: ` world`, done: false},
 				{chunk: "", done: true}, // flush
 			},
-			// Eager flush when prefix matches but JSON not yet available
-			// causes "Hello, " to appear twice (once per prefix match).
-			wantContent: "Hello, Hello,  world",
+			wantContent: "Hello,  world",
 			wantCalls: []ToolCall{
 				{ID: "call_sim", Type: "function", Function: CallFunc{Name: "read", Arguments: `{"key":"val"}`}},
 			},
@@ -485,6 +482,70 @@ func TestToolCallParser(t *testing.T) {
 				if allCalls[i].Function.Arguments != tt.wantCalls[i].Function.Arguments {
 					t.Fatalf("call[%d].Function.Arguments = %q, want %q", i, allCalls[i].Function.Arguments, tt.wantCalls[i].Function.Arguments)
 				}
+			}
+		})
+	}
+}
+
+func TestToolCallParserKeepsLongFragmentedPrefix(t *testing.T) {
+	p := NewToolCallParser()
+	toolID := "call_00_a4J0yCJ48n7O5Yul0Q4u9242"
+	prefix := "Assistant requested tool read (" + toolID + ") with argu"
+
+	content, calls := p.Feed(prefix, false)
+	if content != "" || len(calls) != 0 {
+		t.Fatalf("prefix feed = (%q, %v), want no output while arguments are pending", content, calls)
+	}
+
+	content, calls = p.Feed(`ments: {"filePath":"internal/app/handler.go"}`, false)
+	if content != "" {
+		t.Fatalf("content = %q, want tool-call text to be stripped", content)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("got %d tool calls, want 1", len(calls))
+	}
+	if calls[0].ID != toolID || calls[0].Function.Name != "read" {
+		t.Fatalf("tool call = %+v, want id=%q name=read", calls[0], toolID)
+	}
+}
+
+func TestToolCallParserAcceptsWhitespaceBeforeArguments(t *testing.T) {
+	p := NewToolCallParser()
+	content, calls := p.Feed("Assistant requested tool read (call_ws) with arguments:\n\t{\"file\":\"test.go\"}", true)
+
+	if content != "" {
+		t.Fatalf("content = %q, want tool-call text to be stripped", content)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("got %d tool calls, want 1", len(calls))
+	}
+	if calls[0].Function.Arguments != `{"file":"test.go"}` {
+		t.Fatalf("arguments = %q, want JSON object", calls[0].Function.Arguments)
+	}
+}
+
+func TestToolCallParserHandlesEveryTwoChunkBoundary(t *testing.T) {
+	toolID := "call_00_a4J0yCJ48n7O5Yul0Q4u9242"
+	input := "Assistant requested tool read (" + toolID + `) with arguments: {"file":"test.go"}`
+
+	for split := 1; split < len(input); split++ {
+		t.Run(fmt.Sprintf("split_%d", split), func(t *testing.T) {
+			p := NewToolCallParser()
+			var content strings.Builder
+			var calls []ToolCall
+
+			part, parsed := p.Feed(input[:split], false)
+			content.WriteString(part)
+			calls = append(calls, parsed...)
+			part, parsed = p.Feed(input[split:], true)
+			content.WriteString(part)
+			calls = append(calls, parsed...)
+
+			if content.String() != "" {
+				t.Fatalf("raw tool-call text leaked at split %d: %q", split, content.String())
+			}
+			if len(calls) != 1 || calls[0].ID != toolID {
+				t.Fatalf("calls at split %d = %+v, want one call with id %q", split, calls, toolID)
 			}
 		})
 	}

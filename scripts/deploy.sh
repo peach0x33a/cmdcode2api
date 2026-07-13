@@ -37,7 +37,18 @@ go test ./...
 
 echo "==> go build (${REPO_DIR}/cmd/cmdcode2api)"
 BUILD_DIR=$(mktemp -d)
-trap 'rm -rf "$BUILD_DIR"' EXIT
+INSTALL_TMP=""
+ROLLBACK_TMP=""
+cleanup() {
+  rm -rf "$BUILD_DIR"
+  if [ -n "$INSTALL_TMP" ]; then
+    rm -f "$INSTALL_TMP"
+  fi
+  if [ -n "$ROLLBACK_TMP" ]; then
+    rm -f "$ROLLBACK_TMP"
+  fi
+}
+trap cleanup EXIT
 go build -o "$BUILD_DIR/cmdcode2api" ./cmd/cmdcode2api
 
 if $FORCE && systemctl is-enabled "$SERVICE" &>/dev/null; then
@@ -47,19 +58,55 @@ if $FORCE && systemctl is-enabled "$SERVICE" &>/dev/null; then
 fi
 
 echo "==> install to ${TARGET}"
-mkdir -p "$(dirname "$TARGET")"
+TARGET_DIR=$(dirname "$TARGET")
+mkdir -p "$TARGET_DIR"
 if [ -f "$TARGET" ]; then
-  cp "$TARGET" "$BACKUP"
+  cp -p "$TARGET" "$BACKUP"
   echo "    backed up existing binary to ${BACKUP}"
 fi
-cp "$BUILD_DIR/cmdcode2api" "$TARGET"
+INSTALL_TMP=$(mktemp "${TARGET}.new.XXXXXX")
+install -m 0755 "$BUILD_DIR/cmdcode2api" "$INSTALL_TMP"
+mv -f "$INSTALL_TMP" "$TARGET"
+INSTALL_TMP=""
+
+rollback() {
+  if [ ! -f "$BACKUP" ]; then
+    echo "    no backup available for rollback" >&2
+    return
+  fi
+
+  echo "==> rollback ${TARGET}" >&2
+  ROLLBACK_TMP=$(mktemp "${TARGET}.rollback.XXXXXX")
+  cp -p "$BACKUP" "$ROLLBACK_TMP"
+  mv -f "$ROLLBACK_TMP" "$TARGET"
+  ROLLBACK_TMP=""
+  systemctl restart "$SERVICE" || true
+}
+
+wait_for_service() {
+  local attempt
+  for ((attempt = 0; attempt < 10; attempt++)); do
+    if systemctl is-active --quiet "$SERVICE"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
 
 echo "==> restart ${SERVICE}"
 if systemctl is-enabled "$SERVICE" &>/dev/null; then
-  systemctl restart "$SERVICE"
+  if ! systemctl restart "$SERVICE"; then
+    rollback
+    exit 1
+  fi
+  if ! wait_for_service; then
+    echo "    service did not become active" >&2
+    rollback
+    exit 1
+  fi
   echo "    restarted"
-  sleep 1
-  systemctl status "$SERVICE" --no-pager
+  systemctl status "$SERVICE" --no-pager || true
 else
   echo "    service ${SERVICE} not found — skip restart"
 fi

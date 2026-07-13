@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -87,16 +89,18 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// 优雅关闭
+	shutdownSignal, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
 	idleConnsClosed := make(chan struct{})
 	go func() {
-		sigint := make(chan os.Signal, 1)
-		signal.Notify(sigint, os.Interrupt)
-		<-sigint
+		<-shutdownSignal.Done()
 		log.Println("shutting down...")
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		srv.Shutdown(ctx)
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
 		close(idleConnsClosed)
 	}()
 
@@ -109,7 +113,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 		}
 	}
 	log.Printf("models: %d loaded, %d available", loadedModels, availableModels)
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	<-idleConnsClosed

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,7 +38,6 @@ var toolCallPrefixRe = regexp.MustCompile(
 	`(?i)Assistant\s+requested\s+tool\s+([^\s(]+)\s*\(([^)]+)\)\s+with\s+(invalid\s+)?arguments:`)
 
 const defaultMaxBuf = 128 * 1024 // 128 KB
-const maxToolCallTail = 64
 
 // ToolCallParser buffers incoming text chunks, scanning for embedded
 // tool-call lines.  Non-tool text is returned as ordinary content;
@@ -87,6 +85,9 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 				contentBuf.WriteString(rest[:partial])
 				pos += partial
 				preserveRemaining = true
+			} else {
+				contentBuf.WriteString(rest)
+				pos = len(raw)
 			}
 			break // no more complete tool-call prefixes
 		}
@@ -164,20 +165,8 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 	} else if preserveRemaining {
 		p.buf.Reset()
 		p.buf.WriteString(remaining)
-	} else if len(remaining) > maxToolCallTail {
-		cut := len(remaining) - maxToolCallTail
-		// 确保不在多字节 UTF-8 字符中间截断
-		for cut > 0 && !utf8.RuneStart(remaining[cut]) {
-			cut--
-		}
-		contentBuf.WriteString(remaining[:cut])
-		p.buf.Reset()
-		p.buf.WriteString(remaining[cut:])
 	} else {
 		p.buf.Reset()
-		if len(remaining) > 0 {
-			p.buf.WriteString(remaining)
-		}
 	}
 
 	return contentBuf.String(), calls

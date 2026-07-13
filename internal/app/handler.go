@@ -79,116 +79,97 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	var reasoningTokens int
 	var done bool
 
-	tcp := NewToolCallParser()
-	parsedToolCallFromText := false
-	structuredToolCallIDs := make(map[string]bool)
+	textParser := NewToolCallParser()
+	reasoningParser := NewToolCallParser()
+	hasToolCalls := false
+	emittedToolCallIDs := make(map[string]bool)
 	toolCallIndex := 0
 	toolInputBuf := make(map[string]string)      // accumulated JSON per tool call ID
 	toolInputToolName := make(map[string]string) // tool name per ID
+
+	emitContent := func(content string, reasoning bool) {
+		if content == "" {
+			return
+		}
+		delta := StreamDelta{}
+		if reasoning {
+			delta.ReasoningContent = content
+		} else {
+			delta.Content = content
+		}
+		if firstText {
+			delta.Role = "assistant"
+			firstText = false
+		}
+		writeSSE(w, flusher, ChatStreamChunk{
+			ID:     genStreamID(),
+			Object: "chat.completion.chunk",
+			Model:  model,
+			Choices: []StreamChoice{{
+				Index: 0,
+				Delta: delta,
+			}},
+		})
+	}
+
+	emitToolCall := func(tc ToolCall) {
+		if tc.ID != "" && emittedToolCallIDs[tc.ID] {
+			return
+		}
+		if tc.ID != "" {
+			emittedToolCallIDs[tc.ID] = true
+		}
+		delta := StreamDelta{ToolCalls: []StreamToolCall{{
+			Index:    toolCallIndex,
+			ID:       tc.ID,
+			Type:     tc.Type,
+			Function: &tc.Function,
+		}}}
+		toolCallIndex++
+		if firstText {
+			delta.Role = "assistant"
+			firstText = false
+		}
+		writeSSE(w, flusher, ChatStreamChunk{
+			ID:     genStreamID(),
+			Object: "chat.completion.chunk",
+			Model:  model,
+			Choices: []StreamChoice{{
+				Index: 0,
+				Delta: delta,
+			}},
+		})
+		hasToolCalls = true
+	}
+
+	flushParser := func(parser *ToolCallParser, reasoning bool) {
+		content, calls := parser.Feed("", true)
+		emitContent(content, reasoning)
+		for _, tc := range calls {
+			emitToolCall(tc)
+		}
+	}
 
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
 		switch ev.Type {
 		case "text-delta":
 			text := streamEventText(ev)
-			content, calls := tcp.Feed(text, false)
-			if content != "" || len(calls) > 0 {
-				if content != "" {
-					delta := StreamDelta{Content: content}
-					if firstText {
-						delta.Role = "assistant"
-						firstText = false
-					}
-					chunk := ChatStreamChunk{
-						ID:     genStreamID(),
-						Object: "chat.completion.chunk",
-						Model:  model,
-						Choices: []StreamChoice{{
-							Index: 0,
-							Delta: delta,
-						}},
-					}
-					writeSSE(w, flusher, chunk)
-				}
-				for _, tc := range calls {
-					if structuredToolCallIDs[tc.ID] {
-						continue
-					}
-					delta := StreamDelta{ToolCalls: []StreamToolCall{{
-						Index:    toolCallIndex,
-						ID:       tc.ID,
-						Type:     tc.Type,
-						Function: &tc.Function,
-					}}}
-					toolCallIndex++
-					if firstText {
-						delta.Role = "assistant"
-						firstText = false
-					}
-					chunk := ChatStreamChunk{
-						ID:     genStreamID(),
-						Object: "chat.completion.chunk",
-						Model:  model,
-						Choices: []StreamChoice{{
-							Index: 0,
-							Delta: delta,
-						}},
-					}
-					writeSSE(w, flusher, chunk)
-					parsedToolCallFromText = true
-				}
+			content, calls := textParser.Feed(text, false)
+			emitContent(content, false)
+			for _, tc := range calls {
+				emitToolCall(tc)
 			}
 
 		case "reasoning-delta":
 			reasoningTokens++
 			text := streamEventText(ev)
-			content, calls := tcp.Feed(text, false)
-			if content != "" {
-				delta := StreamDelta{ReasoningContent: content}
-				if firstText {
-					delta.Role = "assistant"
-					firstText = false
-				}
-				chunk := ChatStreamChunk{
-					ID:     genStreamID(),
-					Object: "chat.completion.chunk",
-					Model:  model,
-					Choices: []StreamChoice{{
-						Index: 0,
-						Delta: delta,
-					}},
-				}
-				writeSSE(w, flusher, chunk)
-			}
+			content, calls := reasoningParser.Feed(text, false)
+			emitContent(content, true)
 			for _, tc := range calls {
-				if structuredToolCallIDs[tc.ID] {
-					continue
-				}
-				delta := StreamDelta{ToolCalls: []StreamToolCall{{
-					Index:    toolCallIndex,
-					ID:       tc.ID,
-					Type:     tc.Type,
-					Function: &tc.Function,
-				}}}
-				toolCallIndex++
-				if firstText {
-					delta.Role = "assistant"
-					firstText = false
-				}
-				chunk := ChatStreamChunk{
-					ID:     genStreamID(),
-					Object: "chat.completion.chunk",
-					Model:  model,
-					Choices: []StreamChoice{{
-						Index: 0,
-						Delta: delta,
-					}},
-				}
-				writeSSE(w, flusher, chunk)
-				parsedToolCallFromText = true
+				emitToolCall(tc)
 			}
 
 		case "tool-call":
-			structuredToolCallIDs[ev.ToolCallID] = true
 			input := ev.Input
 			if input == nil {
 				input = ev.Args
@@ -197,25 +178,14 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 				input = ev.Arguments
 			}
 			argsJSON, _ := json.Marshal(input)
-			chunk := ChatStreamChunk{
-				ID:     genStreamID(),
-				Object: "chat.completion.chunk",
-				Model:  model,
-				Choices: []StreamChoice{{
-					Index: 0,
-					Delta: StreamDelta{ToolCalls: []StreamToolCall{{
-						Index: toolCallIndex,
-						ID:    ev.ToolCallID,
-						Type:  "function",
-						Function: &CallFunc{
-							Name:      ev.ToolName,
-							Arguments: string(argsJSON),
-						},
-					}}},
-				}},
-			}
-			writeSSE(w, flusher, chunk)
-			toolCallIndex++
+			emitToolCall(ToolCall{
+				ID:   ev.ToolCallID,
+				Type: "function",
+				Function: CallFunc{
+					Name:      ev.ToolName,
+					Arguments: string(argsJSON),
+				},
+			})
 
 		case "finish-step":
 			if ev.Usage != nil {
@@ -231,52 +201,9 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			reason := normalizeFinishReason(ev.FinishReason)
 			finish := reason
 
-			// Flush remaining buffered text through the tool-call parser.
-			flushContent, flushCalls := tcp.Feed("", true)
-			if flushContent != "" {
-				delta := StreamDelta{Content: flushContent}
-				if firstText {
-					delta.Role = "assistant"
-					firstText = false
-				}
-				chunk := ChatStreamChunk{
-					ID:     genStreamID(),
-					Object: "chat.completion.chunk",
-					Model:  model,
-					Choices: []StreamChoice{{
-						Index: 0,
-						Delta: delta,
-					}},
-				}
-				writeSSE(w, flusher, chunk)
-			}
-			for _, tc := range flushCalls {
-				if structuredToolCallIDs[tc.ID] {
-					continue
-				}
-				delta := StreamDelta{ToolCalls: []StreamToolCall{{
-					Index:    toolCallIndex,
-					ID:       tc.ID,
-					Type:     tc.Type,
-					Function: &tc.Function,
-				}}}
-				toolCallIndex++
-				if firstText {
-					delta.Role = "assistant"
-					firstText = false
-				}
-				chunk := ChatStreamChunk{
-					ID:     genStreamID(),
-					Object: "chat.completion.chunk",
-					Model:  model,
-					Choices: []StreamChoice{{
-						Index: 0,
-						Delta: delta,
-					}},
-				}
-				writeSSE(w, flusher, chunk)
-				parsedToolCallFromText = true
-			}
+			// Keep reasoning and visible text in their own OpenAI delta fields.
+			flushParser(reasoningParser, true)
+			flushParser(textParser, false)
 
 			usageInfo := &Usage{}
 			if ev.TotalUsage != nil {
@@ -295,9 +222,8 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 				}
 			}
 
-			// If tool calls were parsed from text-delta events, override
-			// the finish reason so the client knows to expect tool results.
-			if parsedToolCallFromText {
+			// Any emitted tool call requires the OpenAI tool_calls finish reason.
+			if hasToolCalls {
 				finish = "tool_calls"
 			}
 
@@ -330,8 +256,14 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			log.Printf("%s stream event: %v", colorize("[ERROR]", ansiRed), ev.Error)
 			return fmt.Errorf("cc stream error")
 
-		case "start", "start-step", "reasoning-start", "reasoning-end",
-			"text-start", "text-end", "provider-metadata", "tool-result":
+		case "reasoning-end":
+			flushParser(reasoningParser, true)
+
+		case "text-end":
+			flushParser(textParser, false)
+
+		case "start", "start-step", "reasoning-start",
+			"text-start", "provider-metadata", "tool-result":
 			if cfg.Debug {
 				raw, _ := json.Marshal(ev)
 				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
@@ -360,29 +292,14 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			if ok && nameOk && args != "" {
 				var v any
 				if err := json.Unmarshal([]byte(args), &v); err == nil {
-					if !structuredToolCallIDs[ev.ID] {
-						structuredToolCallIDs[ev.ID] = true
-						chunk := ChatStreamChunk{
-							ID:     genStreamID(),
-							Object: "chat.completion.chunk",
-							Model:  model,
-							Choices: []StreamChoice{{
-								Index: 0,
-								Delta: StreamDelta{ToolCalls: []StreamToolCall{{
-									Index: toolCallIndex,
-									ID:    ev.ID,
-									Type:  "function",
-									Function: &CallFunc{
-										Name:      toolName,
-										Arguments: args,
-									},
-								}}},
-							}},
-						}
-						toolCallIndex++
-						writeSSE(w, flusher, chunk)
-						parsedToolCallFromText = true
-					}
+					emitToolCall(ToolCall{
+						ID:   ev.ID,
+						Type: "function",
+						Function: CallFunc{
+							Name:      toolName,
+							Arguments: args,
+						},
+					})
 				}
 			}
 			// clean up to avoid unbounded memory growth

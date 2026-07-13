@@ -76,19 +76,26 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 	// ----- scan buffer for tool-call lines -------------------------------
 	var contentBuf strings.Builder
 	pos := 0
+	preserveRemaining := false
 
 	for pos < len(raw) {
 		rest := raw[pos:]
 
 		loc := toolCallPrefixRe.FindStringSubmatchIndex(rest)
 		if loc == nil {
-			break // no more tool-call prefixes
+			if partial := partialToolCallPrefixStart(rest); partial >= 0 {
+				contentBuf.WriteString(rest[:partial])
+				pos += partial
+				preserveRemaining = true
+			}
+			break // no more complete tool-call prefixes
 		}
 
 		// flush everything before the match as content
 		if loc[0] > 0 {
 			contentBuf.WriteString(rest[:loc[0]])
 		}
+		matchStart := pos + loc[0]
 
 		// captured groups (relative to rest, which is raw[pos:])
 		prefixEnd := pos + loc[1] // right after "arguments:"
@@ -107,18 +114,22 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 		// ---- valid tool call: extract JSON from raw[pos+loc[0]:] ---------
 		jsonStart := prefixEnd
 		// skip whitespace between "arguments:" and JSON value
-		for jsonStart < len(raw) && raw[jsonStart] == ' ' {
+		for jsonStart < len(raw) && isToolCallSpace(raw[jsonStart]) {
 			jsonStart++
 		}
 
 		if jsonStart >= len(raw) {
 			// JSON has not arrived yet — keep buffering
+			pos = matchStart
+			preserveRemaining = true
 			break
 		}
 
 		jsonEnd, complete := scanJSON(raw, jsonStart)
 		if !complete && !done {
 			// still waiting for more data
+			pos = matchStart
+			preserveRemaining = true
 			break
 		}
 
@@ -150,6 +161,9 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 	if done {
 		contentBuf.WriteString(remaining)
 		p.buf.Reset()
+	} else if preserveRemaining {
+		p.buf.Reset()
+		p.buf.WriteString(remaining)
 	} else if len(remaining) > maxToolCallTail {
 		cut := len(remaining) - maxToolCallTail
 		// 确保不在多字节 UTF-8 字符中间截断
@@ -180,6 +194,123 @@ func scanLineEnd(s string, offset int) int {
 		return offset + idx + 1 // include the newline
 	}
 	return len(s)
+}
+
+// partialToolCallPrefixStart returns the first byte offset whose suffix can
+// still grow into a tool-call prefix. This avoids flushing long call IDs when
+// the upstream splits the prefix before "arguments:" or before its JSON value.
+func partialToolCallPrefixStart(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] != 'a' && s[i] != 'A' {
+			continue
+		}
+		if couldBeToolCallPrefix(s[i:]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func couldBeToolCallPrefix(s string) bool {
+	i := 0
+	for _, word := range []string{"Assistant", "requested", "tool"} {
+		complete, ok := consumeWordPrefix(s, &i, word)
+		if !ok || !complete {
+			return ok
+		}
+		if !consumeRequiredSpace(s, &i) {
+			return i == len(s)
+		}
+	}
+
+	nameStart := i
+	for i < len(s) && !isToolCallSpace(s[i]) && s[i] != '(' {
+		i++
+	}
+	if i == nameStart || i == len(s) {
+		return i == len(s)
+	}
+	consumeSpaces(s, &i)
+	if i == len(s) {
+		return true
+	}
+	if s[i] != '(' {
+		return false
+	}
+	i++
+
+	idStart := i
+	for i < len(s) && s[i] != ')' {
+		i++
+	}
+	if i == len(s) {
+		return true
+	}
+	if i == idStart {
+		return false
+	}
+	i++
+	consumeSpaces(s, &i)
+
+	complete, ok := consumeWordPrefix(s, &i, "with")
+	if !ok || !complete {
+		return ok
+	}
+	if !consumeRequiredSpace(s, &i) {
+		return i == len(s)
+	}
+
+	if i < len(s) && (s[i] == 'i' || s[i] == 'I') {
+		complete, ok = consumeWordPrefix(s, &i, "invalid")
+		if !ok || !complete {
+			return ok
+		}
+		if !consumeRequiredSpace(s, &i) {
+			return i == len(s)
+		}
+	}
+
+	complete, ok = consumeWordPrefix(s, &i, "arguments")
+	if !ok || !complete {
+		return ok
+	}
+	return i == len(s) || s[i] == ':'
+}
+
+func consumeWordPrefix(s string, pos *int, word string) (complete, ok bool) {
+	remaining := len(s) - *pos
+	compareLen := len(word)
+	if remaining < compareLen {
+		compareLen = remaining
+	}
+	if !strings.EqualFold(s[*pos:*pos+compareLen], word[:compareLen]) {
+		return false, false
+	}
+	*pos += compareLen
+	return compareLen == len(word), true
+}
+
+func consumeRequiredSpace(s string, pos *int) bool {
+	if *pos >= len(s) || !isToolCallSpace(s[*pos]) {
+		return false
+	}
+	consumeSpaces(s, pos)
+	return true
+}
+
+func consumeSpaces(s string, pos *int) {
+	for *pos < len(s) && isToolCallSpace(s[*pos]) {
+		(*pos)++
+	}
+}
+
+func isToolCallSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r', '\f', '\v':
+		return true
+	default:
+		return false
+	}
 }
 
 // scanJSON determines the end of a JSON value starting at s[start].

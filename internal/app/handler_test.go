@@ -480,6 +480,32 @@ func TestHandleStreamToolCallFromTextFragmented(t *testing.T) {
 	}
 }
 
+func TestHandleStreamToolCallFromTextWithLongIDAndFragmentedArguments(t *testing.T) {
+	toolID := "call_00_a4J0yCJ48n7O5Yul0Q4u9242"
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"Assistant requested tool read (` + toolID + `) with arguments:"}`,
+			`data: {"type":"text-delta","text":" {\"filePath\":\"internal/app/handler.go\"}"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `"tool_calls"`) || !strings.Contains(body, `"id":"`+toolID+`"`) {
+		t.Fatalf("expected OpenAI tool_calls delta, got body = %s", body)
+	}
+	if strings.Contains(body, `Assistant requested tool`) {
+		t.Fatalf("raw tool-call text leaked into stream output: %s", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("finish_reason was not normalized after parsed tool call: %s", body)
+	}
+}
+
 func TestHandleStreamTextBeforeAndAfterToolCall(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
@@ -528,6 +554,50 @@ func TestHandleStreamStructuredAndTextToolCall(t *testing.T) {
 	}
 	if strings.Contains(body, `Assistant requested tool`) {
 		t.Fatalf("raw tool-call text leaked into stream output: %s", body)
+	}
+}
+
+func TestHandleStreamTextAndReasoningUseSeparateParserBuffers(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"reasoning-delta","text":"think first"}`,
+			`data: {"type":"text-delta","text":"Assistant requested tool read (call_separate) with arguments: {\"file\":\"test.go\"}"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `"reasoning_content":"think first"`) {
+		t.Fatalf("reasoning text was not emitted as reasoning_content: %s", body)
+	}
+	if strings.Contains(body, `"content":"think first"`) {
+		t.Fatalf("reasoning text leaked into normal content: %s", body)
+	}
+	if !strings.Contains(body, `"id":"call_separate"`) {
+		t.Fatalf("text tool call was not converted: %s", body)
+	}
+}
+
+func TestHandleStreamTextThenStructuredToolCallIsDeduplicated(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"Assistant requested tool read (call_late) with arguments: {\"file\":\"test.go\"}"}`,
+			`data: {"type":"tool-call","toolCallId":"call_late","toolName":"read","input":{"file":"test.go"}}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if count := strings.Count(body, `"id":"call_late"`); count != 1 {
+		t.Fatalf("tool call emitted %d times, want once: %s", count, body)
 	}
 }
 

@@ -91,6 +91,24 @@ func TestChatCompletionsBlocksProviderQualified(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsRejectsRemoteImageURL(t *testing.T) {
+	handler := handleChatCompletions(&CCClient{}, &Config{}, &UsageTracker{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"test-model",
+		"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]
+	}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "base64 data URL") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
 func TestHandleNonStreamAppendsTextDeltas(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
@@ -424,8 +442,61 @@ func TestHandleNonStreamToolCallFromText(t *testing.T) {
 	if got.Choices[0].Message.ToolCalls[0].Function.Name != "read" {
 		t.Fatalf("tool call name = %q, want read", got.Choices[0].Message.ToolCalls[0].Function.Name)
 	}
-	if got.Choices[0].Message.Content != nil && got.Choices[0].Message.Content != "" {
+	if !got.Choices[0].Message.Content.IsEmpty() {
 		t.Fatalf("content = %v, want empty", got.Choices[0].Message.Content)
+	}
+}
+
+func TestHandleNonStreamStructuredToolCallNormalizesFinishReason(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"tool-call","toolCallId":"call_structured","toolName":"read","input":{"file":"test.go"}}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleNonStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+
+	var got ChatResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v body = %s", err, rec.Body.String())
+	}
+	if got.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", got.Choices[0].FinishReason)
+	}
+	if len(got.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v", got.Choices[0].Message.ToolCalls)
+	}
+}
+
+func TestHandleNonStreamAssemblesToolInputEvents(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"tool-input-start","id":"call_input","toolName":"write"}`,
+			`data: {"type":"tool-input-delta","id":"call_input","delta":"{\"path\":"}`,
+			`data: {"type":"tool-input-delta","id":"call_input","delta":"\"out.txt\"}"}`,
+			`data: {"type":"tool-input-end","id":"call_input"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleNonStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+
+	var got ChatResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v body = %s", err, rec.Body.String())
+	}
+	if len(got.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v", got.Choices[0].Message.ToolCalls)
+	}
+	call := got.Choices[0].Message.ToolCalls[0]
+	if call.ID != "call_input" || call.Function.Name != "write" || call.Function.Arguments != `{"path":"out.txt"}` {
+		t.Fatalf("tool call = %#v", call)
+	}
+	if got.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", got.Choices[0].FinishReason)
 	}
 }
 
@@ -557,6 +628,28 @@ func TestHandleStreamStructuredAndTextToolCall(t *testing.T) {
 	}
 }
 
+func TestHandleStreamAssemblesToolInputEvents(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"tool-input-start","id":"call_stream_input","toolName":"write"}`,
+			`data: {"type":"tool-input-delta","id":"call_stream_input","delta":"{\"path\":\"out.txt\"}"}`,
+			`data: {"type":"tool-input-end","id":"call_stream_input"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `"id":"call_stream_input"`) || !strings.Contains(body, `"name":"write"`) {
+		t.Fatalf("tool input events were not emitted: %s", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("finish reason was not normalized: %s", body)
+	}
+}
+
 func TestHandleStreamTextAndReasoningUseSeparateParserBuffers(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
@@ -647,8 +740,8 @@ func TestHandleStreamPureTextUnchanged(t *testing.T) {
 	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
 	body := rec.Body.String()
 
-	if !strings.Contains(body, `"content":"Hello world"`) {
-		t.Fatalf("expected 'Hello world' content chunk: %s", body)
+	if !strings.Contains(body, `"content":"Hello"`) || !strings.Contains(body, `"content":" world"`) {
+		t.Fatalf("expected text deltas to be emitted separately: %s", body)
 	}
 	if strings.Contains(body, `"tool_calls"`) {
 		t.Fatalf("unexpected tool_calls in pure text output: %s", body)

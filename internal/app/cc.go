@@ -3,6 +3,8 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +20,14 @@ type CCClient struct {
 	Client  *http.Client
 }
 
+type invalidRequestError struct {
+	message string
+}
+
+func (e *invalidRequestError) Error() string {
+	return e.message
+}
+
 func NewCCClient(apiKey, baseURL string) *CCClient {
 	return &CCClient{
 		APIKey:  apiKey,
@@ -28,15 +38,18 @@ func NewCCClient(apiKey, baseURL string) *CCClient {
 
 // ConvertOpenAIToCC 把 OpenAI 格式的 ChatRequest 转成 CC 格式并发请求。
 // 返回 HTTP response body，调用者负责解析 SSE 流。
-func (c *CCClient) Send(req *ChatRequest) (*http.Response, error) {
-	ccReq := openAIToCC(req)
+func (c *CCClient) Send(ctx context.Context, req *ChatRequest) (*http.Response, error) {
+	ccReq, err := openAIToCC(req)
+	if err != nil {
+		return nil, err
+	}
 
 	body, err := json.Marshal(ccReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal cc request: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", c.BaseURL+"/alpha/generate", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/alpha/generate", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -128,9 +141,12 @@ func resolveModelName(model string) string {
 	}
 }
 
-func openAIToCC(req *ChatRequest) CCRequest {
+func openAIToCC(req *ChatRequest) (CCRequest, error) {
 	tools := toolsToCC(req.Tools)
-	msgs := messagesToCC(req.Messages)
+	msgs, err := messagesToCC(req.Messages)
+	if err != nil {
+		return CCRequest{}, err
+	}
 	system := extractSystem(req.Messages)
 
 	cc := CCRequest{
@@ -160,32 +176,35 @@ func openAIToCC(req *ChatRequest) CCRequest {
 	if cc.Params.MaxTokens > 200000 {
 		cc.Params.MaxTokens = 200000
 	}
-	return cc
+	return cc, nil
 }
 
 func extractSystem(msgs []Message) string {
 	var parts []string
 	for _, m := range msgs {
-		if m.Role == "system" {
-			switch v := m.Content.(type) {
-			case string:
-				parts = append(parts, v)
+		if m.Role == "system" || m.Role == "developer" {
+			if text := m.Content.PlainText(); text != "" {
+				parts = append(parts, text)
 			}
 		}
 	}
 	return strings.Join(parts, "\n")
 }
 
-func messagesToCC(msgs []Message) []CCMsg {
+func messagesToCC(msgs []Message) ([]CCMsg, error) {
 	var out []CCMsg
 	for _, m := range msgs {
-		if m.Role == "system" {
+		if m.Role == "system" || m.Role == "developer" {
 			continue // 已提取到 top-level system
 		}
-		cc := CCMsg{Role: roleToCC(m.Role), Content: contentToCC(m)}
+		content, err := contentToCC(m)
+		if err != nil {
+			return nil, err
+		}
+		cc := CCMsg{Role: roleToCC(m.Role), Content: content}
 		out = append(out, cc)
 	}
-	return out
+	return out, nil
 }
 
 func roleToCC(role string) string {
@@ -197,51 +216,42 @@ func roleToCC(role string) string {
 	}
 }
 
-func contentToCC(m Message) []CCPart {
+func contentToCC(m Message) ([]CCPart, error) {
 	if m.Role == "tool" {
-		text := textFromContent(m.Content)
 		return []CCPart{{
 			Type: "text",
-			Text: fmt.Sprintf("Tool result from %s (%s):\n%s", m.Name, m.ToolCallID, text),
-		}}
+			Text: fmt.Sprintf("Tool result from %s (%s):\n%s", m.Name, m.ToolCallID, m.Content.PlainText()),
+		}}, nil
 	}
 
 	var parts []CCPart
-
-	switch v := m.Content.(type) {
-	case string:
-		if v != "" {
-			parts = append(parts, CCPart{Type: "text", Text: v})
-		}
-	case []any:
-		for _, item := range v {
-			obj, ok := item.(map[string]any)
-			if !ok {
-				continue
+	if text, ok := m.Content.TextValue(); ok && text != "" {
+		parts = append(parts, CCPart{Type: "text", Text: text})
+	}
+	for _, part := range m.Content.PartsValue() {
+		switch part.Type {
+		case "text":
+			if part.Text != "" {
+				parts = append(parts, CCPart{Type: "text", Text: part.Text})
 			}
-			typ, _ := obj["type"].(string)
-			switch typ {
-			case "text":
-				text, _ := obj["text"].(string)
-				if text != "" {
-					parts = append(parts, CCPart{Type: "text", Text: text})
-				}
-			case "image_url":
-				// OpenAI → Anthropic 格式
-				img, _ := obj["image_url"].(map[string]any)
-				url, _ := img["url"].(string)
-				if url != "" {
-					mediaType, data := parseDataURL(url)
-					parts = append(parts, CCPart{
-						Type: "image",
-						Source: map[string]any{
-							"type":       "base64",
-							"media_type": mediaType,
-							"data":       data,
-						},
-					})
-				}
+		case "image_url":
+			if part.ImageURL == nil || part.ImageURL.URL == "" {
+				return nil, &invalidRequestError{message: "image_url content requires a non-empty url"}
 			}
+			mediaType, data, err := parseDataURL(part.ImageURL.URL)
+			if err != nil {
+				return nil, &invalidRequestError{message: err.Error()}
+			}
+			parts = append(parts, CCPart{
+				Type: "image",
+				Source: map[string]any{
+					"type":       "base64",
+					"media_type": mediaType,
+					"data":       data,
+				},
+			})
+		default:
+			return nil, &invalidRequestError{message: fmt.Sprintf("unsupported message content type %q", part.Type)}
 		}
 	}
 
@@ -264,27 +274,7 @@ func contentToCC(m Message) []CCPart {
 		})
 	}
 
-	return parts
-}
-
-func textFromContent(content any) string {
-	switch v := content.(type) {
-	case string:
-		return v
-	case []any:
-		for _, item := range v {
-			obj, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			typ, _ := obj["type"].(string)
-			if typ == "text" {
-				t, _ := obj["text"].(string)
-				return t
-			}
-		}
-	}
-	return ""
+	return parts, nil
 }
 
 func toolsToCC(tools []Tool) []CCTool {
@@ -303,16 +293,28 @@ func toolsToCC(tools []Tool) []CCTool {
 	return out
 }
 
-// parseDataURL 解析 data:image/png;base64,XXXX，返回 media_type 和纯 base64 数据
-func parseDataURL(url string) (string, string) {
-	if !strings.HasPrefix(url, "data:") {
-		return "image/png", url
+// parseDataURL parses a base64 image data URL. Remote image URLs are rejected
+// because the Command Code payload requires inline image data.
+func parseDataURL(rawURL string) (string, string, error) {
+	if !strings.HasPrefix(rawURL, "data:") {
+		return "", "", fmt.Errorf("image_url must be a base64 data URL")
 	}
-	after := strings.TrimPrefix(url, "data:")
+	after := strings.TrimPrefix(rawURL, "data:")
 	parts := strings.SplitN(after, ",", 2)
 	if len(parts) != 2 {
-		return "image/png", url
+		return "", "", fmt.Errorf("image_url contains an invalid data URL")
+	}
+	if !strings.HasSuffix(parts[0], ";base64") {
+		return "", "", fmt.Errorf("image_url data URL must use base64 encoding")
 	}
 	mediaType := strings.TrimSuffix(parts[0], ";base64")
-	return mediaType, parts[1]
+	if !strings.HasPrefix(mediaType, "image/") {
+		return "", "", fmt.Errorf("image_url data URL must contain an image media type")
+	}
+	if _, err := base64.StdEncoding.DecodeString(parts[1]); err != nil {
+		if _, rawErr := base64.RawStdEncoding.DecodeString(parts[1]); rawErr != nil {
+			return "", "", fmt.Errorf("image_url contains invalid base64 data: %w", err)
+		}
+	}
+	return mediaType, parts[1], nil
 }

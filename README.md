@@ -12,7 +12,7 @@ The project was originally named `cc-gateway`; it was renamed to avoid confusion
   - `POST /v1/chat/completions`
   - `GET /v1/models`
 - Streaming and non-streaming chat completions
-- OpenAI `image_url` input conversion to Command Code / Anthropic-style image blocks
+- OpenAI base64 data `image_url` conversion to Command Code / Anthropic-style image blocks
 - Browser OAuth helper for obtaining a Command Code API key
 - Local bearer-token auth for clients
 - CORS enabled for local UI clients
@@ -195,9 +195,12 @@ Requests for excluded models return `404` with the existing OpenAI-compatible er
 Supported request styles:
 
 - Plain text messages
-- Multimodal content arrays with `image_url`
+- Multimodal content arrays with base64 `data:` URLs in `image_url`
 - `stream: true` server-sent events
 - `stream: false` JSON response
+
+Remote HTTP(S) image URLs are rejected with `400 invalid_request_error`; image
+content must be supplied as a base64 `data:image/...;base64,...` URL.
 
 ## Files intentionally not committed
 

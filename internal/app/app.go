@@ -116,7 +116,9 @@ Use the local client key above as the Bearer token for your OpenAI client.
 	if err := runServer(cc, cfg, usage); err != nil {
 		log.Fatalf("server: %v", err)
 	}
-	usage.save()
+	if err := usage.save(); err != nil {
+		log.Printf("save usage: %v", err)
+	}
 }
 
 func findConfig() string {

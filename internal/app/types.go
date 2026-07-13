@@ -1,5 +1,12 @@
 package app
 
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
 // ============================================================================
 // OpenAI 兼容格式（客户端 ↔ 我们）
 // ============================================================================
@@ -13,12 +20,88 @@ type ChatRequest struct {
 }
 
 type Message struct {
-	Role             string     `json:"role"`
-	Content          any        `json:"content"` // string | []ContentPart | null
-	ReasoningContent string     `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string     `json:"tool_call_id,omitempty"`
-	Name             string     `json:"name,omitempty"`
+	Role             string         `json:"role"`
+	Content          MessageContent `json:"content"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	Name             string         `json:"name,omitempty"`
+}
+
+// MessageContent is the OpenAI message content union: string, content parts,
+// or null. Keeping the variants explicit prevents conversion code from
+// silently ignoring valid JSON shapes.
+type MessageContent struct {
+	text  *string
+	parts []ContentPart
+}
+
+func TextContent(text string) MessageContent {
+	return MessageContent{text: &text}
+}
+
+func PartsContent(parts ...ContentPart) MessageContent {
+	return MessageContent{parts: append([]ContentPart(nil), parts...)}
+}
+
+func (c MessageContent) TextValue() (string, bool) {
+	if c.text == nil {
+		return "", false
+	}
+	return *c.text, true
+}
+
+func (c MessageContent) PartsValue() []ContentPart {
+	return append([]ContentPart(nil), c.parts...)
+}
+
+func (c MessageContent) PlainText() string {
+	if c.text != nil {
+		return *c.text
+	}
+	var out strings.Builder
+	for _, part := range c.parts {
+		if part.Type == "text" {
+			out.WriteString(part.Text)
+		}
+	}
+	return out.String()
+}
+
+func (c MessageContent) IsEmpty() bool {
+	return c.PlainText() == "" && len(c.parts) == 0
+}
+
+func (c *MessageContent) UnmarshalJSON(data []byte) error {
+	*c = MessageContent{}
+	data = bytes.TrimSpace(data)
+	if bytes.Equal(data, []byte("null")) {
+		return nil
+	}
+
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		c.text = &text
+		return nil
+	}
+
+	var parts []ContentPart
+	if err := json.Unmarshal(data, &parts); err == nil {
+		c.parts = parts
+		return nil
+	}
+
+	return fmt.Errorf("message content must be a string, an array of content parts, or null")
+}
+
+func (c MessageContent) MarshalJSON() ([]byte, error) {
+	if c.text != nil {
+		return json.Marshal(*c.text)
+	}
+	if c.parts != nil {
+		return json.Marshal(c.parts)
+	}
+	return []byte("null"), nil
 }
 
 type ContentPart struct {

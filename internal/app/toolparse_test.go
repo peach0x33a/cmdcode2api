@@ -509,6 +509,20 @@ func TestToolCallParserKeepsLongFragmentedPrefix(t *testing.T) {
 	}
 }
 
+func TestToolCallParserEmitsPlainTextImmediately(t *testing.T) {
+	p := NewToolCallParser()
+
+	content, calls := p.Feed("Hello", false)
+	if content != "Hello" || len(calls) != 0 {
+		t.Fatalf("first feed = (%q, %v), want immediate plain text", content, calls)
+	}
+
+	content, calls = p.Feed(" world", false)
+	if content != " world" || len(calls) != 0 {
+		t.Fatalf("second feed = (%q, %v), want immediate plain text", content, calls)
+	}
+}
+
 func TestToolCallParserAcceptsWhitespaceBeforeArguments(t *testing.T) {
 	p := NewToolCallParser()
 	content, calls := p.Feed("Assistant requested tool read (call_ws) with arguments:\n\t{\"file\":\"test.go\"}", true)

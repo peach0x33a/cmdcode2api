@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -46,8 +47,13 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 			return
 		}
 
-		resp, err := cc.Send(&req)
+		resp, err := cc.Send(r.Context(), &req)
 		if err != nil {
+			var invalid *invalidRequestError
+			if errors.As(err, &invalid) {
+				writeError(w, 400, "invalid_request_error", invalid.Error())
+				return
+			}
 			log.Printf("%s cc send: %v", colorize("[ERROR]", ansiRed), err)
 			writeError(w, 502, "server_error", "upstream error: "+err.Error())
 			return
@@ -55,10 +61,11 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 
 		if req.Stream {
 			handleStream(w, resp, req.Model, usage, cfg)
-			usage.save()
 		} else {
 			handleNonStream(w, resp, req.Model, usage, cfg)
-			usage.save()
+		}
+		if err := usage.save(); err != nil {
+			log.Printf("%s save usage: %v", colorize("[ERROR]", ansiRed), err)
 		}
 	}
 }
@@ -75,17 +82,14 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	w.Header().Set("Connection", "keep-alive")
 
 	firstText := true
-	var promptTokens, completionTokens, cacheRead, cacheWrite int
-	var reasoningTokens int
 	var done bool
 
+	normalizer := newCCEventNormalizer()
 	textParser := NewToolCallParser()
 	reasoningParser := NewToolCallParser()
 	hasToolCalls := false
-	emittedToolCallIDs := make(map[string]bool)
+	emittedToolCalls := make(map[string]bool)
 	toolCallIndex := 0
-	toolInputBuf := make(map[string]string)      // accumulated JSON per tool call ID
-	toolInputToolName := make(map[string]string) // tool name per ID
 
 	emitContent := func(content string, reasoning bool) {
 		if content == "" {
@@ -113,12 +117,11 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	}
 
 	emitToolCall := func(tc ToolCall) {
-		if tc.ID != "" && emittedToolCallIDs[tc.ID] {
+		key := toolCallKey(tc)
+		if emittedToolCalls[key] {
 			return
 		}
-		if tc.ID != "" {
-			emittedToolCallIDs[tc.ID] = true
-		}
+		emittedToolCalls[key] = true
 		delta := StreamDelta{ToolCalls: []StreamToolCall{{
 			Index:    toolCallIndex,
 			ID:       tc.ID,
@@ -151,169 +154,66 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	}
 
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
-		switch ev.Type {
-		case "text-delta":
-			text := streamEventText(ev)
-			content, calls := textParser.Feed(text, false)
-			emitContent(content, false)
-			for _, tc := range calls {
-				emitToolCall(tc)
-			}
-
-		case "reasoning-delta":
-			reasoningTokens++
-			text := streamEventText(ev)
-			content, calls := reasoningParser.Feed(text, false)
-			emitContent(content, true)
-			for _, tc := range calls {
-				emitToolCall(tc)
-			}
-
-		case "tool-call":
-			input := ev.Input
-			if input == nil {
-				input = ev.Args
-			}
-			if input == nil {
-				input = ev.Arguments
-			}
-			argsJSON, _ := json.Marshal(input)
-			emitToolCall(ToolCall{
-				ID:   ev.ToolCallID,
-				Type: "function",
-				Function: CallFunc{
-					Name:      ev.ToolName,
-					Arguments: string(argsJSON),
-				},
-			})
-
-		case "finish-step":
-			if ev.Usage != nil {
-				promptTokens = ev.Usage.InputTokens
-				completionTokens = ev.Usage.OutputTokens
-				if ev.Usage.InputTokenDetails != nil {
-					cacheRead = ev.Usage.InputTokenDetails.CacheReadTokens
-					cacheWrite = ev.Usage.InputTokenDetails.CacheWriteTokens
+		if cfg.Debug {
+			raw, _ := json.Marshal(ev)
+			log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
+		}
+		events, err := normalizer.Consume(ev)
+		if err != nil {
+			return err
+		}
+		for _, event := range events {
+			switch event.kind {
+			case normalizedText:
+				content, calls := textParser.Feed(event.text, false)
+				emitContent(content, false)
+				for _, call := range calls {
+					emitToolCall(call)
 				}
-			}
-
-		case "finish":
-			reason := normalizeFinishReason(ev.FinishReason)
-			finish := reason
-
-			// Keep reasoning and visible text in their own OpenAI delta fields.
-			flushParser(reasoningParser, true)
-			flushParser(textParser, false)
-
-			usageInfo := &Usage{}
-			if ev.TotalUsage != nil {
-				promptTokens = ev.TotalUsage.InputTokens
-				completionTokens = ev.TotalUsage.OutputTokens
-				if ev.TotalUsage.InputTokenDetails != nil {
-					cacheRead = ev.TotalUsage.InputTokenDetails.CacheReadTokens
-					cacheWrite = ev.TotalUsage.InputTokenDetails.CacheWriteTokens
+			case normalizedReasoning:
+				content, calls := reasoningParser.Feed(event.text, false)
+				emitContent(content, true)
+				for _, call := range calls {
+					emitToolCall(call)
 				}
-				usageInfo.PromptTokens = promptTokens
-				usageInfo.CompletionTokens = completionTokens
-				if ev.TotalUsage.TotalTokens > 0 {
-					usageInfo.TotalTokens = ev.TotalUsage.TotalTokens
-				} else {
-					usageInfo.TotalTokens = promptTokens + completionTokens
+			case normalizedToolCall:
+				if event.toolCall != nil {
+					emitToolCall(*event.toolCall)
 				}
-			}
+			case normalizedReasoningEnd:
+				flushParser(reasoningParser, true)
+			case normalizedTextEnd:
+				flushParser(textParser, false)
+			case normalizedFinish:
+				if done {
+					continue
+				}
+				flushParser(reasoningParser, true)
+				flushParser(textParser, false)
 
-			// Any emitted tool call requires the OpenAI tool_calls finish reason.
-			if hasToolCalls {
-				finish = "tool_calls"
-			}
+				finish := event.finishReason
+				if hasToolCalls {
+					finish = "tool_calls"
+				}
+				usageInfo := event.usage
+				writeSSE(w, flusher, ChatStreamChunk{
+					ID:     genStreamID(),
+					Object: "chat.completion.chunk",
+					Model:  model,
+					Choices: []StreamChoice{{
+						Index:        0,
+						Delta:        StreamDelta{},
+						FinishReason: &finish,
+					}},
+					Usage: &usageInfo,
+				})
 
-			chunk := ChatStreamChunk{
-				ID:     genStreamID(),
-				Object: "chat.completion.chunk",
-				Model:  model,
-				Choices: []StreamChoice{{
-					Index:        0,
-					Delta:        StreamDelta{},
-					FinishReason: &finish,
-				}},
-				Usage: usageInfo,
-			}
-			writeSSE(w, flusher, chunk)
-
-			// OpenAI SSE protocol: `data: [DONE]` must appear exactly once
-			// per response. finish-step may fire repeatedly (one per agent
-			// step); only finish terminates the stream.
-			if !done {
 				done = true
 				fmt.Fprintf(w, "data: [DONE]\n\n")
 				if debugMode {
 					log.Printf("%s %s", colorize("[DEBUG]", ansiDim), colorize(">> [DONE]", ansiGreen))
 				}
 				flusher.Flush()
-			}
-
-		case "error":
-			log.Printf("%s stream event: %v", colorize("[ERROR]", ansiRed), ev.Error)
-			return fmt.Errorf("cc stream error")
-
-		case "reasoning-end":
-			flushParser(reasoningParser, true)
-
-		case "text-end":
-			flushParser(textParser, false)
-
-		case "start", "start-step", "reasoning-start",
-			"text-start", "provider-metadata", "tool-result":
-			if cfg.Debug {
-				raw, _ := json.Marshal(ev)
-				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
-			}
-
-		case "tool-input-start":
-			toolInputBuf[ev.ID] = ""
-			toolInputToolName[ev.ID] = ev.ToolName
-			if cfg.Debug {
-				log.Printf("%s %s tool-input-start id=%s tool=%s",
-					colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.ID, ev.ToolName)
-			}
-
-		case "tool-input-delta":
-			if cur, ok := toolInputBuf[ev.ID]; ok {
-				toolInputBuf[ev.ID] = cur + ev.Delta
-			}
-			if cfg.Debug {
-				log.Printf("%s %s tool-input-delta id=%s delta=%q",
-					colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.ID, ev.Delta)
-			}
-
-		case "tool-input-end", "tool-input-available":
-			args, ok := toolInputBuf[ev.ID]
-			toolName, nameOk := toolInputToolName[ev.ID]
-			if ok && nameOk && args != "" {
-				var v any
-				if err := json.Unmarshal([]byte(args), &v); err == nil {
-					emitToolCall(ToolCall{
-						ID:   ev.ID,
-						Type: "function",
-						Function: CallFunc{
-							Name:      toolName,
-							Arguments: args,
-						},
-					})
-				}
-			}
-			// clean up to avoid unbounded memory growth
-			delete(toolInputBuf, ev.ID)
-			delete(toolInputToolName, ev.ID)
-			if cfg.Debug {
-				log.Printf("%s %s tool-input-end id=%s name=%s args=%q",
-					colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.ID, toolName, args)
-			}
-
-		default:
-			if cfg.Debug {
-				raw, _ := json.Marshal(ev)
-				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc ?", ansiYellow), ev.Type, colorize(string(raw), ansiYellow))
 			}
 		}
 		return nil
@@ -322,82 +222,38 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	if err != nil {
 		log.Printf("%s stream parse: %v", colorize("[ERROR]", ansiRed), err)
 	}
+	promptTokens, completionTokens, cacheRead, cacheWrite := normalizer.Usage()
 	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
 }
 
 func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config) {
-	var msg Message
-	msg.Role = "assistant"
-	var promptTokens, completionTokens, cacheRead, cacheWrite int
+	msg := Message{Role: "assistant"}
+	normalizer := newCCEventNormalizer()
+	var textContent strings.Builder
+	var reasoningContent strings.Builder
 	var finishReason string
-	var reasoningContent string
 
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
-		switch ev.Type {
-		case "text-delta":
-			text := streamEventText(ev)
-			found := false
-			switch parts := msg.Content.(type) {
-			case []ContentPart:
-				for i := len(parts) - 1; i >= 0; i-- {
-					if parts[i].Type == "text" {
-						parts[i].Text += text
-						found = true
-						break
-					}
+		if cfg.Debug {
+			raw, _ := json.Marshal(ev)
+			log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
+		}
+		events, err := normalizer.Consume(ev)
+		if err != nil {
+			return err
+		}
+		for _, event := range events {
+			switch event.kind {
+			case normalizedText:
+				textContent.WriteString(event.text)
+			case normalizedReasoning:
+				reasoningContent.WriteString(event.text)
+			case normalizedToolCall:
+				if event.toolCall != nil {
+					msg.ToolCalls = appendUniqueToolCall(msg.ToolCalls, *event.toolCall)
 				}
-				if !found {
-					parts = append(parts, ContentPart{Type: "text", Text: text})
-					msg.Content = parts
-				}
-			case nil:
-				msg.Content = []ContentPart{{Type: "text", Text: text}}
-			case string:
-				msg.Content = parts + text
-			default:
-				msg.Content = text
-			}
-		case "reasoning-delta":
-			reasoningContent += streamEventText(ev)
-		case "tool-call":
-			input := ev.Input
-			if input == nil {
-				input = ev.Args
-			}
-			if input == nil {
-				input = ev.Arguments
-			}
-			argsJSON, _ := json.Marshal(input)
-			msg.ToolCalls = append(msg.ToolCalls, ToolCall{
-				ID:   ev.ToolCallID,
-				Type: "function",
-				Function: CallFunc{
-					Name:      ev.ToolName,
-					Arguments: string(argsJSON),
-				},
-			})
-		case "finish":
-			finishReason = normalizeFinishReason(ev.FinishReason)
-			if ev.TotalUsage != nil {
-				promptTokens = ev.TotalUsage.InputTokens
-				completionTokens = ev.TotalUsage.OutputTokens
-				if ev.TotalUsage.InputTokenDetails != nil {
-					cacheRead = ev.TotalUsage.InputTokenDetails.CacheReadTokens
-					cacheWrite = ev.TotalUsage.InputTokenDetails.CacheWriteTokens
-				}
-			}
-		case "start", "start-step", "reasoning-start", "reasoning-end",
-			"text-start", "text-end", "finish-step", "provider-metadata",
-			"tool-input-start", "tool-input-delta", "tool-input-end", "tool-input-available", "tool-result":
-			if cfg.Debug {
-				raw, _ := json.Marshal(ev)
-				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
-			}
-
-		default:
-			if cfg.Debug {
-				raw, _ := json.Marshal(ev)
-				log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc ?", ansiYellow), ev.Type, colorize(string(raw), ansiYellow))
+			case normalizedFinish:
+				finishReason = event.finishReason
 			}
 		}
 		return nil
@@ -409,70 +265,41 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		return
 	}
 
-	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
-
 	// Extract text content and parse embedded tool calls
-	var textContent string
-	switch c := msg.Content.(type) {
-	case string:
-		textContent = c
-	case []ContentPart:
-		var sb strings.Builder
-		for _, p := range c {
-			if p.Type == "text" {
-				sb.WriteString(p.Text)
-			}
-		}
-		textContent = sb.String()
-	}
-	if textContent != "" {
+	visibleText := textContent.String()
+	if visibleText != "" {
 		tcp := NewToolCallParser()
-		strippedContent, parsedCalls := tcp.Feed(textContent, true)
+		strippedContent, parsedCalls := tcp.Feed(visibleText, true)
 		if len(parsedCalls) > 0 {
-			// Deduplicate against tool calls from structured events
-			existingIDs := make(map[string]bool)
-			for _, tc := range msg.ToolCalls {
-				existingIDs[tc.ID] = true
+			for _, call := range parsedCalls {
+				msg.ToolCalls = appendUniqueToolCall(msg.ToolCalls, call)
 			}
-			for _, pc := range parsedCalls {
-				if !existingIDs[pc.ID] {
-					msg.ToolCalls = append(msg.ToolCalls, pc)
-				}
-			}
-			msg.Content = strippedContent
-			finishReason = normalizeFinishReason("tool_calls")
+			visibleText = strippedContent
 		}
 	}
 
 	// Also parse reasoning text for embedded tool calls
-	if reasoningContent != "" {
+	reasoningText := reasoningContent.String()
+	if reasoningText != "" {
 		tcp := NewToolCallParser()
-		strippedReasoning, parsedCalls := tcp.Feed(reasoningContent, true)
+		strippedReasoning, parsedCalls := tcp.Feed(reasoningText, true)
 		if len(parsedCalls) > 0 {
-			existingIDs := make(map[string]bool)
-			for _, tc := range msg.ToolCalls {
-				existingIDs[tc.ID] = true
+			for _, call := range parsedCalls {
+				msg.ToolCalls = appendUniqueToolCall(msg.ToolCalls, call)
 			}
-			for _, pc := range parsedCalls {
-				if !existingIDs[pc.ID] {
-					msg.ToolCalls = append(msg.ToolCalls, pc)
-				}
-			}
-			reasoningContent = strippedReasoning
-			finishReason = normalizeFinishReason("tool_calls")
+			reasoningText = strippedReasoning
 		}
 	}
 
-	// 如果只有 text，展平 content
-	if parts, ok := msg.Content.([]ContentPart); ok && len(parts) == 1 && parts[0].Type == "text" {
-		msg.Content = parts[0].Text
+	msg.Content = TextContent(visibleText)
+	if len(msg.ToolCalls) > 0 {
+		finishReason = "tool_calls"
 	}
-	if msg.Content == nil {
-		msg.Content = ""
+	if reasoningText != "" {
+		msg.ReasoningContent = reasoningText
 	}
-	if reasoningContent != "" {
-		msg.ReasoningContent = reasoningContent
-	}
+	promptTokens, completionTokens, cacheRead, cacheWrite := normalizer.FinalUsage()
+	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
 
 	res := ChatResponse{
 		ID:     genStreamID(),
@@ -486,7 +313,7 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		Usage: Usage{
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
-			TotalTokens:      promptTokens + completionTokens,
+			TotalTokens:      normalizer.FinalUsageInfo().TotalTokens,
 		},
 	}
 

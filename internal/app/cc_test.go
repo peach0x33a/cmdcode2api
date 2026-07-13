@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -11,12 +13,15 @@ func TestOpenAIToCCExtractsSystemAndContent(t *testing.T) {
 	req := &ChatRequest{
 		Model: "deepseek/deepseek-v4-flash",
 		Messages: []Message{
-			{Role: "system", Content: "be terse"},
-			{Role: "user", Content: "hello"},
+			{Role: "system", Content: TextContent("be terse")},
+			{Role: "user", Content: TextContent("hello")},
 		},
 	}
 
-	got := openAIToCC(req)
+	got, err := openAIToCC(req)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
 	if got.Params.Model != req.Model {
 		t.Fatalf("model = %q, want %q", got.Params.Model, req.Model)
 	}
@@ -32,14 +37,17 @@ func TestOpenAIToCCExtractsSystemAndContent(t *testing.T) {
 }
 
 func TestMessagesToCCMapsToolRoleToUser(t *testing.T) {
-	got := messagesToCC([]Message{
+	got, err := messagesToCC([]Message{
 		{
 			Role:       "tool",
 			ToolCallID: "call-1",
 			Name:       "lookup",
-			Content:    "tool output",
+			Content:    TextContent("tool output"),
 		},
 	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
 
 	if len(got) != 1 {
 		t.Fatalf("messages len = %d", len(got))
@@ -56,7 +64,7 @@ func TestMessagesToCCMapsToolRoleToUser(t *testing.T) {
 }
 
 func TestAssistantToolCallIsFlattenedAsHistoryText(t *testing.T) {
-	got := contentToCC(Message{
+	got, err := contentToCC(Message{
 		Role: "assistant",
 		ToolCalls: []ToolCall{{
 			ID:   "call-1",
@@ -67,6 +75,9 @@ func TestAssistantToolCallIsFlattenedAsHistoryText(t *testing.T) {
 			},
 		}},
 	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
 
 	if len(got) != 1 {
 		t.Fatalf("parts len = %d", len(got))
@@ -80,19 +91,21 @@ func TestAssistantToolCallIsFlattenedAsHistoryText(t *testing.T) {
 }
 
 func TestParseDataURL(t *testing.T) {
-	mediaType, data := parseDataURL("data:image/jpeg;base64,abc123")
-	if mediaType != "image/jpeg" || data != "abc123" {
+	mediaType, data, err := parseDataURL("data:image/jpeg;base64,YWJjMTIz")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if mediaType != "image/jpeg" || data != "YWJjMTIz" {
 		t.Fatalf("got %q %q", mediaType, data)
 	}
 
-	mediaType, data = parseDataURL("raw-base64")
-	if mediaType != "image/png" || data != "raw-base64" {
-		t.Fatalf("fallback got %q %q", mediaType, data)
+	if _, _, err := parseDataURL("https://example.com/image.png"); err == nil {
+		t.Fatal("expected remote image URL to be rejected")
 	}
 }
 
 func TestContentToCCDoesNotDropInvalidToolArguments(t *testing.T) {
-	parts := contentToCC(Message{
+	parts, err := contentToCC(Message{
 		Role: "assistant",
 		ToolCalls: []ToolCall{{
 			ID:   "call-1",
@@ -103,12 +116,77 @@ func TestContentToCCDoesNotDropInvalidToolArguments(t *testing.T) {
 			},
 		}},
 	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
 
 	if len(parts) != 1 {
 		t.Fatalf("parts len = %d", len(parts))
 	}
 	if parts[0].Type != "text" || !strings.Contains(parts[0].Text, "invalid arguments") {
 		t.Fatalf("unexpected part: %#v", parts[0])
+	}
+}
+
+func TestSystemContentPartsArePreserved(t *testing.T) {
+	got := extractSystem([]Message{
+		{
+			Role: "system",
+			Content: PartsContent(
+				ContentPart{Type: "text", Text: "first"},
+				ContentPart{Type: "text", Text: " second"},
+			),
+		},
+		{Role: "developer", Content: TextContent("developer rule")},
+	})
+	if got != "first second\ndeveloper rule" {
+		t.Fatalf("system = %q", got)
+	}
+}
+
+func TestToolResultPreservesAllTextParts(t *testing.T) {
+	parts, err := contentToCC(Message{
+		Role:       "tool",
+		Name:       "lookup",
+		ToolCallID: "call-1",
+		Content: PartsContent(
+			ContentPart{Type: "text", Text: "first"},
+			ContentPart{Type: "text", Text: " second"},
+		),
+	})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if len(parts) != 1 || !strings.Contains(parts[0].Text, "first second") {
+		t.Fatalf("parts = %#v", parts)
+	}
+}
+
+func TestContentToCCRejectsRemoteImageURL(t *testing.T) {
+	_, err := contentToCC(Message{
+		Role: "user",
+		Content: PartsContent(ContentPart{
+			Type:     "image_url",
+			ImageURL: &ImageURL{URL: "https://example.com/image.png"},
+		}),
+	})
+	var invalid *invalidRequestError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("error = %v, want invalidRequestError", err)
+	}
+}
+
+func TestCCClientSendUsesRequestContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	client := NewCCClient("test-key", "http://127.0.0.1:1")
+	_, err := client.Send(ctx, &ChatRequest{
+		Model:    "test-model",
+		Messages: []Message{{Role: "user", Content: TextContent("hello")}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context canceled", err)
 	}
 }
 

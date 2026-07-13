@@ -147,6 +147,10 @@ curl http://localhost:11434/v1/chat/completions \
   }'
 ```
 
+多模态请求中的 `image_url` 必须使用
+`data:image/...;base64,...` 形式。远程 HTTP(S) 图片地址会返回
+`400 invalid_request_error`，服务不会主动下载远程图片。
+
 ## 本地运行产物
 
 以下文件不应该提交到 Git：

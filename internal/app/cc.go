@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,6 +28,121 @@ type invalidRequestError struct {
 
 func (e *invalidRequestError) Error() string {
 	return e.message
+}
+
+type upstreamAPIError struct {
+	Status     int
+	Message    string
+	Type       string
+	Code       string
+	RetryAfter string
+	RequestID  string
+}
+
+func (e *upstreamAPIError) Error() string {
+	return fmt.Sprintf("cc api error %d: %s", e.Status, e.Message)
+}
+
+func normalizeUpstreamError(status int, body []byte, header http.Header) *upstreamAPIError {
+	type rateLimitInfo struct {
+		Reset float64 `json:"reset"`
+	}
+	var payload struct {
+		Message   string        `json:"message"`
+		Type      string        `json:"type"`
+		Code      string        `json:"code"`
+		RateLimit rateLimitInfo `json:"rateLimit"`
+		Error     struct {
+			Message   string        `json:"message"`
+			Type      string        `json:"type"`
+			Code      string        `json:"code"`
+			RateLimit rateLimitInfo `json:"rateLimit"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &payload)
+
+	message, code := payload.Message, payload.Code
+	reset := payload.RateLimit.Reset
+	if payload.Error.Message != "" {
+		message = payload.Error.Message
+	}
+	if payload.Error.Code != "" {
+		code = payload.Error.Code
+	}
+	if payload.Error.RateLimit.Reset > 0 {
+		reset = payload.Error.RateLimit.Reset
+	}
+	if message == "" {
+		message = strings.TrimSpace(string(body))
+	}
+	if message == "" {
+		message = http.StatusText(status)
+	}
+
+	typ, defaultCode := normalizedErrorTypeAndCode(status)
+	if code == "" {
+		code = defaultCode
+	}
+
+	retryAfter := header.Get("Retry-After")
+	if status == http.StatusTooManyRequests && retryAfter == "" {
+		retryAfter = retryAfterFromRateLimit(reset, message, time.Now())
+	}
+	requestID := header.Get("x-request-id")
+	if requestID == "" {
+		requestID = header.Get("lb-request-id")
+	}
+	return &upstreamAPIError{
+		Status:     status,
+		Message:    message,
+		Type:       typ,
+		Code:       code,
+		RetryAfter: retryAfter,
+		RequestID:  requestID,
+	}
+}
+
+func normalizedErrorTypeAndCode(status int) (string, string) {
+	switch status {
+	case http.StatusBadRequest, http.StatusConflict, http.StatusUnprocessableEntity:
+		return "invalid_request_error", "invalid_request"
+	case http.StatusUnauthorized:
+		return "authentication_error", "invalid_api_key"
+	case http.StatusForbidden:
+		return "permission_error", "permission_denied"
+	case http.StatusNotFound:
+		return "not_found_error", "not_found"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error", "rate_limit_exceeded"
+	default:
+		if status >= http.StatusInternalServerError {
+			return "server_error", "upstream_server_error"
+		}
+		return "api_error", "upstream_api_error"
+	}
+}
+
+func retryAfterFromRateLimit(reset float64, message string, now time.Time) string {
+	var resetAt time.Time
+	if reset > 0 {
+		seconds, fraction := math.Modf(reset)
+		resetAt = time.Unix(int64(seconds), int64(fraction*float64(time.Second)))
+	} else {
+		lower := strings.ToLower(message)
+		const marker = "resets at "
+		if index := strings.Index(lower, marker); index >= 0 {
+			fields := strings.Fields(message[index+len(marker):])
+			if len(fields) > 0 {
+				value := strings.Trim(fields[0], ".,;)]}")
+				resetAt, _ = time.Parse(time.RFC3339Nano, value)
+			}
+		}
+	}
+	if resetAt.IsZero() || !resetAt.After(now) {
+		return ""
+	}
+	seconds := int64((resetAt.Sub(now) + time.Second - 1) / time.Second)
+	return strconv.FormatInt(seconds, 10)
 }
 
 func NewCCClient(apiKey, baseURL string) *CCClient {
@@ -62,21 +179,10 @@ func (c *CCClient) Send(ctx context.Context, req *ChatRequest) (*http.Response, 
 	if err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		resp.Body.Close()
-
-		var ccErr struct {
-			Success bool `json:"success"`
-			Error   struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(body, &ccErr) == nil && ccErr.Error.Message != "" {
-			return nil, fmt.Errorf("cc api error %d: %s", resp.StatusCode, ccErr.Error.Message)
-		}
-		return nil, fmt.Errorf("cc api error %d: %s", resp.StatusCode, string(body))
+		return nil, normalizeUpstreamError(resp.StatusCode, body, resp.Header)
 	}
 	return resp, nil
 }

@@ -91,6 +91,42 @@ func TestChatCompletionsBlocksProviderQualified(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsReturnsNormalizedUpstreamRateLimit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.Header().Set("x-request-id", "req_123")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"You've reached your 5-hour usage limit for your plan.","type":"server_error"}`)
+	}))
+	defer upstream.Close()
+
+	handler := handleChatCompletions(NewCCClient("test-key", upstream.URL), &Config{}, &UsageTracker{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") != "120" || rec.Header().Get("x-request-id") != "req_123" {
+		t.Fatalf("headers = %#v", rec.Header())
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Message != "You've reached your 5-hour usage limit for your plan." || body.Error.Type != "rate_limit_error" || body.Error.Code != "rate_limit_exceeded" {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
 func TestChatCompletionsRejectsRemoteImageURL(t *testing.T) {
 	handler := handleChatCompletions(&CCClient{}, &Config{}, &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{

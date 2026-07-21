@@ -51,11 +51,23 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 		if err != nil {
 			var invalid *invalidRequestError
 			if errors.As(err, &invalid) {
-				writeError(w, 400, "invalid_request_error", invalid.Error())
+				writeError(w, http.StatusBadRequest, "invalid_request_error", invalid.Error())
+				return
+			}
+			var upstreamErr *upstreamAPIError
+			if errors.As(err, &upstreamErr) {
+				log.Printf("%s cc send: %v", colorize("[ERROR]", ansiRed), upstreamErr)
+				if upstreamErr.RetryAfter != "" {
+					w.Header().Set("Retry-After", upstreamErr.RetryAfter)
+				}
+				if upstreamErr.RequestID != "" {
+					w.Header().Set("x-request-id", upstreamErr.RequestID)
+				}
+				writeErrorWithCode(w, upstreamErr.Status, upstreamErr.Type, upstreamErr.Code, upstreamErr.Message)
 				return
 			}
 			log.Printf("%s cc send: %v", colorize("[ERROR]", ansiRed), err)
-			writeError(w, 502, "server_error", "upstream error: "+err.Error())
+			writeError(w, http.StatusBadGateway, "server_error", "upstream error: "+err.Error())
 			return
 		}
 
@@ -342,17 +354,24 @@ func handleModels(cfg *Config) http.HandlerFunc {
 // ====================== helpers ======================
 
 func writeError(w http.ResponseWriter, status int, typ, msg string) {
+	writeErrorWithCode(w, status, typ, "", msg)
+}
+
+func writeErrorWithCode(w http.ResponseWriter, status int, typ, code, msg string) {
 	if debugMode {
 		log.Printf("%s %s %d %s: %s", colorize("[DEBUG]", ansiDim), colorize(">> error", ansiRed), status, typ, msg)
 	}
+	errorBody := map[string]any{
+		"message": msg,
+		"type":    typ,
+		"param":   nil,
+	}
+	if code != "" {
+		errorBody["code"] = code
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"message": msg,
-			"type":    typ,
-		},
-	})
+	json.NewEncoder(w).Encode(map[string]any{"error": errorBody})
 }
 
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, chunk ChatStreamChunk) {

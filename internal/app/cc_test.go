@@ -6,8 +6,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenAIToCCExtractsSystemAndContent(t *testing.T) {
@@ -236,6 +238,69 @@ func TestCCClientSendUsesRequestContext(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context canceled", err)
+	}
+}
+
+func TestCCClientSendParsesTopLevelRateLimitError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.Header().Set("x-request-id", "req_123")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"You've reached your 5-hour usage limit for your plan.","type":"server_error"}`)
+	}))
+	defer upstream.Close()
+
+	client := NewCCClient("test-key", upstream.URL)
+	_, err := client.Send(context.Background(), &ChatRequest{
+		Model:    "test-model",
+		Messages: []Message{{Role: "user", Content: TextContent("hello")}},
+	})
+
+	var upstreamErr *upstreamAPIError
+	if !errors.As(err, &upstreamErr) {
+		t.Fatalf("error = %T %v, want upstreamAPIError", err, err)
+	}
+	if upstreamErr.Status != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", upstreamErr.Status)
+	}
+	if upstreamErr.Type != "rate_limit_error" || upstreamErr.Code != "rate_limit_exceeded" {
+		t.Fatalf("normalized error = %#v", upstreamErr)
+	}
+	if upstreamErr.Message != "You've reached your 5-hour usage limit for your plan." {
+		t.Fatalf("message = %q", upstreamErr.Message)
+	}
+	if upstreamErr.RetryAfter != "120" || upstreamErr.RequestID != "req_123" {
+		t.Fatalf("headers = %#v", upstreamErr)
+	}
+}
+
+func TestRetryAfterFromRateLimitMessage(t *testing.T) {
+	now := time.Date(2026, time.July, 21, 23, 55, 32, 351_000_000, time.UTC)
+	got := retryAfterFromRateLimit(0, "Your limit resets at 2026-07-21T23:57:32.351Z. Please wait.", now)
+	if got != "120" {
+		t.Fatalf("Retry-After = %q, want 120", got)
+	}
+}
+
+func TestCCClientSendPreservesNestedUpstreamErrorCode(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"code":"RATE_LIMITED","message":"window exhausted","type":"server_error"}}`)
+	}))
+	defer upstream.Close()
+
+	client := NewCCClient("test-key", upstream.URL)
+	_, err := client.Send(context.Background(), &ChatRequest{
+		Model:    "test-model",
+		Messages: []Message{{Role: "user", Content: TextContent("hello")}},
+	})
+
+	var upstreamErr *upstreamAPIError
+	if !errors.As(err, &upstreamErr) {
+		t.Fatalf("error = %T %v, want upstreamAPIError", err, err)
+	}
+	if upstreamErr.Code != "RATE_LIMITED" || upstreamErr.Type != "rate_limit_error" || upstreamErr.Message != "window exhausted" {
+		t.Fatalf("normalized error = %#v", upstreamErr)
 	}
 }
 

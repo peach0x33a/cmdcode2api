@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -33,6 +34,54 @@ func TestOpenAIToCCExtractsSystemAndContent(t *testing.T) {
 	}
 	if got.Params.Messages[0].Content[0].Text != "hello" {
 		t.Fatalf("text = %q", got.Params.Messages[0].Content[0].Text)
+	}
+}
+
+func TestOpenAIToCCUsesCommandCodeDefaultMaxTokens(t *testing.T) {
+	req := &ChatRequest{
+		Model:    "deepseek/deepseek-v4-pro",
+		Messages: []Message{{Role: "user", Content: TextContent("hello")}},
+	}
+
+	got, err := openAIToCC(req)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if got.Params.MaxTokens != defaultCCMaxTokens {
+		t.Fatalf("max_tokens = %d, want command-code default %d", got.Params.MaxTokens, defaultCCMaxTokens)
+	}
+
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"max_tokens":64000`) {
+		t.Fatalf("default max_tokens missing from CC request: %s", encoded)
+	}
+}
+
+func TestOpenAIToCCPreservesAndCapsExplicitMaxTokens(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		input int
+		want  int
+	}{
+		{name: "preserved", input: 32768, want: 32768},
+		{name: "capped", input: 300000, want: maximumCCMaxTokens},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := openAIToCC(&ChatRequest{
+				Model:     "deepseek/deepseek-v4-pro",
+				Messages:  []Message{{Role: "user", Content: TextContent("hello")}},
+				MaxTokens: tt.input,
+			})
+			if err != nil {
+				t.Fatalf("convert: %v", err)
+			}
+			if got.Params.MaxTokens != tt.want {
+				t.Fatalf("max_tokens = %d, want %d", got.Params.MaxTokens, tt.want)
+			}
+		})
 	}
 }
 

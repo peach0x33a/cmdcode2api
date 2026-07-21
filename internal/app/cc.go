@@ -141,6 +141,11 @@ func resolveModelName(model string) string {
 	}
 }
 
+const (
+	defaultCCMaxTokens = 64_000
+	maximumCCMaxTokens = 200_000
+)
+
 func openAIToCC(req *ChatRequest) (CCRequest, error) {
 	tools := toolsToCC(req.Tools)
 	msgs, err := messagesToCC(req.Messages)
@@ -170,11 +175,14 @@ func openAIToCC(req *ChatRequest) (CCRequest, error) {
 			Stream:    true, // CC API 只支持流式
 		},
 	}
+	// command-code's main agent, print mode, and subagents all request 64k
+	// output tokens. Match that behavior when OpenAI-compatible clients omit
+	// max_tokens so long tool arguments are not cut off at the old 4k default.
 	if cc.Params.MaxTokens <= 0 {
-		cc.Params.MaxTokens = 4096
+		cc.Params.MaxTokens = defaultCCMaxTokens
 	}
-	if cc.Params.MaxTokens > 200000 {
-		cc.Params.MaxTokens = 200000
+	if cc.Params.MaxTokens > maximumCCMaxTokens {
+		cc.Params.MaxTokens = maximumCCMaxTokens
 	}
 	return cc, nil
 }

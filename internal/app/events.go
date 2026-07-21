@@ -3,6 +3,8 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
 )
 
 type normalizedEventKind uint8
@@ -161,7 +163,8 @@ func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, e
 	} else {
 		var input any
 		if err := json.Unmarshal([]byte(raw), &input); err != nil {
-			return ToolCall{}, false, fmt.Errorf("parse tool input %q: %w", id, err)
+			log.Printf("%s parse tool input %q for tool %q failed: %v, attempting repair/fallback", colorize("[WARN]", ansiYellow), id, name, err)
+			raw = repairOrFallbackToolInput(raw, name)
 		}
 	}
 
@@ -176,6 +179,110 @@ func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, e
 			Arguments: raw,
 		},
 	}, true, nil
+}
+
+func repairOrFallbackToolInput(raw string, toolName string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "{}"
+	}
+
+	var v any
+	if json.Unmarshal([]byte(raw), &v) == nil {
+		return raw
+	}
+
+	// 1. Try to repair truncated JSON
+	if repaired, ok := tryRepairJSON(raw); ok {
+		return repaired
+	}
+
+	// 2. Fallback to wrapping as a valid JSON object
+	fallback := make(map[string]any)
+	switch strings.ToLower(toolName) {
+	case "bash", "exec", "command", "sh":
+		fallback["command"] = raw
+	case "read", "view", "cat":
+		fallback["path"] = raw
+	case "write":
+		fallback["path"] = raw
+		fallback["content"] = ""
+	default:
+		fallback["command"] = raw
+		fallback["input"] = raw
+	}
+
+	encoded, err := json.Marshal(fallback)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
+}
+
+func tryRepairJSON(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "{") && !strings.HasPrefix(s, "[") {
+		return "", false
+	}
+
+	var stack []byte
+	inString := false
+	escaped := false
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if ch == '\\' {
+				escaped = true
+			} else if ch == '"' {
+				inString = false
+			}
+		} else {
+			switch ch {
+			case '"':
+				inString = true
+			case '{':
+				stack = append(stack, '}')
+			case '[':
+				stack = append(stack, ']')
+			case '}', ']':
+				if len(stack) > 0 && stack[len(stack)-1] == ch {
+					stack = stack[:len(stack)-1]
+				}
+			}
+		}
+	}
+
+	b := []byte(s)
+	if inString {
+		if escaped && len(b) > 0 && b[len(b)-1] == '\\' {
+			b = b[:len(b)-1]
+		}
+		b = append(b, '"')
+	}
+
+	for len(b) > 0 {
+		last := b[len(b)-1]
+		if last == ' ' || last == '\t' || last == '\n' || last == '\r' || last == ',' || last == ':' {
+			b = b[:len(b)-1]
+		} else {
+			break
+		}
+	}
+
+	for i := len(stack) - 1; i >= 0; i-- {
+		b = append(b, stack[i])
+	}
+
+	candidate := string(b)
+	var v any
+	if json.Unmarshal([]byte(candidate), &v) == nil {
+		return candidate, true
+	}
+
+	return "", false
 }
 
 func toolCallFromEvent(ev CCStreamEvent) (ToolCall, error) {

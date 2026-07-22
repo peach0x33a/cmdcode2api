@@ -31,6 +31,18 @@ func TestTryRepairJSON(t *testing.T) {
 			ok:       true,
 		},
 		{
+			name:     "extra closing brace",
+			input:    `{"edits":[{"oldText":"a","newText":"b"}],"path":"file.go"}}`,
+			expected: `{"edits":[{"oldText":"a","newText":"b"}],"path":"file.go"}`,
+			ok:       true,
+		},
+		{
+			name:     "extra closing bracket",
+			input:    `{"command":"echo ok"}]`,
+			expected: `{"command":"echo ok"}`,
+			ok:       true,
+		},
+		{
 			name:  "raw non-json text",
 			input: `location:' "$headers_file"`,
 			ok:    false,
@@ -62,6 +74,61 @@ func TestRepairOrFallbackToolInput(t *testing.T) {
 
 	if v["command"] != raw {
 		t.Errorf("expected command=%q, got %v", raw, v["command"])
+	}
+}
+
+func TestRepairOrFallbackEditInputRemovesExtraCloser(t *testing.T) {
+	raw := `{"edits":[{"oldText":"old","newText":"new"}],"path":"/tmp/file.go"}}`
+	assertRepairedEditInput(t, raw)
+}
+
+func TestRepairOrFallbackUnwrapsJSONStringifiedEditInput(t *testing.T) {
+	inner := `{"edits":[{"oldText":"old","newText":"new"}],"path":"/tmp/file.go"}`
+	encoded, err := json.Marshal(inner)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	assertRepairedEditInput(t, string(encoded))
+}
+
+func TestRepairOrFallbackUnwrapsSingleObjectArray(t *testing.T) {
+	raw := `[{"edits":[{"oldText":"old","newText":"new"}],"path":"/tmp/file.go"}]`
+	assertRepairedEditInput(t, raw)
+}
+
+func TestRepairOrFallbackEscapesBareControlCharacters(t *testing.T) {
+	raw := "{\"edits\":[{\"oldText\":\"old\",\"newText\":\"line 1\nline 2\"}],\"path\":\"/tmp/file.go\"}"
+	res := repairOrFallbackToolInput(raw, "edit")
+	var got map[string]any
+	if err := json.Unmarshal([]byte(res), &got); err != nil {
+		t.Fatalf("repairOrFallbackToolInput returned invalid JSON: %v", err)
+	}
+	edits, ok := got["edits"].([]any)
+	if !ok || len(edits) != 1 {
+		t.Fatalf("edits = %#v", got["edits"])
+	}
+	edit, ok := edits[0].(map[string]any)
+	if !ok || edit["newText"] != "line 1\nline 2" {
+		t.Fatalf("edit = %#v", edits[0])
+	}
+}
+
+func assertRepairedEditInput(t *testing.T, raw string) {
+	t.Helper()
+	res := repairOrFallbackToolInput(raw, "edit")
+
+	var got struct {
+		Path  string `json:"path"`
+		Edits []struct {
+			OldText string `json:"oldText"`
+			NewText string `json:"newText"`
+		} `json:"edits"`
+	}
+	if err := json.Unmarshal([]byte(res), &got); err != nil {
+		t.Fatalf("repairOrFallbackToolInput returned invalid JSON: %v", err)
+	}
+	if got.Path != "/tmp/file.go" || len(got.Edits) != 1 || got.Edits[0].OldText != "old" || got.Edits[0].NewText != "new" {
+		t.Fatalf("repaired edit input = %#v (raw: %q, repaired: %s)", got, raw, res)
 	}
 }
 
@@ -123,4 +190,3 @@ func TestMalformedToolInputInStream(t *testing.T) {
 		t.Errorf("expected non-empty command field in fallback JSON, got %v", parsed)
 	}
 }
-

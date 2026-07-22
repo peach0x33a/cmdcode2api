@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -535,6 +536,97 @@ func TestToolCallParserAcceptsWhitespaceBeforeArguments(t *testing.T) {
 	}
 	if calls[0].Function.Arguments != `{"file":"test.go"}` {
 		t.Fatalf("arguments = %q, want JSON object", calls[0].Function.Arguments)
+	}
+}
+
+func TestToolCallParserRepairsDSMLTerminatedArguments(t *testing.T) {
+	p := NewToolCallParser()
+	input := `Assistant requested tool edit (call_dsml) with arguments: {"edits":[{"oldText":"old","newText":"new"}]</parameter>
+</invoke>
+</｜｜DSML｜｜tool_calls> trailing text`
+
+	content, calls := p.Feed(input, true)
+	if content != " trailing text" {
+		t.Fatalf("content = %q, want trailing text only", content)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("got %d tool calls, want 1", len(calls))
+	}
+	call := calls[0]
+	if call.ID != "call_dsml" || call.Function.Name != "edit" {
+		t.Fatalf("tool call = %+v, want edit call_dsml", call)
+	}
+	var arguments map[string]any
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &arguments); err != nil {
+		t.Fatalf("decode arguments: %v", err)
+	}
+	if _, exists := arguments["path"]; exists {
+		t.Fatalf("arguments = %q, parser invented a missing path", call.Function.Arguments)
+	}
+	if edits, ok := arguments["edits"].([]any); !ok || len(edits) != 1 {
+		t.Fatalf("arguments = %q, want one preserved edit", call.Function.Arguments)
+	}
+}
+
+func TestToolCallParserStripsDSMLAfterCompleteArguments(t *testing.T) {
+	p := NewToolCallParser()
+	input := `Assistant requested tool read (call_dsml_complete) with arguments: {"path":"file.go"}</parameter></invoke></｜｜DSML｜｜tool_calls>`
+
+	content, calls := p.Feed(input, true)
+	if content != "" {
+		t.Fatalf("content = %q, want protocol envelope stripped", content)
+	}
+	if len(calls) != 1 || calls[0].Function.Arguments != `{"path":"file.go"}` {
+		t.Fatalf("calls = %+v, want complete JSON without protocol envelope", calls)
+	}
+}
+
+func TestToolCallParserRepairsFragmentedDSMLTerminatedArguments(t *testing.T) {
+	p := NewToolCallParser()
+	feeds := []feed{
+		{chunk: `Assistant requested tool edit (call_dsml_frag) with arguments: {"edits":[`, done: false},
+		{chunk: `{"oldText":"old","newText":"new"}]</parameter>`, done: false},
+		{chunk: "\n</invoke>\n</｜｜DSML｜｜tool_calls>", done: false},
+	}
+
+	var content strings.Builder
+	var calls []ToolCall
+	for _, f := range feeds {
+		part, parsed := p.Feed(f.chunk, f.done)
+		content.WriteString(part)
+		calls = append(calls, parsed...)
+	}
+	if content.Len() != 0 {
+		t.Fatalf("content = %q, want protocol envelope stripped", content.String())
+	}
+	if len(calls) != 1 || calls[0].ID != "call_dsml_frag" {
+		t.Fatalf("calls = %+v, want one repaired fragmented call", calls)
+	}
+}
+
+func TestToolCallParserDoesNotRepairDSMLTerminatedTruncatedString(t *testing.T) {
+	p := NewToolCallParser()
+	input := `Assistant requested tool bash (call_dsml_unsafe) with arguments: {"command":"printf unsafe</parameter></invoke></｜｜DSML｜｜tool_calls>`
+
+	content, calls := p.Feed(input, true)
+	if content != input {
+		t.Fatalf("content = %q, want unsafe truncated call preserved as text", content)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("calls = %+v, want no executable truncated command", calls)
+	}
+}
+
+func TestToolCallParserDoesNotRepairTruncatedJSONWithoutProtocolEnvelope(t *testing.T) {
+	p := NewToolCallParser()
+	input := `Assistant requested tool edit (call_plain) with arguments: {"edits":[{"oldText":"old"}]`
+
+	content, calls := p.Feed(input, true)
+	if content != input {
+		t.Fatalf("content = %q, want original malformed text", content)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("calls = %+v, want no speculative tool call", calls)
 	}
 }
 

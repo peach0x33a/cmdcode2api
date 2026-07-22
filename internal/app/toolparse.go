@@ -2,6 +2,8 @@ package app
 
 import (
 	"encoding/json"
+	"encoding/xml"
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -44,6 +46,17 @@ var toolCallPrefixRe = regexp.MustCompile(
 var dsmlToolCallSuffixRe = regexp.MustCompile(
 	`(?is)^\s*</parameter>\s*</invoke>\s*</[^>\r\n]*tool_calls\s*>`)
 
+// Some models emit the native DSML representation itself as text instead of
+// a structured tool-call event. Require a complete DSML tool_calls envelope
+// before converting its invoke elements so ordinary XML-like prose cannot
+// become executable by accident.
+const rawDSMLCanonicalOpen = `<｜｜DSML｜｜tool_calls>`
+const rawDSMLCanonicalClose = `</｜｜DSML｜｜tool_calls>`
+
+var rawDSMLOpenRe = regexp.MustCompile(regexp.QuoteMeta(rawDSMLCanonicalOpen))
+var rawDSMLCloseRe = regexp.MustCompile(regexp.QuoteMeta(rawDSMLCanonicalClose))
+var rawDSMLToolNameRe = regexp.MustCompile(`^[^\s()]+$`)
+
 const defaultMaxBuf = 128 * 1024 // 128 KB
 
 // ToolCallParser buffers incoming text chunks, scanning for embedded
@@ -71,11 +84,24 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 	p.buf.WriteString(chunk)
 
 	raw := p.buf.String()
+	originalRaw := raw
 
 	// ----- overflow protection -------------------------------------------
 	if len(raw) > p.maxSize {
 		p.buf.Reset()
 		return raw, nil
+	}
+
+	// Native DSML can contain multiple invokes and can be fragmented across
+	// text deltas. Remove only complete, valid envelopes; retain an incomplete
+	// suffix for the next Feed call.
+	var pendingDSML string
+	var dsmlValid bool
+	var recoveredDSMLIDs map[string]bool
+	raw, pendingDSML, dsmlValid, recoveredDSMLIDs = rewriteRawDSMLToolCalls(raw, done)
+	if !dsmlValid {
+		p.buf.Reset()
+		return originalRaw, nil
 	}
 
 	// ----- scan buffer for tool-call lines -------------------------------
@@ -176,8 +202,9 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 		}
 
 		calls = append(calls, ToolCall{
-			ID:   toolID,
-			Type: "function",
+			ID:               toolID,
+			Type:             "function",
+			recoveredRawDSML: recoveredDSMLIDs[toolID],
 			Function: CallFunc{
 				Name:      toolName,
 				Arguments: rawJSON,
@@ -192,9 +219,12 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 	if done {
 		contentBuf.WriteString(remaining)
 		p.buf.Reset()
-	} else if preserveRemaining {
+	} else if preserveRemaining || pendingDSML != "" {
 		p.buf.Reset()
-		p.buf.WriteString(remaining)
+		if preserveRemaining {
+			p.buf.WriteString(remaining)
+		}
+		p.buf.WriteString(pendingDSML)
 	} else {
 		p.buf.Reset()
 	}
@@ -205,6 +235,298 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 // ---------------------------------------------------------------------------
 // internal helpers
 // ---------------------------------------------------------------------------
+
+type rawDSMLDocument struct {
+	Invokes []rawDSMLInvoke
+	Text    string
+}
+
+type rawDSMLInvoke struct {
+	Name       string
+	Parameters []rawDSMLParameter
+	Text       string
+}
+
+type rawDSMLParameter struct {
+	Name     string
+	IsString string
+	Value    string
+}
+
+func (document *rawDSMLDocument) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement) error {
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		switch typed := token.(type) {
+		case xml.CharData:
+			document.Text += string(typed)
+		case xml.StartElement:
+			if typed.Name.Space != "" || typed.Name.Local != "invoke" {
+				return fmt.Errorf("unexpected DSML element %q", typed.Name.Local)
+			}
+			var invoke rawDSMLInvoke
+			if err := decoder.DecodeElement(&invoke, &typed); err != nil {
+				return err
+			}
+			document.Invokes = append(document.Invokes, invoke)
+		case xml.EndElement:
+			return nil
+		default:
+			return fmt.Errorf("unexpected DSML token %T", token)
+		}
+	}
+}
+
+func (invoke *rawDSMLInvoke) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement) error {
+	seenName := false
+	for _, attr := range start.Attr {
+		if attr.Name.Space != "" || attr.Name.Local != "name" || seenName {
+			return fmt.Errorf("invalid or duplicate invoke attribute %q", attr.Name.Local)
+		}
+		seenName = true
+		invoke.Name = attr.Value
+	}
+
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		switch typed := token.(type) {
+		case xml.CharData:
+			invoke.Text += string(typed)
+		case xml.StartElement:
+			if typed.Name.Space != "" || typed.Name.Local != "parameter" {
+				return fmt.Errorf("unexpected invoke element %q", typed.Name.Local)
+			}
+			var parameter rawDSMLParameter
+			if err := decoder.DecodeElement(&parameter, &typed); err != nil {
+				return err
+			}
+			invoke.Parameters = append(invoke.Parameters, parameter)
+		case xml.EndElement:
+			return nil
+		default:
+			return fmt.Errorf("unexpected invoke token %T", token)
+		}
+	}
+}
+
+func (parameter *rawDSMLParameter) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement) error {
+	seenName, seenString := false, false
+	for _, attr := range start.Attr {
+		if attr.Name.Space != "" {
+			return fmt.Errorf("namespaced parameter attribute %q", attr.Name.Local)
+		}
+		switch attr.Name.Local {
+		case "name":
+			if seenName {
+				return fmt.Errorf("duplicate parameter name attribute")
+			}
+			seenName = true
+			parameter.Name = attr.Value
+		case "string":
+			if seenString {
+				return fmt.Errorf("duplicate parameter string attribute")
+			}
+			seenString = true
+			parameter.IsString = attr.Value
+		default:
+			return fmt.Errorf("unexpected parameter attribute %q", attr.Name.Local)
+		}
+	}
+
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		switch typed := token.(type) {
+		case xml.CharData:
+			parameter.Value += string(typed)
+		case xml.StartElement:
+			return fmt.Errorf("unexpected parameter element %q", typed.Name.Local)
+		case xml.EndElement:
+			return nil
+		default:
+			return fmt.Errorf("unexpected parameter token %T", token)
+		}
+	}
+}
+
+// rewriteRawDSMLToolCalls replaces complete valid native DSML envelopes with
+// the legacy textual form already handled by Feed. This preserves source order
+// when a response mixes native DSML and legacy textual calls. Malformed or
+// incomplete envelopes remain visible text; an incomplete envelope is buffered
+// while the stream is still open.
+func rewriteRawDSMLToolCalls(raw string, done bool) (content string, pending string, valid bool, recoveredIDs map[string]bool) {
+	var out strings.Builder
+	recoveredIDs = make(map[string]bool)
+	pos := 0
+	for pos < len(raw) {
+		open := findRawDSMLOpenOutsideLegacyCall(raw, pos)
+		if open == nil {
+			rest := raw[pos:]
+			if !done {
+				if partial := partialRawDSMLStart(rest); partial >= 0 {
+					out.WriteString(rest[:partial])
+					return out.String(), rest[partial:], true, recoveredIDs
+				}
+			}
+			out.WriteString(rest)
+			break
+		}
+
+		envelopeStart := open[0]
+		bodyStart := open[1]
+		out.WriteString(raw[pos:envelopeStart])
+		close := rawDSMLCloseRe.FindStringIndex(raw[bodyStart:])
+		if close == nil {
+			if !done {
+				return out.String(), raw[envelopeStart:], true, recoveredIDs
+			}
+			return out.String() + raw[envelopeStart:], "", false, nil
+		}
+
+		closeStart := bodyStart + close[0]
+		closeEnd := bodyStart + close[1]
+		parsed, ok := parseRawDSMLInvokes(raw[bodyStart:closeStart])
+		if !ok {
+			return out.String() + raw[envelopeStart:], "", false, nil
+		}
+		for _, call := range parsed {
+			recoveredIDs[call.ID] = true
+			fmt.Fprintf(&out, "Assistant requested tool %s (%s) with arguments: %s",
+				call.Function.Name, call.ID, call.Function.Arguments)
+		}
+		pos = closeEnd
+	}
+	return out.String(), "", true, recoveredIDs
+}
+
+// findRawDSMLOpenOutsideLegacyCall ignores marker-like text inside the JSON
+// arguments of the legacy textual tool-call representation.
+func findRawDSMLOpenOutsideLegacyCall(raw string, start int) []int {
+	cursor := start
+	for cursor < len(raw) {
+		open := rawDSMLOpenRe.FindStringIndex(raw[cursor:])
+		if open == nil {
+			return nil
+		}
+		open = []int{cursor + open[0], cursor + open[1]}
+
+		legacy := toolCallPrefixRe.FindStringSubmatchIndex(raw[cursor:])
+		if legacy == nil || cursor+legacy[0] >= open[0] {
+			return open
+		}
+		prefixEnd := cursor + legacy[1]
+		if legacy[6] != -1 {
+			cursor = scanLineEnd(raw, prefixEnd)
+			continue
+		}
+		jsonStart := prefixEnd
+		for jsonStart < len(raw) && isToolCallSpace(raw[jsonStart]) {
+			jsonStart++
+		}
+		jsonEnd, complete := scanJSON(raw, jsonStart)
+		if !complete {
+			return nil
+		}
+		cursor = jsonEnd
+	}
+	return nil
+}
+
+func parseRawDSMLInvokes(body string) ([]ToolCall, bool) {
+	// encoding/xml normalizes CDATA into CharData. Reject all declaration-like
+	// syntax lexically so comments, CDATA, directives, and processing
+	// instructions cannot bypass the strict token grammar below.
+	if strings.Contains(body, "<!") || strings.Contains(body, "<?") {
+		return nil, false
+	}
+
+	var document rawDSMLDocument
+	wrapped := "<tool_calls>" + body + "</tool_calls>"
+	if err := xml.Unmarshal([]byte(wrapped), &document); err != nil || len(document.Invokes) == 0 ||
+		strings.TrimSpace(document.Text) != "" {
+		return nil, false
+	}
+
+	calls := make([]ToolCall, 0, len(document.Invokes))
+	for _, invoke := range document.Invokes {
+		toolName := invoke.Name
+		if !rawDSMLToolNameRe.MatchString(toolName) || strings.TrimSpace(invoke.Text) != "" {
+			return nil, false
+		}
+		arguments := make(map[string]any, len(invoke.Parameters))
+		for _, parameter := range invoke.Parameters {
+			name := parameter.Name
+			stringFlag := parameter.IsString
+			if name == "" || strings.TrimSpace(name) != name ||
+				(stringFlag != "true" && stringFlag != "false") {
+				return nil, false
+			}
+			if _, duplicate := arguments[name]; duplicate {
+				return nil, false
+			}
+
+			if stringFlag == "true" {
+				arguments[name] = parameter.Value
+				continue
+			}
+			value := json.RawMessage(strings.TrimSpace(parameter.Value))
+			if !json.Valid(value) {
+				return nil, false
+			}
+			arguments[name] = value
+		}
+
+		rawArguments, err := json.Marshal(arguments)
+		if err != nil {
+			return nil, false
+		}
+		id, ok := newRawDSMLCallID()
+		if !ok {
+			return nil, false
+		}
+		calls = append(calls, ToolCall{
+			ID:               id,
+			Type:             "function",
+			recoveredRawDSML: true,
+			Function: CallFunc{
+				Name:      toolName,
+				Arguments: string(rawArguments),
+			},
+		})
+	}
+	return calls, true
+}
+
+func newRawDSMLCallID() (string, bool) {
+	id, err := randomHex(18)
+	if err != nil {
+		return "", false
+	}
+	return "call_dsml_" + id, true
+}
+
+// partialRawDSMLOpenerStart finds an unfinished tag at the end of a chunk.
+// Once a complete opener has arrived, extractRawDSMLToolCalls buffers from
+// that opener until the matching closing envelope arrives.
+func partialRawDSMLStart(s string) int {
+	start := strings.LastIndexByte(s, '<')
+	if start < 0 {
+		return -1
+	}
+	candidate := s[start:]
+	if len(candidate) < len(rawDSMLCanonicalOpen) &&
+		candidate == rawDSMLCanonicalOpen[:len(candidate)] {
+		return start
+	}
+	return -1
+}
 
 // scanLineEnd returns the index of the next \n in s starting at offset,
 // or len(s) if none exists (the line runs to EOF).

@@ -130,6 +130,12 @@ type ToolCall struct {
 	ID       string   `json:"id"`
 	Type     string   `json:"type"` // "function"
 	Function CallFunc `json:"function"`
+
+	// recoveredRawDSML distinguishes a protocol-recovery artifact from an
+	// intentional structured call. It is internal-only and enables safe
+	// cross-representation deduplication without collapsing two intentional,
+	// semantically identical calls.
+	recoveredRawDSML bool
 }
 
 type CallFunc struct {

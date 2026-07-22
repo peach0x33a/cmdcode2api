@@ -37,6 +37,13 @@ import (
 var toolCallPrefixRe = regexp.MustCompile(
 	`(?i)Assistant\s+requested\s+tool\s+([^\s(]+)\s*\(([^)]+)\)\s+with\s+(invalid\s+)?arguments:`)
 
+// Some upstream model responses emit a textual tool call followed by leaked
+// DSML closing tags. The arguments may be missing only their outer JSON
+// closers, for example: {"edits":[...]</parameter></invoke></…tool_calls>.
+// Match the complete envelope so a fragmented suffix remains buffered.
+var dsmlToolCallSuffixRe = regexp.MustCompile(
+	`(?is)^\s*</parameter>\s*</invoke>\s*</[^>\r\n]*tool_calls\s*>`)
+
 const defaultMaxBuf = 128 * 1024 // 128 KB
 
 // ToolCallParser buffers incoming text chunks, scanning for embedded
@@ -127,6 +134,27 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 		}
 
 		jsonEnd, complete := scanJSON(raw, jsonStart)
+		rawJSON := ""
+
+		if suffixStart, suffixEnd, ok := findDSMLToolCallSuffix(raw, jsonStart); ok {
+			if complete && suffixStart >= jsonEnd && strings.TrimSpace(raw[jsonEnd:suffixStart]) == "" {
+				// Strip a leaked protocol envelope after otherwise valid JSON.
+				rawJSON = strings.TrimSpace(raw[jsonStart:jsonEnd])
+				jsonEnd = suffixEnd
+			} else if !complete {
+				// Repair only JSON immediately terminated by a complete DSML tool-call
+				// envelope. Do not use the generic fallback: missing schema fields
+				// (such as edit.path) must remain missing so the client can reject the
+				// call and give the model actionable validation feedback.
+				candidate := strings.TrimSpace(raw[jsonStart:suffixStart])
+				if repaired, ok := repairJSONClosersOnly(candidate); ok {
+					rawJSON = repaired
+					jsonEnd = suffixEnd
+					complete = true
+				}
+			}
+		}
+
 		if !complete && !done {
 			// still waiting for more data
 			pos = matchStart
@@ -134,7 +162,9 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 			break
 		}
 
-		rawJSON := strings.TrimSpace(raw[jsonStart:jsonEnd])
+		if rawJSON == "" {
+			rawJSON = strings.TrimSpace(raw[jsonStart:jsonEnd])
+		}
 
 		// validate JSON before emitting a ToolCall
 		var v any
@@ -178,6 +208,100 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 
 // scanLineEnd returns the index of the next \n in s starting at offset,
 // or len(s) if none exists (the line runs to EOF).
+func repairJSONClosersOnly(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || (raw[0] != '{' && raw[0] != '[') {
+		return "", false
+	}
+
+	stack := make([]byte, 0, 4)
+	inString := false
+	escaped := false
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+			} else if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			stack = append(stack, '}')
+		case '[':
+			stack = append(stack, ']')
+		case '}', ']':
+			if len(stack) == 0 || stack[len(stack)-1] != ch {
+				return "", false
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+
+	// A DSML envelope is evidence only for missing structural closers. Never
+	// complete a truncated string, key/value, command, or content field.
+	if inString || escaped || len(stack) == 0 {
+		return "", false
+	}
+	last := raw[len(raw)-1]
+	if last != '}' && last != ']' {
+		return "", false
+	}
+
+	var b strings.Builder
+	b.Grow(len(raw) + len(stack))
+	b.WriteString(raw)
+	for i := len(stack) - 1; i >= 0; i-- {
+		b.WriteByte(stack[i])
+	}
+	repaired := b.String()
+	var value any
+	if json.Unmarshal([]byte(repaired), &value) != nil {
+		return "", false
+	}
+	return repaired, true
+}
+
+func findDSMLToolCallSuffix(s string, start int) (suffixStart, suffixEnd int, ok bool) {
+	inString := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		ch := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+			} else if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		if ch == '"' {
+			inString = true
+			continue
+		}
+		if ch != '<' {
+			continue
+		}
+		if loc := dsmlToolCallSuffixRe.FindStringIndex(s[i:]); loc != nil && loc[0] == 0 {
+			return i, i + loc[1], true
+		}
+	}
+	return 0, 0, false
+}
+
 func scanLineEnd(s string, offset int) int {
 	if idx := strings.IndexByte(s[offset:], '\n'); idx >= 0 {
 		return offset + idx + 1 // include the newline

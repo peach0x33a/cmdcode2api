@@ -562,6 +562,45 @@ func TestHandleStreamToolCallFromText(t *testing.T) {
 	}
 }
 
+func TestHandleStreamRepairsDSMLTerminatedTextToolCall(t *testing.T) {
+	toolText := `Assistant requested tool edit (call_dsml) with arguments: {"edits":[{"oldText":"old","newText":"new"}]</parameter>
+</invoke>
+</｜｜DSML｜｜tool_calls>`
+	textEvent, err := json.Marshal(CCStreamEvent{Type: "text-delta", Text: toolText})
+	if err != nil {
+		t.Fatalf("marshal text event: %v", err)
+	}
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"data: " + string(textEvent),
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `"id":"call_dsml"`) || !strings.Contains(body, `"name":"edit"`) {
+		t.Fatalf("expected repaired edit tool call, got body = %s", body)
+	}
+	if !strings.Contains(body, `\"edits\"`) {
+		t.Fatalf("expected edits arguments, got body = %s", body)
+	}
+	if strings.Contains(body, `\"path\"`) {
+		t.Fatalf("parser invented a missing path: %s", body)
+	}
+	if strings.Contains(body, `</parameter>`) || strings.Contains(body, `DSML`) {
+		t.Fatalf("protocol envelope leaked into stream: %s", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("finish_reason was not normalized after repaired tool call: %s", body)
+	}
+	if n := strings.Count(body, "data: [DONE]"); n != 1 {
+		t.Fatalf("got %d [DONE] markers, want 1. body = %s", n, body)
+	}
+}
+
 func TestHandleStreamToolCallFromTextFragmented(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{

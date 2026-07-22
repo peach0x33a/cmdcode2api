@@ -601,6 +601,45 @@ func TestHandleStreamRepairsDSMLTerminatedTextToolCall(t *testing.T) {
 	}
 }
 
+func TestHandleStreamParsesRawDSMLToolCalls(t *testing.T) {
+	chunks := []string{
+		`先读取两个文件：<｜｜DSML｜｜tool_`,
+		`calls><invoke name="read"><parameter name="offset" string="false">95</parameter>`,
+		`<parameter name="path" string="true">/tmp/protocol.ts</parameter></invoke>`,
+		`<invoke name="read"><parameter name="offset" string="false">185</parameter>`,
+		`<parameter name="path" string="true">/tmp/curl.py</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+	}
+	events := make([]string, 0, len(chunks)+2)
+	for _, chunk := range chunks {
+		raw, err := json.Marshal(CCStreamEvent{Type: "text-delta", Text: chunk})
+		if err != nil {
+			t.Fatalf("marshal text event: %v", err)
+		}
+		events = append(events, "data: "+string(raw))
+	}
+	events = append(events,
+		`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+		`data: [DONE]`)
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Join(events, "\n\n")))}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if n := strings.Count(body, `"name":"read"`); n != 2 {
+		t.Fatalf("got %d read tool calls, want 2. body = %s", n, body)
+	}
+	if strings.Contains(body, `<invoke`) || strings.Contains(body, `<parameter`) || strings.Contains(body, `DSML`) {
+		t.Fatalf("raw DSML leaked into stream: %s", body)
+	}
+	if !strings.Contains(body, `"content":"先读取两个文件："`) {
+		t.Fatalf("visible preface missing from stream: %s", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("finish_reason was not normalized: %s", body)
+	}
+}
+
 func TestHandleStreamToolCallFromTextFragmented(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
@@ -700,6 +739,110 @@ func TestHandleStreamStructuredAndTextToolCall(t *testing.T) {
 	}
 	if strings.Contains(body, `Assistant requested tool`) {
 		t.Fatalf("raw tool-call text leaked into stream output: %s", body)
+	}
+}
+
+func TestHandleStreamStructuredAndRawDSMLToolCallDoesNotDuplicate(t *testing.T) {
+	rawDSML := `<｜｜DSML｜｜tool_calls><invoke name="bash"><parameter name="command" string="true">echo once</parameter></invoke></｜｜DSML｜｜tool_calls>`
+	textEvent, err := json.Marshal(CCStreamEvent{Type: "text-delta", Text: rawDSML})
+	if err != nil {
+		t.Fatalf("marshal text event: %v", err)
+	}
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"tool-call","toolCallId":"call_structured_once","toolName":"bash","input":{"command":"echo once"}}`,
+			"data: " + string(textEvent),
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+
+	if n := strings.Count(body, `"name":"bash"`); n != 1 {
+		t.Fatalf("got %d equivalent bash calls, want 1. body = %s", n, body)
+	}
+	if strings.Contains(body, `DSML`) || strings.Contains(body, `<invoke`) {
+		t.Fatalf("raw DSML leaked into stream output: %s", body)
+	}
+}
+
+func TestHandleStreamDeduplicatesSemanticJSONAcrossStructuredAndRawDSML(t *testing.T) {
+	tests := []struct {
+		name       string
+		structured string
+		rawValue   string
+	}{
+		{
+			name:       "large_integer",
+			structured: `{"offset":9007199254740993}`,
+			rawValue:   `<parameter name="offset" string="false">9007199254740993</parameter>`,
+		},
+		{
+			name:       "nested_key_order",
+			structured: `{"options":{"a":1,"b":2}}`,
+			rawValue:   `<parameter name="options" string="false">{"b":2,"a":1}</parameter>`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rawDSML := `<｜｜DSML｜｜tool_calls><invoke name="read">` + test.rawValue + `</invoke></｜｜DSML｜｜tool_calls>`
+			textEvent, err := json.Marshal(CCStreamEvent{Type: "text-delta", Text: rawDSML})
+			if err != nil {
+				t.Fatalf("marshal text event: %v", err)
+			}
+			resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+				`data: {"type":"tool-call","toolCallId":"call_semantic","toolName":"read","input":` + test.structured + `}`,
+				"data: " + string(textEvent),
+				`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+				`data: [DONE]`,
+			}, "\n\n")))}
+			rec := httptest.NewRecorder()
+			handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+			if n := strings.Count(rec.Body.String(), `"name":"read"`); n != 1 {
+				t.Fatalf("got %d semantically equivalent calls, want 1. body = %s", n, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleStreamDeduplicatesStructuredAndRawOneToOne(t *testing.T) {
+	rawDSML := `<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name="path" string="true">same.txt</parameter></invoke><invoke name="read"><parameter name="path" string="true">same.txt</parameter></invoke></｜｜DSML｜｜tool_calls>`
+	textEvent, err := json.Marshal(CCStreamEvent{Type: "text-delta", Text: rawDSML})
+	if err != nil {
+		t.Fatalf("marshal text event: %v", err)
+	}
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+		`data: {"type":"tool-call","toolCallId":"call_structured_same","toolName":"read","input":{"path":"same.txt"}}`,
+		"data: " + string(textEvent),
+		`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+		`data: [DONE]`,
+	}, "\n\n")))}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+	if n := strings.Count(body, `"name":"read"`); n != 2 {
+		t.Fatalf("got %d calls, want one duplicate suppressed and one repeated invoke kept. body = %s", n, body)
+	}
+}
+
+func TestHandleStreamKeepsTwoIntentionalEquivalentRawDSMLCalls(t *testing.T) {
+	rawDSML := `<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name="path" string="true">same.txt</parameter></invoke><invoke name="read"><parameter name="path" string="true">same.txt</parameter></invoke></｜｜DSML｜｜tool_calls>`
+	textEvent, err := json.Marshal(CCStreamEvent{Type: "text-delta", Text: rawDSML})
+	if err != nil {
+		t.Fatalf("marshal text event: %v", err)
+	}
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+		"data: " + string(textEvent),
+		`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+		`data: [DONE]`,
+	}, "\n\n")))}
+	rec := httptest.NewRecorder()
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	body := rec.Body.String()
+	if n := strings.Count(body, `"name":"read"`); n != 2 {
+		t.Fatalf("got %d intentional equivalent raw calls, want 2. body = %s", n, body)
 	}
 }
 

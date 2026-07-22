@@ -604,6 +604,165 @@ func TestToolCallParserRepairsFragmentedDSMLTerminatedArguments(t *testing.T) {
 	}
 }
 
+func TestToolCallParserParsesRawDSMLInvokes(t *testing.T) {
+	p := NewToolCallParser()
+	input := `让我对比一下具体差异：<｜｜DSML｜｜tool_calls>
+<invoke name="read">
+<parameter name="offset" string="false">95</parameter>
+<parameter name="path" string="true">/tmp/protocol.ts</parameter>
+<parameter name="limit" string="false">40</parameter>
+</invoke>
+<invoke name="read">
+<parameter name="offset" string="false">185</parameter>
+<parameter name="path" string="true">/tmp/ea_login_curl.py</parameter>
+<parameter name="limit" string="false">25</parameter>
+</invoke>
+</｜｜DSML｜｜tool_calls>`
+
+	content, calls := p.Feed(input, true)
+	if content != "让我对比一下具体差异：" {
+		t.Fatalf("content = %q, want only user-visible preface", content)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %+v, want two read calls", calls)
+	}
+	for i, want := range []struct {
+		path   string
+		offset float64
+		limit  float64
+	}{{"/tmp/protocol.ts", 95, 40}, {"/tmp/ea_login_curl.py", 185, 25}} {
+		if calls[i].ID == "" || calls[i].Function.Name != "read" {
+			t.Fatalf("call %d = %+v, want identified read call", i, calls[i])
+		}
+		var args map[string]any
+		if err := json.Unmarshal([]byte(calls[i].Function.Arguments), &args); err != nil {
+			t.Fatalf("decode call %d arguments: %v", i, err)
+		}
+		if args["path"] != want.path || args["offset"] != want.offset || args["limit"] != want.limit {
+			t.Fatalf("call %d arguments = %#v", i, args)
+		}
+	}
+}
+
+func TestToolCallParserParsesFragmentedRawDSML(t *testing.T) {
+	input := `<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name="path" string="true">a&amp;b.txt</parameter></invoke></｜｜DSML｜｜tool_calls>`
+
+	for split := 1; split < len(input); split++ {
+		t.Run(fmt.Sprintf("split_%d", split), func(t *testing.T) {
+			p := NewToolCallParser()
+			var content strings.Builder
+			var calls []ToolCall
+			part, parsed := p.Feed(input[:split], false)
+			content.WriteString(part)
+			calls = append(calls, parsed...)
+			part, parsed = p.Feed(input[split:], true)
+			content.WriteString(part)
+			calls = append(calls, parsed...)
+
+			if content.Len() != 0 {
+				t.Fatalf("raw DSML leaked at split %d: %q", split, content.String())
+			}
+			if len(calls) != 1 {
+				t.Fatalf("calls at split %d = %+v", split, calls)
+			}
+			var args map[string]any
+			if err := json.Unmarshal([]byte(calls[0].Function.Arguments), &args); err != nil || args["path"] != "a&b.txt" {
+				t.Fatalf("arguments at split %d = %q, decode error = %v", split, calls[0].Function.Arguments, err)
+			}
+		})
+	}
+}
+
+func TestToolCallParserPreservesIncompleteRawDSML(t *testing.T) {
+	p := NewToolCallParser()
+	input := `<invoke name="bash"><parameter name="command" string="true">rm -rf /tmp/example</parameter></invoke>`
+	content, calls := p.Feed(input, true)
+	if content != input || len(calls) != 0 {
+		t.Fatalf("got (%q, %+v), want incomplete envelope preserved and not executable", content, calls)
+	}
+}
+
+func TestToolCallParserRejectsRawDSMLWithoutOpeningMarker(t *testing.T) {
+	p := NewToolCallParser()
+	input := `让我对比一下具体差异：</parameter><invoke name="read"><parameter name="offset" string="false">95</parameter><parameter name="path" string="true">/tmp/protocol.ts</parameter></invoke><invoke name="read"><parameter name="offset" string="false">185</parameter><parameter name="path" string="true">/tmp/curl.py</parameter></invoke></｜｜DSML｜｜tool_calls>`
+	content, calls := p.Feed(input, true)
+	if content != input || len(calls) != 0 {
+		t.Fatalf("got (%q, %+v), want markerless DSML preserved and not executable", content, calls)
+	}
+}
+
+func TestToolCallParserDoesNotScanRawDSMLInsideLegacyJSON(t *testing.T) {
+	p := NewToolCallParser()
+	input := `Assistant requested tool bash (call_legacy_xml) with arguments: {"command":"printf '<｜｜DSML｜｜tool_calls><invoke name=read>'"}`
+	content, calls := p.Feed(input, true)
+	if content != "" || len(calls) != 1 || calls[0].ID != "call_legacy_xml" {
+		t.Fatalf("got (%q, %+v), want valid legacy call", content, calls)
+	}
+}
+
+func TestToolCallParserDoesNotInferRawProvenanceFromLegacyID(t *testing.T) {
+	p := NewToolCallParser()
+	input := `Assistant requested tool read (call_dsml_user_supplied) with arguments: {"path":"a"}`
+	content, calls := p.Feed(input, true)
+	if content != "" || len(calls) != 1 || calls[0].recoveredRawDSML {
+		t.Fatalf("got (%q, %+v), want ordinary legacy call regardless of ID prefix", content, calls)
+	}
+}
+
+func TestToolCallParserPreservesRawDSMLLargeInteger(t *testing.T) {
+	p := NewToolCallParser()
+	input := `<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name="offset" string="false">9007199254740993</parameter></invoke></｜｜DSML｜｜tool_calls>`
+	content, calls := p.Feed(input, true)
+	if content != "" || len(calls) != 1 {
+		t.Fatalf("got (%q, %+v), want one call", content, calls)
+	}
+	if calls[0].Function.Arguments != `{"offset":9007199254740993}` {
+		t.Fatalf("arguments = %q, want exact integer preserved", calls[0].Function.Arguments)
+	}
+}
+
+func TestToolCallParserRejectsMalformedRawDSML(t *testing.T) {
+	tests := []string{
+		`<｜｜DSML｜｜tool_calls><invoke name="bash"><parameter name="command" string="true">echo ok</parameter><unexpected/></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><invoke name="bash"><parameter name="command" string="true" extra="x">echo ok</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name="offset" string="false">not-json</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name="path" string="true">a</parameter><parameter name="path" string="true">b</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><invoke name="bad name"><parameter name="path" string="true">a</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><invoke name=" read "><parameter name="path" string="true">a</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name=" path " string="true">a</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name="path" string="TRUE">a</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜dsml｜｜tool_calls><invoke name="read"><parameter name="path" string="true">a</parameter></invoke></｜｜dsml｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><!-- comment --><invoke name="read"><parameter name="path" string="true">a</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><?pi x?><invoke name="read"><parameter name="path" string="true">a</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><invoke name="read" name="bash"><parameter name="path" string="true">a</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name="path" name="command" string="true">a</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name="path" string="true" string="false">a</parameter></invoke></｜｜DSML｜｜tool_calls>`,
+		`<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name="path" string="true">a</parameter></invoke>Assistant requested tool bash (call_unsafe) with arguments: {"command":"echo unsafe"}</｜｜DSML｜｜tool_calls>`,
+	}
+	for i, input := range tests {
+		t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {
+			p := NewToolCallParser()
+			content, calls := p.Feed(input, true)
+			if content != input || len(calls) != 0 {
+				t.Fatalf("got (%q, %+v), want malformed envelope preserved and not executable", content, calls)
+			}
+		})
+	}
+}
+
+func TestToolCallParserPreservesRawDSMLAndLegacyCallOrder(t *testing.T) {
+	p := NewToolCallParser()
+	input := `<｜｜DSML｜｜tool_calls><invoke name="read"><parameter name="path" string="true">first</parameter></invoke></｜｜DSML｜｜tool_calls>` +
+		`Assistant requested tool read (call_legacy) with arguments: {"path":"second"}`
+	content, calls := p.Feed(input, true)
+	if content != "" || len(calls) != 2 {
+		t.Fatalf("got (%q, %+v), want two calls without content", content, calls)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"first"`) || calls[1].ID != "call_legacy" {
+		t.Fatalf("call order = %+v, want raw DSML call before legacy call", calls)
+	}
+}
+
 func TestToolCallParserDoesNotRepairDSMLTerminatedTruncatedString(t *testing.T) {
 	p := NewToolCallParser()
 	input := `Assistant requested tool bash (call_dsml_unsafe) with arguments: {"command":"printf unsafe</parameter></invoke></｜｜DSML｜｜tool_calls>`

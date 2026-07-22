@@ -100,7 +100,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	textParser := NewToolCallParser()
 	reasoningParser := NewToolCallParser()
 	hasToolCalls := false
-	emittedToolCalls := make(map[string]bool)
+	var emittedToolCalls toolCallDeduper
 	toolCallIndex := 0
 
 	emitContent := func(content string, reasoning bool) {
@@ -129,11 +129,9 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	}
 
 	emitToolCall := func(tc ToolCall) {
-		key := toolCallKey(tc)
-		if emittedToolCalls[key] {
+		if !emittedToolCalls.Add(tc) {
 			return
 		}
-		emittedToolCalls[key] = true
 		delta := StreamDelta{ToolCalls: []StreamToolCall{{
 			Index:    toolCallIndex,
 			ID:       tc.ID,
@@ -240,6 +238,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 
 func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config) {
 	msg := Message{Role: "assistant"}
+	var toolCalls toolCallDeduper
 	normalizer := newCCEventNormalizer()
 	var textContent strings.Builder
 	var reasoningContent strings.Builder
@@ -262,7 +261,7 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 				reasoningContent.WriteString(event.text)
 			case normalizedToolCall:
 				if event.toolCall != nil {
-					msg.ToolCalls = appendUniqueToolCall(msg.ToolCalls, *event.toolCall)
+					toolCalls.Add(*event.toolCall)
 				}
 			case normalizedFinish:
 				finishReason = event.finishReason
@@ -284,7 +283,7 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		strippedContent, parsedCalls := tcp.Feed(visibleText, true)
 		if len(parsedCalls) > 0 {
 			for _, call := range parsedCalls {
-				msg.ToolCalls = appendUniqueToolCall(msg.ToolCalls, call)
+				toolCalls.Add(call)
 			}
 			visibleText = strippedContent
 		}
@@ -297,13 +296,14 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		strippedReasoning, parsedCalls := tcp.Feed(reasoningText, true)
 		if len(parsedCalls) > 0 {
 			for _, call := range parsedCalls {
-				msg.ToolCalls = appendUniqueToolCall(msg.ToolCalls, call)
+				toolCalls.Add(call)
 			}
 			reasoningText = strippedReasoning
 		}
 	}
 
 	msg.Content = TextContent(visibleText)
+	msg.ToolCalls = toolCalls.kept
 	if len(msg.ToolCalls) > 0 {
 		finishReason = "tool_calls"
 	}

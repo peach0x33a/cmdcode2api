@@ -305,15 +305,20 @@ func TestCCClientSendPreservesNestedUpstreamErrorCode(t *testing.T) {
 }
 
 func TestParseStreamEventsRejectsMalformedData(t *testing.T) {
-	resp := &http.Response{
-		Body: io.NopCloser(strings.NewReader("data: not-json\n\n")),
+	tests := []string{
+		"data: not-json\n\n",
+		`data: {"type":"tool-call","toolCallId":"call_bad","toolName":"bash","input":{"command":"echo unsafe"}} garbage` + "\n\n",
+		`data: {"type":"tool-call","toolCallId":"call_bad","toolName":"bash","input":{"command":"echo unsafe"}} {"type":"finish"}` + "\n\n",
 	}
-
-	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
-		t.Fatal("callback should not be called")
-		return nil
-	})
-	if err == nil {
-		t.Fatal("expected parse error")
+	for _, input := range tests {
+		resp := &http.Response{Body: io.NopCloser(strings.NewReader(input))}
+		called := false
+		err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
+			called = true
+			return nil
+		})
+		if err == nil || called {
+			t.Fatalf("input %q: err = %v, callback called = %v; want rejection before callback", input, err, called)
+		}
 	}
 }

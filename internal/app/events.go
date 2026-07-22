@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 )
@@ -424,15 +426,53 @@ func toolCallKey(call ToolCall) string {
 	if call.ID != "" {
 		return call.ID
 	}
+	return toolCallSemanticKey(call)
+}
+
+func toolCallSemanticKey(call ToolCall) string {
+	decoder := json.NewDecoder(strings.NewReader(call.Function.Arguments))
+	decoder.UseNumber()
+	var value any
+	if decoder.Decode(&value) == nil {
+		var trailing any
+		if decoder.Decode(&trailing) == io.EOF {
+			if canonical, err := json.Marshal(value); err == nil {
+				return call.Function.Name + "\x00" + string(canonical)
+			}
+		}
+	}
+	var compact bytes.Buffer
+	if json.Compact(&compact, []byte(call.Function.Arguments)) == nil {
+		return call.Function.Name + "\x00" + compact.String()
+	}
 	return call.Function.Name + "\x00" + call.Function.Arguments
 }
 
-func appendUniqueToolCall(calls []ToolCall, call ToolCall) []ToolCall {
-	key := toolCallKey(call)
-	for _, existing := range calls {
-		if toolCallKey(existing) == key {
-			return calls
+type toolCallDeduper struct {
+	kept   []ToolCall
+	paired []bool
+}
+
+// Add performs one-to-one cross-representation deduplication. One structured
+// call suppresses at most one equivalent recovered DSML call, preserving the
+// multiplicity of intentional repeated invokes.
+func (d *toolCallDeduper) Add(candidate ToolCall) bool {
+	for _, existing := range d.kept {
+		if toolCallKey(existing) == toolCallKey(candidate) {
+			return false
 		}
 	}
-	return append(calls, call)
+	semanticKey := toolCallSemanticKey(candidate)
+	for i, existing := range d.kept {
+		if d.paired[i] || existing.recoveredRawDSML == candidate.recoveredRawDSML {
+			continue
+		}
+		if toolCallSemanticKey(existing) == semanticKey {
+			d.paired[i] = true
+			return false
+		}
+	}
+	d.kept = append(d.kept, candidate)
+	d.paired = append(d.paired, false)
+	return true
 }

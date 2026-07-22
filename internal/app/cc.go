@@ -206,8 +206,17 @@ func ParseStreamEvents(resp *http.Response, onEvent func(CCStreamEvent) error) e
 			break
 		}
 		var ev CCStreamEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(line))
+		decoder.UseNumber()
+		if err := decoder.Decode(&ev); err != nil {
 			return fmt.Errorf("parse sse data: %w", err)
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			if err == nil {
+				err = fmt.Errorf("multiple JSON values")
+			}
+			return fmt.Errorf("parse sse data: trailing content: %w", err)
 		}
 		if err := onEvent(ev); err != nil {
 			return err

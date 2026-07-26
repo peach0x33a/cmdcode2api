@@ -161,7 +161,10 @@ func TestMalformedToolInputInStream(t *testing.T) {
 		}
 	}
 
-	// Send tool-input-end
+	// tool-input-end repairs the truncated deltas, but the call is held rather
+	// than emitted: an authoritative tool-call event for the same id may still
+	// arrive with the complete input, and a streamed call cannot be corrected
+	// once sent.
 	events, err := normalizer.Consume(CCStreamEvent{
 		Type: "tool-input-end",
 		ID:   callID,
@@ -169,8 +172,17 @@ func TestMalformedToolInputInStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected tool-input-end to succeed with repair/fallback, got error: %v", err)
 	}
-	if len(events) != 1 || events[0].kind != normalizedToolCall {
-		t.Fatalf("expected 1 normalizedToolCall event, got %v", events)
+	if len(events) != 0 {
+		t.Fatalf("expected the repaired call to be held, got %v", events)
+	}
+
+	// No authoritative event arrived, so finish releases the repaired call.
+	events, err = normalizer.Consume(CCStreamEvent{Type: "finish", FinishReason: "tool-calls"})
+	if err != nil {
+		t.Fatalf("unexpected error on finish: %v", err)
+	}
+	if len(events) != 2 || events[0].kind != normalizedToolCall {
+		t.Fatalf("expected the held call then finish, got %v", events)
 	}
 
 	tc := events[0].toolCall

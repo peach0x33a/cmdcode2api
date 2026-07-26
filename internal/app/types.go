@@ -153,6 +153,11 @@ type ToolCall struct {
 	// cross-representation deduplication without collapsing two intentional,
 	// semantically identical calls.
 	recoveredRawDSML bool
+
+	// repaired marks arguments that only parse because truncated JSON was
+	// patched. Such a call is a best guess and must yield to an authoritative
+	// payload for the same id.
+	repaired bool
 }
 
 type CallFunc struct {

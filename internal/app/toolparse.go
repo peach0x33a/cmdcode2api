@@ -99,7 +99,8 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 	var remaining string
 	preserveRemaining := false
 
-	for _, segment := range segments {
+	for i, segment := range segments {
+		last := i == len(segments)-1
 		if segment.literal {
 			// A rejected envelope. Its bytes reach the client verbatim but are
 			// never scanned: text inside an envelope the parser refused must not
@@ -110,8 +111,16 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 		content, segCalls, tail, preserve := scanLegacyToolCalls(segment.text, done, recoveredDSMLIDs)
 		contentBuf.WriteString(content)
 		calls = append(calls, segCalls...)
-		remaining = tail
-		preserveRemaining = preserve
+		if last {
+			// Only the final segment's tail can still be completed by the next
+			// chunk. An earlier segment's incomplete tail is already followed by
+			// other arrived content, so it will never complete — flush it as
+			// text rather than dropping it or carrying the wrong tail forward.
+			remaining = tail
+			preserveRemaining = preserve
+		} else {
+			contentBuf.WriteString(tail)
+		}
 	}
 
 	// ----- preserve unprocessed tail in buffer ---------------------------

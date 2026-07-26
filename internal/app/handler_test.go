@@ -336,7 +336,10 @@ func TestHandleStreamEmitsDoneOnFinishOnly(t *testing.T) {
 	}
 }
 
-func TestHandleStreamNoDoneOnFinishStepOnly(t *testing.T) {
+// An upstream that stops after finish-step, without ever sending finish, still
+// has to leave the client with a terminated stream. Emitting no [DONE] leaves
+// OpenAI clients waiting on a response that will never arrive.
+func TestHandleStreamTerminatesWhenFinishNeverArrives(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
 			`data: {"type":"text-delta","text":"partial"}`,
@@ -349,8 +352,40 @@ func TestHandleStreamNoDoneOnFinishStepOnly(t *testing.T) {
 	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
 
 	body := rec.Body.String()
-	if n := strings.Count(body, "data: [DONE]"); n != 0 {
-		t.Fatalf("got %d `data: [DONE]` markers, want 0 (no finish event). body = %s", n, body)
+	if n := strings.Count(body, "data: [DONE]"); n != 1 {
+		t.Fatalf("got %d `data: [DONE]` markers, want 1. body = %s", n, body)
+	}
+	if !strings.Contains(body, `"content":"partial"`) {
+		t.Errorf("buffered content was dropped. body = %s", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Errorf("no terminating finish_reason. body = %s", body)
+	}
+}
+
+// The same abort, but with a tool call still buffered: it must be recovered
+// rather than dropped, and the stream must still terminate.
+func TestHandleStreamRecoversToolCallWhenUpstreamAborts(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"tool-input-start","id":"c1","toolName":"bash"}`,
+			`data: {"type":"tool-input-delta","id":"c1","delta":"{\"command\":\"ls -la\"}"}`,
+			``, // upstream drops the connection here: no tool-input-end, no finish
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+
+	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"name":"bash"`) || !strings.Contains(body, `ls -la`) {
+		t.Fatalf("aborted stream lost the buffered tool call. body = %s", body)
+	}
+	if n := strings.Count(body, "data: [DONE]"); n != 1 {
+		t.Fatalf("got %d `data: [DONE]` markers, want 1. body = %s", n, body)
+	}
+	if !strings.Contains(body, `"finish_reason":"tool_calls"`) {
+		t.Errorf("recovered call did not produce finish_reason tool_calls. body = %s", body)
 	}
 }
 

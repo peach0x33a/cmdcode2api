@@ -57,7 +57,13 @@ var rawDSMLOpenRe = regexp.MustCompile(regexp.QuoteMeta(rawDSMLCanonicalOpen))
 var rawDSMLCloseRe = regexp.MustCompile(regexp.QuoteMeta(rawDSMLCanonicalClose))
 var rawDSMLToolNameRe = regexp.MustCompile(`^[^\s()]+$`)
 
-const defaultMaxBuf = 128 * 1024 // 128 KB
+// defaultMaxBuf bounds how much *unresolved* text the parser holds — text that
+// may still turn out to be part of a tool call. It must exceed the largest tool
+// call a single response can contain, otherwise a big write is flushed as prose
+// and the call is lost. maximumCCMaxTokens caps a response at 200k tokens,
+// roughly 800 KB of text, so 2 MB clears the worst case with room to spare
+// while keeping the per-chunk rescan bounded.
+const defaultMaxBuf = 2 * 1024 * 1024 // 2 MB
 
 // ToolCallParser buffers incoming text chunks, scanning for embedded
 // tool-call lines.  Non-tool text is returned as ordinary content;
@@ -83,31 +89,77 @@ func NewToolCallParser() *ToolCallParser {
 func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []ToolCall) {
 	p.buf.WriteString(chunk)
 
-	raw := p.buf.String()
-	originalRaw := raw
-
-	// ----- overflow protection -------------------------------------------
-	if len(raw) > p.maxSize {
-		p.buf.Reset()
-		return raw, nil
-	}
-
 	// Native DSML can contain multiple invokes and can be fragmented across
-	// text deltas. Remove only complete, valid envelopes; retain an incomplete
-	// suffix for the next Feed call.
-	var pendingDSML string
-	var dsmlValid bool
-	var recoveredDSMLIDs map[string]bool
-	raw, pendingDSML, dsmlValid, recoveredDSMLIDs = rewriteRawDSMLToolCalls(raw, done)
-	if !dsmlValid {
-		p.buf.Reset()
-		return originalRaw, nil
+	// text deltas. Rewrite complete envelopes into the legacy textual form the
+	// scan handles, keep an incomplete suffix buffered, and mark a malformed
+	// envelope as literal text.
+	segments, pendingDSML, recoveredDSMLIDs := rewriteRawDSMLToolCalls(p.buf.String(), done)
+
+	var contentBuf strings.Builder
+	var remaining string
+	preserveRemaining := false
+
+	for i, segment := range segments {
+		last := i == len(segments)-1
+		if segment.literal {
+			// A rejected envelope. Its bytes reach the client verbatim but are
+			// never scanned: text inside an envelope the parser refused must not
+			// become an executable tool call.
+			contentBuf.WriteString(segment.text)
+			continue
+		}
+		content, segCalls, tail, preserve := scanLegacyToolCalls(segment.text, done, recoveredDSMLIDs)
+		contentBuf.WriteString(content)
+		calls = append(calls, segCalls...)
+		if last {
+			// Only the final segment's tail can still be completed by the next
+			// chunk. An earlier segment's incomplete tail is already followed by
+			// other arrived content, so it will never complete — flush it as
+			// text rather than dropping it or carrying the wrong tail forward.
+			remaining = tail
+			preserveRemaining = preserve
+		} else {
+			contentBuf.WriteString(tail)
+		}
 	}
 
-	// ----- scan buffer for tool-call lines -------------------------------
+	// ----- preserve unprocessed tail in buffer ---------------------------
+	//
+	// Everything the scan resolved has already gone to contentBuf or calls, so
+	// only genuinely unresolved text is carried forward. The size cap therefore
+	// applies to that carry alone: text preceding an in-flight tool call is
+	// never held hostage by it, and a call larger than the cap degrades to prose
+	// instead of growing the buffer without bound.
+	if done {
+		contentBuf.WriteString(remaining)
+		p.buf.Reset()
+	} else if preserveRemaining || pendingDSML != "" {
+		var carry strings.Builder
+		if preserveRemaining {
+			carry.WriteString(remaining)
+		}
+		carry.WriteString(pendingDSML)
+		p.buf.Reset()
+		if carry.Len() > p.maxSize {
+			contentBuf.WriteString(carry.String())
+		} else {
+			p.buf.WriteString(carry.String())
+		}
+	} else {
+		p.buf.Reset()
+	}
+
+	return contentBuf.String(), calls
+}
+
+// scanLegacyToolCalls extracts textual "Assistant requested tool ..." calls from
+// one scannable segment.
+//
+// It returns the ordinary text, the recovered calls, any trailing text that is
+// still an incomplete call, and whether that tail must stay buffered.
+func scanLegacyToolCalls(raw string, done bool, recoveredDSMLIDs map[string]bool) (content string, calls []ToolCall, remaining string, preserveRemaining bool) {
 	var contentBuf strings.Builder
 	pos := 0
-	preserveRemaining := false
 
 	for pos < len(raw) {
 		rest := raw[pos:]
@@ -214,22 +266,7 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 		pos = jsonEnd
 	}
 
-	// ----- preserve unprocessed tail in buffer ---------------------------
-	remaining := raw[pos:]
-	if done {
-		contentBuf.WriteString(remaining)
-		p.buf.Reset()
-	} else if preserveRemaining || pendingDSML != "" {
-		p.buf.Reset()
-		if preserveRemaining {
-			p.buf.WriteString(remaining)
-		}
-		p.buf.WriteString(pendingDSML)
-	} else {
-		p.buf.Reset()
-	}
-
-	return contentBuf.String(), calls
+	return contentBuf.String(), calls, raw[pos:], preserveRemaining
 }
 
 // ---------------------------------------------------------------------------
@@ -358,12 +395,22 @@ func (parameter *rawDSMLParameter) UnmarshalXML(decoder *xml.Decoder, start xml.
 
 // rewriteRawDSMLToolCalls replaces complete valid native DSML envelopes with
 // the legacy textual form already handled by Feed. This preserves source order
-// when a response mixes native DSML and legacy textual calls. Malformed or
-// incomplete envelopes remain visible text; an incomplete envelope is buffered
-// while the stream is still open.
-func rewriteRawDSMLToolCalls(raw string, done bool) (content string, pending string, valid bool, recoveredIDs map[string]bool) {
-	var out strings.Builder
+// when a response mixes native DSML and legacy textual calls.
+//
+// A malformed envelope is passed through as visible text and scanning
+// continues. Failing the whole buffer instead would discard every other call it
+// holds, including complete legacy ones that parse fine.
+func rewriteRawDSMLToolCalls(raw string, done bool) (segments []textSegment, pending string, recoveredIDs map[string]bool) {
 	recoveredIDs = make(map[string]bool)
+	var scannable strings.Builder
+
+	flush := func() {
+		if scannable.Len() > 0 {
+			segments = append(segments, textSegment{text: scannable.String()})
+			scannable.Reset()
+		}
+	}
+
 	pos := 0
 	for pos < len(raw) {
 		open := findRawDSMLOpenOutsideLegacyCall(raw, pos)
@@ -371,39 +418,94 @@ func rewriteRawDSMLToolCalls(raw string, done bool) (content string, pending str
 			rest := raw[pos:]
 			if !done {
 				if partial := partialRawDSMLStart(rest); partial >= 0 {
-					out.WriteString(rest[:partial])
-					return out.String(), rest[partial:], true, recoveredIDs
+					scannable.WriteString(rest[:partial])
+					flush()
+					return segments, rest[partial:], recoveredIDs
 				}
 			}
-			out.WriteString(rest)
+			scannable.WriteString(rest)
 			break
 		}
 
 		envelopeStart := open[0]
 		bodyStart := open[1]
-		out.WriteString(raw[pos:envelopeStart])
+		scannable.WriteString(raw[pos:envelopeStart])
 		close := rawDSMLCloseRe.FindStringIndex(raw[bodyStart:])
 		if close == nil {
 			if !done {
-				return out.String(), raw[envelopeStart:], true, recoveredIDs
+				flush()
+				return segments, raw[envelopeStart:], recoveredIDs
 			}
-			return out.String() + raw[envelopeStart:], "", false, nil
+			// Unterminated at end of stream: surface it as literal text.
+			flush()
+			segments = append(segments, textSegment{text: raw[envelopeStart:], literal: true})
+			return segments, "", recoveredIDs
 		}
 
 		closeStart := bodyStart + close[0]
 		closeEnd := bodyStart + close[1]
 		parsed, ok := parseRawDSMLInvokes(raw[bodyStart:closeStart])
 		if !ok {
-			return out.String() + raw[envelopeStart:], "", false, nil
+			flush()
+			segments = append(segments, textSegment{text: raw[envelopeStart:closeEnd], literal: true})
+			pos = closeEnd
+			continue
 		}
 		for _, call := range parsed {
 			recoveredIDs[call.ID] = true
-			fmt.Fprintf(&out, "Assistant requested tool %s (%s) with arguments: %s",
+			fmt.Fprintf(&scannable, "Assistant requested tool %s (%s) with arguments: %s",
 				call.Function.Name, call.ID, call.Function.Arguments)
 		}
 		pos = closeEnd
 	}
-	return out.String(), "", true, recoveredIDs
+	flush()
+	return segments, "", recoveredIDs
+}
+
+// textSegment is a run of the buffer with one disposition. A literal segment is
+// forwarded to the client verbatim and never scanned for tool calls; a
+// scannable one goes through the legacy textual scan.
+type textSegment struct {
+	text    string
+	literal bool
+}
+
+// dsmlTagStartRe matches the only element names a DSML envelope may contain.
+var dsmlTagStartRe = regexp.MustCompile(`^</?(invoke|parameter)[\s>/]`)
+
+// xmlEntityRe matches an entity reference that is already well-formed.
+var xmlEntityRe = regexp.MustCompile(`^&(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);`)
+
+// escapeRawDSMLBody makes model-authored text parseable as XML.
+//
+// Tool arguments are raw text, not escaped markup: a bash command containing
+// `&&`, or any code containing `<`, is not well-formed XML, and encoding/xml
+// rejects the entire envelope over it. Since those characters are near-certain
+// in bash, write, and edit arguments, an unescaped body means the call cannot be
+// recovered at all. Escape everything that is not a DSML tag or an existing
+// entity, so only the envelope's own structure reaches the parser as markup.
+func escapeRawDSMLBody(body string) string {
+	var b strings.Builder
+	b.Grow(len(body) + 16)
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '<':
+			if dsmlTagStartRe.MatchString(body[i:]) {
+				b.WriteByte('<')
+			} else {
+				b.WriteString("&lt;")
+			}
+		case '&':
+			if xmlEntityRe.MatchString(body[i:]) {
+				b.WriteByte('&')
+			} else {
+				b.WriteString("&amp;")
+			}
+		default:
+			b.WriteByte(body[i])
+		}
+	}
+	return b.String()
 }
 
 // findRawDSMLOpenOutsideLegacyCall ignores marker-like text inside the JSON
@@ -440,15 +542,11 @@ func findRawDSMLOpenOutsideLegacyCall(raw string, start int) []int {
 }
 
 func parseRawDSMLInvokes(body string) ([]ToolCall, bool) {
-	// encoding/xml normalizes CDATA into CharData. Reject all declaration-like
-	// syntax lexically so comments, CDATA, directives, and processing
-	// instructions cannot bypass the strict token grammar below.
-	if strings.Contains(body, "<!") || strings.Contains(body, "<?") {
-		return nil, false
-	}
-
 	var document rawDSMLDocument
-	wrapped := "<tool_calls>" + body + "</tool_calls>"
+	// escapeRawDSMLBody leaves only invoke/parameter tags as markup, so
+	// declaration-like syntax (comments, CDATA, directives, processing
+	// instructions) is already neutralised into character data.
+	wrapped := "<tool_calls>" + escapeRawDSMLBody(body) + "</tool_calls>"
 	if err := xml.Unmarshal([]byte(wrapped), &document); err != nil || len(document.Invokes) == 0 ||
 		strings.TrimSpace(document.Text) != "" {
 		return nil, false
@@ -818,12 +916,16 @@ func scanString(s string, start int) (end int, complete bool) {
 }
 
 // scanLiteral consumes a JSON literal (null / true / false).
+//
+// A literal that runs to the end of the buffer may still be growing, so it is
+// only complete once a delimiter proves it ended. Reporting a boundary-truncated
+// token as complete would emit "t" or "12" as the model's arguments.
 func scanLiteral(s string, start int) (end int, complete bool) {
 	i := start
 	for i < len(s) && isJSONIdent(rune(s[i])) {
 		i++
 	}
-	return i, true // literals are always "complete" at the current boundary
+	return i, i < len(s)
 }
 
 // scanNumber consumes a JSON number token (including negative, decimal, and
@@ -856,7 +958,9 @@ func scanNumber(s string, start int) (end int, complete bool) {
 			i++
 		}
 	}
-	return i, true
+	// Same boundary rule as scanLiteral: a number touching the end of the buffer
+	// may still be gaining digits.
+	return i, i < len(s)
 }
 
 func isJSONIdent(r rune) bool {

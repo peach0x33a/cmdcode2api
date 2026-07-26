@@ -5,3 +5,10 @@ usage.json
 *.exe
 .oauth_state
 .oauth_url
+
+# --debug writes full request bodies and SSE events, so these hold developer
+# prompts and user source. Never commit them.
+log.txt*
+*.log
+*.patch
+changes_report.md

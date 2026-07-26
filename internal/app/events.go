@@ -346,8 +346,11 @@ func repairOrFallbackToolInput(raw string, toolName string) string {
 	case "read", "view", "cat":
 		fallback["path"] = raw
 	case "write":
+		// Never fabricate content:"" — a client executing that would truncate
+		// the target file to zero bytes. Omitting the required content field
+		// makes the call fail schema validation instead, so the model gets an
+		// actionable error rather than destroying a file.
 		fallback["path"] = raw
-		fallback["content"] = ""
 	default:
 		fallback["command"] = raw
 		fallback["input"] = raw

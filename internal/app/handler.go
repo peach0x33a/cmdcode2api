@@ -94,7 +94,8 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	w.Header().Set("Connection", "keep-alive")
 
 	firstText := true
-	var done bool
+	var done bool     // [DONE] has been written; nothing more may be emitted
+	var finishing bool // finishStream is running its final flush
 
 	normalizer := newCCEventNormalizer()
 	textParser := NewToolCallParser()
@@ -104,7 +105,10 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	toolCallIndex := 0
 
 	emitContent := func(content string, reasoning bool) {
-		if content == "" {
+		if content == "" || done {
+			// Once [DONE] is written the stream is closed; anything more would
+			// land after it where no OpenAI client will read it. The final flush
+			// runs with finishing=true but done=false, so it is still allowed.
 			return
 		}
 		delta := StreamDelta{}
@@ -129,6 +133,14 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	}
 
 	emitToolCall := func(tc ToolCall) {
+		if done {
+			// A stray event after [DONE] must not be written past it, where no
+			// OpenAI client could read it. The final flush (finishing=true,
+			// done=false) is still permitted.
+			log.Printf("%s tool call %q arrived after the stream was terminated; dropping it",
+				colorize("[WARN]", ansiYellow), tc.ID)
+			return
+		}
 		if !emittedToolCalls.Add(tc) {
 			return
 		}
@@ -168,10 +180,10 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	// loop returns, so a stream the upstream abandons mid-tool-call still
 	// delivers that call and still terminates in a shape OpenAI clients accept.
 	finishStream := func(reason string, usageInfo Usage, truncated bool) {
-		if done {
+		if done || finishing {
 			return
 		}
-		done = true
+		finishing = true
 		flushParser(reasoningParser, true)
 		flushParser(textParser, false)
 
@@ -188,6 +200,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			Usage: &usageInfo,
 		})
 		fmt.Fprintf(w, "data: [DONE]\n\n")
+		done = true
 		if debugMode {
 			log.Printf("%s %s", colorize("[DEBUG]", ansiDim), colorize(">> [DONE]", ansiGreen))
 		}

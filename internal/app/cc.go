@@ -242,16 +242,11 @@ func ParseStreamEvents(resp *http.Response, onEvent func(CCStreamEvent) error) e
 
 	for {
 		raw, readErr := readSSELine(reader)
-		line := strings.TrimSpace(raw)
-
-		if line != "" && !strings.HasPrefix(line, ":") && !strings.HasPrefix(line, "event:") {
-			if payload, ok := strings.CutPrefix(line, "data:"); ok {
-				line = strings.TrimSpace(payload)
-			}
-			if line == "[DONE]" {
+		if payload, ok := sseDataPayload(raw); ok {
+			if payload == "[DONE]" {
 				return nil
 			}
-			ev, err := decodeSSEEvent(line)
+			ev, err := decodeSSEEvent(payload)
 			if err != nil {
 				return err
 			}
@@ -267,6 +262,41 @@ func ParseStreamEvents(resp *http.Response, onEvent func(CCStreamEvent) error) e
 			return readErr
 		}
 	}
+}
+
+// sseDataPayload returns the payload of a data line, or ok=false for anything
+// that is not one.
+//
+// Per the SSE grammar a line is a "field: value" pair, and only the data field
+// carries the JSON this proxy consumes. Comments (":..."), other fields
+// (event:, id:, retry:) and blank keep-alive lines must be skipped, not handed
+// to the JSON decoder — decoding "id: 42" as JSON would abort the whole stream
+// and lose every event after it.
+func sseDataPayload(raw string) (string, bool) {
+	line := strings.TrimSpace(raw)
+	if line == "" || strings.HasPrefix(line, ":") {
+		return "", false
+	}
+	payload, ok := strings.CutPrefix(line, "data:")
+	if !ok {
+		// Some upstreams stream bare JSON with no field prefix; accept it, but
+		// never a recognised non-data SSE field line.
+		if isSSEFieldLine(line) {
+			return "", false
+		}
+		return line, true
+	}
+	return strings.TrimSpace(payload), true
+}
+
+// isSSEFieldLine reports whether a line begins with a known non-data SSE field.
+func isSSEFieldLine(line string) bool {
+	for _, field := range []string{"event:", "id:", "retry:"} {
+		if strings.HasPrefix(line, field) {
+			return true
+		}
+	}
+	return false
 }
 
 // ====================== 格式转换 ======================

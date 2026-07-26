@@ -57,7 +57,13 @@ var rawDSMLOpenRe = regexp.MustCompile(regexp.QuoteMeta(rawDSMLCanonicalOpen))
 var rawDSMLCloseRe = regexp.MustCompile(regexp.QuoteMeta(rawDSMLCanonicalClose))
 var rawDSMLToolNameRe = regexp.MustCompile(`^[^\s()]+$`)
 
-const defaultMaxBuf = 128 * 1024 // 128 KB
+// defaultMaxBuf bounds how much *unresolved* text the parser holds — text that
+// may still turn out to be part of a tool call. It must exceed the largest tool
+// call a single response can contain, otherwise a big write is flushed as prose
+// and the call is lost. maximumCCMaxTokens caps a response at 200k tokens,
+// roughly 800 KB of text, so 2 MB clears the worst case with room to spare
+// while keeping the per-chunk rescan bounded.
+const defaultMaxBuf = 2 * 1024 * 1024 // 2 MB
 
 // ToolCallParser buffers incoming text chunks, scanning for embedded
 // tool-call lines.  Non-tool text is returned as ordinary content;
@@ -85,12 +91,6 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 
 	raw := p.buf.String()
 	originalRaw := raw
-
-	// ----- overflow protection -------------------------------------------
-	if len(raw) > p.maxSize {
-		p.buf.Reset()
-		return raw, nil
-	}
 
 	// Native DSML can contain multiple invokes and can be fragmented across
 	// text deltas. Remove only complete, valid envelopes; retain an incomplete
@@ -215,16 +215,28 @@ func (p *ToolCallParser) Feed(chunk string, done bool) (content string, calls []
 	}
 
 	// ----- preserve unprocessed tail in buffer ---------------------------
+	//
+	// Everything the scan resolved has already gone to contentBuf or calls, so
+	// only genuinely unresolved text is carried forward. The size cap therefore
+	// applies to that carry alone: text preceding an in-flight tool call is
+	// never held hostage by it, and a call larger than the cap degrades to prose
+	// instead of growing the buffer without bound.
 	remaining := raw[pos:]
 	if done {
 		contentBuf.WriteString(remaining)
 		p.buf.Reset()
 	} else if preserveRemaining || pendingDSML != "" {
-		p.buf.Reset()
+		var carry strings.Builder
 		if preserveRemaining {
-			p.buf.WriteString(remaining)
+			carry.WriteString(remaining)
 		}
-		p.buf.WriteString(pendingDSML)
+		carry.WriteString(pendingDSML)
+		p.buf.Reset()
+		if carry.Len() > p.maxSize {
+			contentBuf.WriteString(carry.String())
+		} else {
+			p.buf.WriteString(carry.String())
+		}
 	} else {
 		p.buf.Reset()
 	}

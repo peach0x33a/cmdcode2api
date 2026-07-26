@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -187,42 +188,85 @@ func (c *CCClient) Send(ctx context.Context, req *ChatRequest) (*http.Response, 
 	return resp, nil
 }
 
+// maxSSELineBytes bounds one SSE line. A tool-call event carries the entire
+// tool input inline, so this must clear the largest response the upstream can
+// produce: maximumCCMaxTokens is roughly 800 KB of text, and JSON escaping
+// inflates that further. Overshooting is reported as an error rather than
+// silently truncating the stream.
+const maxSSELineBytes = 32 * 1024 * 1024
+
+// readSSELine reads one newline-terminated line of any length.
+//
+// bufio.Scanner cannot do this: a token larger than its buffer stops the scan
+// with ErrTooLong, so a single oversized tool-call event would discard every
+// event after it — including the finish event — and the client would see a
+// stream that just stops.
+func readSSELine(r *bufio.Reader) (string, error) {
+	var line strings.Builder
+	for {
+		chunk, isPrefix, err := r.ReadLine()
+		if line.Len()+len(chunk) > maxSSELineBytes {
+			return "", fmt.Errorf("sse line exceeds %d bytes", maxSSELineBytes)
+		}
+		line.Write(chunk)
+		if err != nil {
+			return line.String(), err
+		}
+		if !isPrefix {
+			return line.String(), nil
+		}
+	}
+}
+
+func decodeSSEEvent(payload string) (CCStreamEvent, error) {
+	var ev CCStreamEvent
+	decoder := json.NewDecoder(strings.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&ev); err != nil {
+		return ev, fmt.Errorf("parse sse data: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple JSON values")
+		}
+		return ev, fmt.Errorf("parse sse data: trailing content: %w", err)
+	}
+	return ev, nil
+}
+
 // ParseStreamEvents 从 resp.Body 读取 SSE 流，逐事件回调 onEvent。
 func ParseStreamEvents(resp *http.Response, onEvent func(CCStreamEvent) error) error {
 	defer resp.Body.Close()
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	reader := bufio.NewReaderSize(resp.Body, 64*1024)
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
-			line = strings.TrimPrefix(line, "data:")
-			line = strings.TrimSpace(line)
-		}
-		if line == "[DONE]" {
-			break
-		}
-		var ev CCStreamEvent
-		decoder := json.NewDecoder(strings.NewReader(line))
-		decoder.UseNumber()
-		if err := decoder.Decode(&ev); err != nil {
-			return fmt.Errorf("parse sse data: %w", err)
-		}
-		var trailing any
-		if err := decoder.Decode(&trailing); err != io.EOF {
-			if err == nil {
-				err = fmt.Errorf("multiple JSON values")
+	for {
+		raw, readErr := readSSELine(reader)
+		line := strings.TrimSpace(raw)
+
+		if line != "" && !strings.HasPrefix(line, ":") && !strings.HasPrefix(line, "event:") {
+			if payload, ok := strings.CutPrefix(line, "data:"); ok {
+				line = strings.TrimSpace(payload)
 			}
-			return fmt.Errorf("parse sse data: trailing content: %w", err)
+			if line == "[DONE]" {
+				return nil
+			}
+			ev, err := decodeSSEEvent(line)
+			if err != nil {
+				return err
+			}
+			if err := onEvent(ev); err != nil {
+				return err
+			}
 		}
-		if err := onEvent(ev); err != nil {
-			return err
+
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			return readErr
 		}
 	}
-	return scanner.Err()
 }
 
 // ====================== 格式转换 ======================
@@ -286,7 +330,7 @@ func openAIToCC(req *ChatRequest) (CCRequest, error) {
 			Messages:  msgs,
 			Tools:     tools,
 			System:    system,
-			MaxTokens: req.MaxTokens,
+			MaxTokens: req.OutputTokenBudget(),
 			Stream:    true, // CC API 只支持流式
 		},
 	}

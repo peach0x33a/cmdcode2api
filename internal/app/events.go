@@ -26,21 +26,34 @@ type normalizedCCEvent struct {
 	toolCall     *ToolCall
 	finishReason string
 	usage        Usage
+	// truncated reports that at least one tool input arrived incomplete and had
+	// to be repaired. The client must not be told the turn ended cleanly.
+	truncated bool
 }
 
 type ccEventNormalizer struct {
 	toolInputBuf      map[string]string
 	toolInputToolName map[string]string
-	usage             Usage
-	cacheRead         int
-	cacheWrite        int
-	finished          bool
+	// toolInputOrder preserves arrival order so a drain at end-of-stream emits
+	// buffered calls in the order the model produced them. Map iteration order
+	// would otherwise shuffle them.
+	toolInputOrder []string
+	// heldCalls holds repair-derived calls until the stream ends, so an
+	// authoritative tool-call event can supersede them.
+	heldCalls  map[string]ToolCall
+	heldOrder  []string
+	usage      Usage
+	cacheRead  int
+	cacheWrite int
+	finished   bool
+	truncated  bool
 }
 
 func newCCEventNormalizer() *ccEventNormalizer {
 	return &ccEventNormalizer{
 		toolInputBuf:      make(map[string]string),
 		toolInputToolName: make(map[string]string),
+		heldCalls:         make(map[string]ToolCall),
 	}
 }
 
@@ -55,10 +68,14 @@ func (n *ccEventNormalizer) Consume(ev CCStreamEvent) ([]normalizedCCEvent, erro
 		if err != nil {
 			return nil, err
 		}
+		// This event carries the upstream's own complete input, so it supersedes
+		// anything reconstructed from deltas for the same id.
+		n.dropHeldCall(call.ID)
 		return []normalizedCCEvent{{kind: normalizedToolCall, toolCall: &call}}, nil
 	case "tool-input-start":
 		id := eventToolCallID(ev)
 		if id != "" {
+			n.trackToolInput(id)
 			n.toolInputBuf[id] = ""
 			n.toolInputToolName[id] = ev.ToolName
 		}
@@ -66,18 +83,31 @@ func (n *ccEventNormalizer) Consume(ev CCStreamEvent) ([]normalizedCCEvent, erro
 	case "tool-input-delta":
 		id := eventToolCallID(ev)
 		if id != "" {
+			n.trackToolInput(id)
 			n.toolInputBuf[id] += ev.Delta
 			if ev.ToolName != "" {
 				n.toolInputToolName[id] = ev.ToolName
 			}
 		}
 		return nil, nil
-	case "tool-input-end", "tool-input-available":
+	case "tool-input-end", "tool-input-available", "tool-error":
+		// tool-error carries the same identifiers as tool-input-end and can
+		// arrive in its place. Treat it as a terminator so the buffered input is
+		// emitted instead of being dropped; a duplicate is suppressed downstream
+		// by toolCallDeduper.
 		call, ok, err := n.finishToolInput(ev)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
+			return nil, nil
+		}
+		if call.repaired {
+			// The deltas were cut off and only parse because repair patched
+			// them. The upstream usually follows with a tool-call event holding
+			// the complete input, so hold this guess back rather than racing it
+			// to the client — once emitted, a streamed call cannot be corrected.
+			n.holdCall(call)
 			return nil, nil
 		}
 		return []normalizedCCEvent{{kind: normalizedToolCall, toolCall: &call}}, nil
@@ -94,11 +124,19 @@ func (n *ccEventNormalizer) Consume(ev CCStreamEvent) ([]normalizedCCEvent, erro
 			n.setUsage(ev.TotalUsage)
 		}
 		n.finished = true
-		return []normalizedCCEvent{{
+		// The upstream can end a stream while tool inputs are still buffered,
+		// for example when it is cut off by the output-token cap. Emit them
+		// rather than dropping the model's intent on the floor.
+		out, err := n.drainToolInputs()
+		if err != nil {
+			return nil, err
+		}
+		return append(out, normalizedCCEvent{
 			kind:         normalizedFinish,
 			finishReason: normalizeFinishReason(ev.FinishReason),
 			usage:        n.usage,
-		}}, nil
+			truncated:    n.truncated,
+		}), nil
 	case "text-end":
 		return []normalizedCCEvent{{kind: normalizedTextEnd}}, nil
 	case "reasoning-end":
@@ -142,6 +180,103 @@ func (n *ccEventNormalizer) setUsage(usage *CCUsage) {
 	}
 }
 
+// holdCall parks a repair-derived call until the stream ends, so a later
+// authoritative tool-call event for the same id can replace it.
+func (n *ccEventNormalizer) holdCall(call ToolCall) {
+	if _, seen := n.heldCalls[call.ID]; !seen {
+		n.heldOrder = append(n.heldOrder, call.ID)
+	}
+	n.heldCalls[call.ID] = call
+}
+
+func (n *ccEventNormalizer) dropHeldCall(id string) {
+	if _, held := n.heldCalls[id]; !held {
+		return
+	}
+	delete(n.heldCalls, id)
+	for i, pending := range n.heldOrder {
+		if pending == id {
+			n.heldOrder = append(n.heldOrder[:i], n.heldOrder[i+1:]...)
+			break
+		}
+	}
+}
+
+// releaseHeldCalls emits the repair-derived calls no authoritative event
+// superseded. They are the model's intent as best it can be reconstructed, so
+// dropping them would lose the call entirely.
+func (n *ccEventNormalizer) releaseHeldCalls() []normalizedCCEvent {
+	out := make([]normalizedCCEvent, 0, len(n.heldOrder))
+	for _, id := range n.heldOrder {
+		call := n.heldCalls[id]
+		delete(n.heldCalls, id)
+		toolCall := call
+		// A repaired guess is only a truncation the client must know about once
+		// it is the version actually delivered. If an authoritative event had
+		// superseded it, it would never reach here.
+		n.markTruncated(toolCall)
+		out = append(out, normalizedCCEvent{kind: normalizedToolCall, toolCall: &toolCall})
+	}
+	n.heldOrder = nil
+	return out
+}
+
+func (n *ccEventNormalizer) markTruncated(call ToolCall) {
+	if call.repaired {
+		n.truncated = true
+	}
+}
+
+// trackToolInput registers an id on first sight so drainToolInputs can replay
+// buffered inputs in arrival order.
+func (n *ccEventNormalizer) trackToolInput(id string) {
+	if _, seen := n.toolInputBuf[id]; seen {
+		return
+	}
+	n.toolInputBuf[id] = ""
+	n.toolInputOrder = append(n.toolInputOrder, id)
+}
+
+func (n *ccEventNormalizer) forgetToolInput(id string) {
+	delete(n.toolInputBuf, id)
+	delete(n.toolInputToolName, id)
+	for i, pending := range n.toolInputOrder {
+		if pending == id {
+			n.toolInputOrder = append(n.toolInputOrder[:i], n.toolInputOrder[i+1:]...)
+			break
+		}
+	}
+}
+
+// drainToolInputs emits every tool input still buffered when the stream ends.
+// Without this, an upstream that never sends tool-input-end silently discards
+// the call.
+func (n *ccEventNormalizer) drainToolInputs() ([]normalizedCCEvent, error) {
+	pending := append([]string(nil), n.toolInputOrder...)
+	out := make([]normalizedCCEvent, 0, len(pending))
+	for _, id := range pending {
+		if n.toolInputBuf[id] == "" {
+			// Nothing was ever buffered for this id; there is no call to recover.
+			n.forgetToolInput(id)
+			continue
+		}
+		log.Printf("%s stream ended with tool input %q (tool %q) still buffered; recovering it",
+			colorize("[WARN]", ansiYellow), id, n.toolInputToolName[id])
+		call, ok, err := n.finishToolInput(CCStreamEvent{Type: "tool-input-end", ID: id})
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		toolCall := call
+		n.markTruncated(toolCall)
+		out = append(out, normalizedCCEvent{kind: normalizedToolCall, toolCall: &toolCall})
+	}
+	// Nothing more can supersede a held call once the stream is over.
+	return append(out, n.releaseHeldCalls()...), nil
+}
+
 func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, error) {
 	id := eventToolCallID(ev)
 	name := n.toolInputToolName[id]
@@ -149,33 +284,37 @@ func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, e
 		name = ev.ToolName
 	}
 	raw := n.toolInputBuf[id]
-	delete(n.toolInputBuf, id)
-	delete(n.toolInputToolName, id)
+	n.forgetToolInput(id)
+	repaired := false
 
 	if raw == "" {
 		input := eventToolInput(ev)
 		if input == nil {
 			return ToolCall{}, false, nil
 		}
-		encoded, err := json.Marshal(input)
+		encoded, err := marshalToolInput(input)
 		if err != nil {
 			return ToolCall{}, false, fmt.Errorf("marshal tool input %q: %w", id, err)
 		}
-		raw = string(encoded)
+		raw = encoded
 	} else {
 		var input any
 		if err := json.Unmarshal([]byte(raw), &input); err != nil {
 			log.Printf("%s parse tool input %q for tool %q failed: %v, attempting repair/fallback", colorize("[WARN]", ansiYellow), id, name, err)
+			repaired = true
 			raw = repairOrFallbackToolInput(raw, name)
 		}
 	}
 
 	if id == "" || name == "" {
+		log.Printf("%s dropping tool call with empty id/name (id=%q name=%q, %d bytes of arguments)",
+			colorize("[WARN]", ansiYellow), id, name, len(raw))
 		return ToolCall{}, false, nil
 	}
 	return ToolCall{
-		ID:   id,
-		Type: "function",
+		ID:       id,
+		Type:     "function",
+		repaired: repaired,
 		Function: CallFunc{
 			Name:      name,
 			Arguments: raw,
@@ -207,8 +346,11 @@ func repairOrFallbackToolInput(raw string, toolName string) string {
 	case "read", "view", "cat":
 		fallback["path"] = raw
 	case "write":
+		// Never fabricate content:"" — a client executing that would truncate
+		// the target file to zero bytes. Omitting the required content field
+		// makes the call fail schema validation instead, so the model gets an
+		// actionable error rather than destroying a file.
 		fallback["path"] = raw
-		fallback["content"] = ""
 	default:
 		fallback["command"] = raw
 		fallback["input"] = raw
@@ -244,8 +386,17 @@ func parseToolInputObject(raw string, depth int) (map[string]any, bool) {
 }
 
 func decodeToolInputObject(raw string, depth int) (map[string]any, bool) {
+	// UseNumber keeps integers exact. A plain json.Unmarshal into any turns every
+	// number into a float64, so re-marshalling a 19-digit id like a Discord
+	// snowflake or a nanosecond timestamp would silently round it — the repaired
+	// call would then act on the wrong resource with no error anywhere.
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
 	var value any
-	if json.Unmarshal([]byte(raw), &value) != nil {
+	if decoder.Decode(&value) != nil {
+		return nil, false
+	}
+	if decoder.More() {
 		return nil, false
 	}
 	switch typed := value.(type) {
@@ -390,8 +541,30 @@ func tryRepairJSON(s string) (string, bool) {
 	return "", false
 }
 
+// marshalToolInput renders an event's tool input as the JSON object the OpenAI
+// arguments field must contain.
+//
+// The upstream is inconsistent: tool-call events carry input as an object,
+// while tool-error events carry the same payload as a pre-encoded JSON string.
+// Marshalling a string yields a quoted string, so the client's json.loads
+// returns text instead of arguments and the call is unusable. Pass through a
+// string that is already valid JSON.
+func marshalToolInput(input any) (string, error) {
+	if text, ok := input.(string); ok {
+		trimmed := strings.TrimSpace(text)
+		if json.Valid([]byte(trimmed)) {
+			return trimmed, nil
+		}
+	}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
 func toolCallFromEvent(ev CCStreamEvent) (ToolCall, error) {
-	encoded, err := json.Marshal(eventToolInput(ev))
+	encoded, err := marshalToolInput(eventToolInput(ev))
 	if err != nil {
 		return ToolCall{}, fmt.Errorf("marshal tool call %q: %w", eventToolCallID(ev), err)
 	}
@@ -400,7 +573,7 @@ func toolCallFromEvent(ev CCStreamEvent) (ToolCall, error) {
 		Type: "function",
 		Function: CallFunc{
 			Name:      ev.ToolName,
-			Arguments: string(encoded),
+			Arguments: encoded,
 		},
 	}, nil
 }

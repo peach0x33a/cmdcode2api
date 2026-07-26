@@ -12,11 +12,28 @@ import (
 // ============================================================================
 
 type ChatRequest struct {
-	Model     string    `json:"model"`
-	Messages  []Message `json:"messages"`
-	Stream    bool      `json:"stream"`
-	MaxTokens int       `json:"max_tokens,omitempty"`
-	Tools     []Tool    `json:"tools,omitempty"`
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+	Stream   bool      `json:"stream"`
+	// MaxTokens is the deprecated OpenAI field. MaxCompletionTokens is its
+	// replacement and is what current clients actually send, so both are read
+	// and MaxCompletionTokens wins. Accepting only max_tokens silently dropped
+	// the caller's budget and cut tool arguments off at the default.
+	MaxTokens           int    `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int    `json:"max_completion_tokens,omitempty"`
+	Tools               []Tool `json:"tools,omitempty"`
+}
+
+// OutputTokenBudget returns the caller's requested completion-token limit,
+// or 0 when they did not ask for one.
+func (r *ChatRequest) OutputTokenBudget() int {
+	if r.MaxCompletionTokens > 0 {
+		return r.MaxCompletionTokens
+	}
+	if r.MaxTokens > 0 {
+		return r.MaxTokens
+	}
+	return 0
 }
 
 type Message struct {
@@ -136,6 +153,11 @@ type ToolCall struct {
 	// cross-representation deduplication without collapsing two intentional,
 	// semantically identical calls.
 	recoveredRawDSML bool
+
+	// repaired marks arguments that only parse because truncated JSON was
+	// patched. Such a call is a best guess and must yield to an authoritative
+	// payload for the same id.
+	repaired bool
 }
 
 type CallFunc struct {

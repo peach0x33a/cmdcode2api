@@ -163,6 +163,37 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 		}
 	}
 
+	// finishStream emits everything still held back, then the terminating chunk
+	// and [DONE]. It runs for a normal finish event and again after the read
+	// loop returns, so a stream the upstream abandons mid-tool-call still
+	// delivers that call and still terminates in a shape OpenAI clients accept.
+	finishStream := func(reason string, usageInfo Usage, truncated bool) {
+		if done {
+			return
+		}
+		done = true
+		flushParser(reasoningParser, true)
+		flushParser(textParser, false)
+
+		finish := resolveFinishReason(reason, hasToolCalls, truncated)
+		writeSSE(w, flusher, ChatStreamChunk{
+			ID:     genStreamID(),
+			Object: "chat.completion.chunk",
+			Model:  model,
+			Choices: []StreamChoice{{
+				Index:        0,
+				Delta:        StreamDelta{},
+				FinishReason: &finish,
+			}},
+			Usage: &usageInfo,
+		})
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		if debugMode {
+			log.Printf("%s %s", colorize("[DEBUG]", ansiDim), colorize(">> [DONE]", ansiGreen))
+		}
+		flusher.Flush()
+	}
+
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
 		if cfg.Debug {
 			raw, _ := json.Marshal(ev)
@@ -195,32 +226,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			case normalizedTextEnd:
 				flushParser(textParser, false)
 			case normalizedFinish:
-				if done {
-					continue
-				}
-				flushParser(reasoningParser, true)
-				flushParser(textParser, false)
-
-				finish := resolveFinishReason(event.finishReason, hasToolCalls, event.truncated)
-				usageInfo := event.usage
-				writeSSE(w, flusher, ChatStreamChunk{
-					ID:     genStreamID(),
-					Object: "chat.completion.chunk",
-					Model:  model,
-					Choices: []StreamChoice{{
-						Index:        0,
-						Delta:        StreamDelta{},
-						FinishReason: &finish,
-					}},
-					Usage: &usageInfo,
-				})
-
-				done = true
-				fmt.Fprintf(w, "data: [DONE]\n\n")
-				if debugMode {
-					log.Printf("%s %s", colorize("[DEBUG]", ansiDim), colorize(">> [DONE]", ansiGreen))
-				}
-				flusher.Flush()
+				finishStream(event.finishReason, event.usage, event.truncated)
 			}
 		}
 		return nil
@@ -229,6 +235,34 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	if err != nil {
 		log.Printf("%s stream parse: %v", colorize("[ERROR]", ansiRed), err)
 	}
+
+	// The upstream can stop without ever sending finish — a dropped connection,
+	// a mid-stream error, or a truncated response. Recover whatever it already
+	// told us rather than leaving the client with a stream that just stops.
+	if !done {
+		// The turn did not complete. "length" is the OpenAI value for a response
+		// that was cut off; reporting "stop" would repeat the lie that a partial
+		// turn finished cleanly.
+		reason := "stop"
+		if err != nil {
+			reason = "length"
+		}
+		drained, drainErr := normalizer.drainToolInputs()
+		if drainErr != nil {
+			log.Printf("%s drain tool inputs: %v", colorize("[ERROR]", ansiRed), drainErr)
+		}
+		for _, event := range drained {
+			if event.kind == normalizedToolCall && event.toolCall != nil {
+				emitToolCall(*event.toolCall)
+			}
+		}
+		if err != nil || len(drained) > 0 {
+			log.Printf("%s stream ended without a finish event; terminating with %d recovered tool call(s)",
+				colorize("[WARN]", ansiYellow), len(drained))
+		}
+		finishStream(reason, normalizer.FinalUsageInfo(), normalizer.truncated)
+	}
+
 	promptTokens, completionTokens, cacheRead, cacheWrite := normalizer.Usage()
 	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
 }
@@ -269,10 +303,31 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		return nil
 	})
 
+	// Recover anything the upstream buffered but never terminated, exactly as
+	// the streaming path does.
+	if !normalizer.finished {
+		drained, drainErr := normalizer.drainToolInputs()
+		if drainErr != nil {
+			log.Printf("%s drain tool inputs: %v", colorize("[ERROR]", ansiRed), drainErr)
+		}
+		for _, event := range drained {
+			if event.kind == normalizedToolCall && event.toolCall != nil {
+				toolCalls.Add(*event.toolCall)
+			}
+		}
+		truncated = truncated || normalizer.truncated
+	}
+
 	if err != nil {
 		log.Printf("%s non-stream parse: %v", colorize("[ERROR]", ansiRed), err)
-		writeError(w, 502, "server_error", "upstream stream error")
-		return
+		// Discarding a partial turn wholesale loses tool calls the upstream
+		// already delivered in full. Return what arrived and mark it truncated;
+		// only a turn with nothing at all in it is a failed request.
+		if len(toolCalls.kept) == 0 && textContent.Len() == 0 {
+			writeError(w, 502, "server_error", "upstream stream error")
+			return
+		}
+		truncated = true
 	}
 
 	// Extract text content and parse embedded tool calls

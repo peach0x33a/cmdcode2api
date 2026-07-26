@@ -286,7 +286,13 @@ func sseDataPayload(raw string) (string, bool) {
 		}
 		return line, true
 	}
-	return strings.TrimSpace(payload), true
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		// An empty data line is a keep-alive, not an event; decoding "" as JSON
+		// returns io.EOF and would abort the whole stream.
+		return "", false
+	}
+	return payload, true
 }
 
 // isSSEFieldLine reports whether a line begins with a known non-data SSE field.
@@ -454,20 +460,24 @@ func contentToCC(m Message) ([]CCPart, error) {
 
 	// 工具调用
 	for _, tc := range m.ToolCalls {
-		var input map[string]any
-		if tc.Function.Arguments != "" {
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
-				parts = append(parts, CCPart{
-					Type: "text",
-					Text: fmt.Sprintf("Assistant requested tool %s (%s) with invalid arguments: %v", tc.Function.Name, tc.ID, err),
-				})
-				continue
-			}
+		// Pass the arguments through verbatim rather than unmarshalling into a map
+		// and re-marshalling. That round-trip turned every JSON number into a
+		// float64 (corrupting large ids the model must echo back) and HTML-escaped
+		// < and & inside the very history the model reads. Only validate.
+		args := strings.TrimSpace(tc.Function.Arguments)
+		if args == "" {
+			args = "{}"
 		}
-		argsJSON, _ := json.Marshal(input)
+		if !json.Valid([]byte(args)) {
+			parts = append(parts, CCPart{
+				Type: "text",
+				Text: fmt.Sprintf("Assistant requested tool %s (%s) with invalid arguments: %s", tc.Function.Name, tc.ID, args),
+			})
+			continue
+		}
 		parts = append(parts, CCPart{
 			Type: "text",
-			Text: fmt.Sprintf("Assistant requested tool %s (%s) with arguments: %s", tc.Function.Name, tc.ID, string(argsJSON)),
+			Text: fmt.Sprintf("Assistant requested tool %s (%s) with arguments: %s", tc.Function.Name, tc.ID, args),
 		})
 	}
 
@@ -480,11 +490,18 @@ func toolsToCC(tools []Tool) []CCTool {
 	}
 	out := make([]CCTool, 0, len(tools))
 	for _, t := range tools {
+		schema := t.Function.Parameters
+		if len(schema) == 0 {
+			// OpenAI lets a no-argument tool omit parameters, but the upstream
+			// expects every tool to carry a schema. Send the canonical empty
+			// object so one no-arg tool does not invalidate the whole request.
+			schema = map[string]any{"type": "object", "properties": map[string]any{}}
+		}
 		out = append(out, CCTool{
 			Type:        "function",
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
-			InputSchema: t.Function.Parameters,
+			InputSchema: schema,
 		})
 	}
 	return out

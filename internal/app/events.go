@@ -386,8 +386,17 @@ func parseToolInputObject(raw string, depth int) (map[string]any, bool) {
 }
 
 func decodeToolInputObject(raw string, depth int) (map[string]any, bool) {
+	// UseNumber keeps integers exact. A plain json.Unmarshal into any turns every
+	// number into a float64, so re-marshalling a 19-digit id like a Discord
+	// snowflake or a nanosecond timestamp would silently round it — the repaired
+	// call would then act on the wrong resource with no error anywhere.
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
 	var value any
-	if json.Unmarshal([]byte(raw), &value) != nil {
+	if decoder.Decode(&value) != nil {
+		return nil, false
+	}
+	if decoder.More() {
 		return nil, false
 	}
 	switch typed := value.(type) {

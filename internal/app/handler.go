@@ -331,19 +331,10 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		truncated = truncated || normalizer.truncated
 	}
 
-	if err != nil {
-		log.Printf("%s non-stream parse: %v", colorize("[ERROR]", ansiRed), err)
-		// Discarding a partial turn wholesale loses tool calls the upstream
-		// already delivered in full. Return what arrived and mark it truncated;
-		// only a turn with nothing at all in it is a failed request.
-		if len(toolCalls.kept) == 0 && textContent.Len() == 0 {
-			writeError(w, 502, "server_error", "upstream stream error")
-			return
-		}
-		truncated = true
-	}
-
-	// Extract text content and parse embedded tool calls
+	// Extract text content and parse embedded tool calls. This must run before
+	// the error check below: a call the model wrote as text inside its reasoning
+	// only becomes visible here, and discarding the turn before parsing it would
+	// lose it.
 	visibleText := textContent.String()
 	if visibleText != "" {
 		tcp := NewToolCallParser()
@@ -367,6 +358,19 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 			}
 			reasoningText = strippedReasoning
 		}
+	}
+
+	if err != nil {
+		log.Printf("%s non-stream parse: %v", colorize("[ERROR]", ansiRed), err)
+		// Discarding a partial turn wholesale loses tool calls the upstream
+		// already delivered in full — including ones embedded in reasoning.
+		// Return what survived and mark it truncated; only a turn with nothing
+		// at all in it is a failed request.
+		if len(toolCalls.kept) == 0 && strings.TrimSpace(visibleText) == "" && strings.TrimSpace(reasoningText) == "" {
+			writeError(w, 502, "server_error", "upstream stream error")
+			return
+		}
+		truncated = true
 	}
 
 	msg.Content = TextContent(visibleText)

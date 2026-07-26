@@ -26,15 +26,23 @@ type normalizedCCEvent struct {
 	toolCall     *ToolCall
 	finishReason string
 	usage        Usage
+	// truncated reports that at least one tool input arrived incomplete and had
+	// to be repaired. The client must not be told the turn ended cleanly.
+	truncated bool
 }
 
 type ccEventNormalizer struct {
 	toolInputBuf      map[string]string
 	toolInputToolName map[string]string
-	usage             Usage
-	cacheRead         int
-	cacheWrite        int
-	finished          bool
+	// toolInputOrder preserves arrival order so a drain at end-of-stream emits
+	// buffered calls in the order the model produced them. Map iteration order
+	// would otherwise shuffle them.
+	toolInputOrder []string
+	usage          Usage
+	cacheRead      int
+	cacheWrite     int
+	finished       bool
+	truncated      bool
 }
 
 func newCCEventNormalizer() *ccEventNormalizer {
@@ -59,6 +67,7 @@ func (n *ccEventNormalizer) Consume(ev CCStreamEvent) ([]normalizedCCEvent, erro
 	case "tool-input-start":
 		id := eventToolCallID(ev)
 		if id != "" {
+			n.trackToolInput(id)
 			n.toolInputBuf[id] = ""
 			n.toolInputToolName[id] = ev.ToolName
 		}
@@ -66,13 +75,18 @@ func (n *ccEventNormalizer) Consume(ev CCStreamEvent) ([]normalizedCCEvent, erro
 	case "tool-input-delta":
 		id := eventToolCallID(ev)
 		if id != "" {
+			n.trackToolInput(id)
 			n.toolInputBuf[id] += ev.Delta
 			if ev.ToolName != "" {
 				n.toolInputToolName[id] = ev.ToolName
 			}
 		}
 		return nil, nil
-	case "tool-input-end", "tool-input-available":
+	case "tool-input-end", "tool-input-available", "tool-error":
+		// tool-error carries the same identifiers as tool-input-end and can
+		// arrive in its place. Treat it as a terminator so the buffered input is
+		// emitted instead of being dropped; a duplicate is suppressed downstream
+		// by toolCallDeduper.
 		call, ok, err := n.finishToolInput(ev)
 		if err != nil {
 			return nil, err
@@ -94,11 +108,19 @@ func (n *ccEventNormalizer) Consume(ev CCStreamEvent) ([]normalizedCCEvent, erro
 			n.setUsage(ev.TotalUsage)
 		}
 		n.finished = true
-		return []normalizedCCEvent{{
+		// The upstream can end a stream while tool inputs are still buffered,
+		// for example when it is cut off by the output-token cap. Emit them
+		// rather than dropping the model's intent on the floor.
+		out, err := n.drainToolInputs()
+		if err != nil {
+			return nil, err
+		}
+		return append(out, normalizedCCEvent{
 			kind:         normalizedFinish,
 			finishReason: normalizeFinishReason(ev.FinishReason),
 			usage:        n.usage,
-		}}, nil
+			truncated:    n.truncated,
+		}), nil
 	case "text-end":
 		return []normalizedCCEvent{{kind: normalizedTextEnd}}, nil
 	case "reasoning-end":
@@ -142,6 +164,57 @@ func (n *ccEventNormalizer) setUsage(usage *CCUsage) {
 	}
 }
 
+// trackToolInput registers an id on first sight so drainToolInputs can replay
+// buffered inputs in arrival order.
+func (n *ccEventNormalizer) trackToolInput(id string) {
+	if _, seen := n.toolInputBuf[id]; seen {
+		return
+	}
+	n.toolInputBuf[id] = ""
+	n.toolInputOrder = append(n.toolInputOrder, id)
+}
+
+func (n *ccEventNormalizer) forgetToolInput(id string) {
+	delete(n.toolInputBuf, id)
+	delete(n.toolInputToolName, id)
+	for i, pending := range n.toolInputOrder {
+		if pending == id {
+			n.toolInputOrder = append(n.toolInputOrder[:i], n.toolInputOrder[i+1:]...)
+			break
+		}
+	}
+}
+
+// drainToolInputs emits every tool input still buffered when the stream ends.
+// Without this, an upstream that never sends tool-input-end silently discards
+// the call.
+func (n *ccEventNormalizer) drainToolInputs() ([]normalizedCCEvent, error) {
+	if len(n.toolInputOrder) == 0 {
+		return nil, nil
+	}
+	pending := append([]string(nil), n.toolInputOrder...)
+	out := make([]normalizedCCEvent, 0, len(pending))
+	for _, id := range pending {
+		if n.toolInputBuf[id] == "" {
+			// Nothing was ever buffered for this id; there is no call to recover.
+			n.forgetToolInput(id)
+			continue
+		}
+		log.Printf("%s stream ended with tool input %q (tool %q) still buffered; recovering it",
+			colorize("[WARN]", ansiYellow), id, n.toolInputToolName[id])
+		call, ok, err := n.finishToolInput(CCStreamEvent{Type: "tool-input-end", ID: id})
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		toolCall := call
+		out = append(out, normalizedCCEvent{kind: normalizedToolCall, toolCall: &toolCall})
+	}
+	return out, nil
+}
+
 func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, error) {
 	id := eventToolCallID(ev)
 	name := n.toolInputToolName[id]
@@ -149,8 +222,7 @@ func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, e
 		name = ev.ToolName
 	}
 	raw := n.toolInputBuf[id]
-	delete(n.toolInputBuf, id)
-	delete(n.toolInputToolName, id)
+	n.forgetToolInput(id)
 
 	if raw == "" {
 		input := eventToolInput(ev)
@@ -166,11 +238,17 @@ func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, e
 		var input any
 		if err := json.Unmarshal([]byte(raw), &input); err != nil {
 			log.Printf("%s parse tool input %q for tool %q failed: %v, attempting repair/fallback", colorize("[WARN]", ansiYellow), id, name, err)
+			// The arguments the model produced were cut off. Remember it so the
+			// finish chunk can report "length" instead of claiming a clean
+			// tool_calls turn.
+			n.truncated = true
 			raw = repairOrFallbackToolInput(raw, name)
 		}
 	}
 
 	if id == "" || name == "" {
+		log.Printf("%s dropping tool call with empty id/name (id=%q name=%q, %d bytes of arguments)",
+			colorize("[WARN]", ansiYellow), id, name, len(raw))
 		return ToolCall{}, false, nil
 	}
 	return ToolCall{

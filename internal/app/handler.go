@@ -201,10 +201,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 				flushParser(reasoningParser, true)
 				flushParser(textParser, false)
 
-				finish := event.finishReason
-				if hasToolCalls {
-					finish = "tool_calls"
-				}
+				finish := resolveFinishReason(event.finishReason, hasToolCalls, event.truncated)
 				usageInfo := event.usage
 				writeSSE(w, flusher, ChatStreamChunk{
 					ID:     genStreamID(),
@@ -243,6 +240,7 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 	var textContent strings.Builder
 	var reasoningContent strings.Builder
 	var finishReason string
+	var truncated bool
 
 	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
 		if cfg.Debug {
@@ -265,6 +263,7 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 				}
 			case normalizedFinish:
 				finishReason = event.finishReason
+				truncated = event.truncated
 			}
 		}
 		return nil
@@ -304,9 +303,7 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 
 	msg.Content = TextContent(visibleText)
 	msg.ToolCalls = toolCalls.kept
-	if len(msg.ToolCalls) > 0 {
-		finishReason = "tool_calls"
-	}
+	finishReason = resolveFinishReason(finishReason, len(msg.ToolCalls) > 0, truncated)
 	if reasoningText != "" {
 		msg.ReasoningContent = reasoningText
 	}
@@ -388,6 +385,24 @@ func streamEventText(ev CCStreamEvent) string {
 		return ev.Text
 	}
 	return ev.Delta
+}
+
+// resolveFinishReason picks the OpenAI finish_reason for a completed turn.
+//
+// "tool_calls" tells the client the assistant produced a complete set of calls
+// it may now execute. That claim is false when the upstream hit its output cap:
+// the last tool's arguments were cut off mid-JSON and only survive because
+// repairOrFallbackToolInput patched them into valid syntax. Reporting "length"
+// keeps the truncation visible so the client can retry or refuse instead of
+// executing a silently truncated write.
+func resolveFinishReason(upstream string, hasToolCalls, truncated bool) string {
+	if upstream == "length" || truncated {
+		return "length"
+	}
+	if hasToolCalls {
+		return "tool_calls"
+	}
+	return upstream
 }
 
 func normalizeFinishReason(reason string) string {

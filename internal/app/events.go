@@ -34,26 +34,21 @@ type normalizedCCEvent struct {
 type ccEventNormalizer struct {
 	toolInputBuf      map[string]string
 	toolInputToolName map[string]string
-	// toolInputOrder preserves arrival order so a drain at end-of-stream emits
-	// buffered calls in the order the model produced them. Map iteration order
-	// would otherwise shuffle them.
+	// toolInputOrder and toolCalls preserve the model's first-seen order. A
+	// higher-authority event replaces a provisional call in that same slot.
 	toolInputOrder []string
-	// heldCalls holds repair-derived calls until the stream ends, so an
-	// authoritative tool-call event can supersede them.
-	heldCalls  map[string]ToolCall
-	heldOrder  []string
-	usage      Usage
-	cacheRead  int
-	cacheWrite int
-	finished   bool
-	truncated  bool
+	toolCalls      toolCallDeduper
+	usage          Usage
+	cacheRead      int
+	cacheWrite     int
+	finished       bool
+	truncated      bool
 }
 
 func newCCEventNormalizer() *ccEventNormalizer {
 	return &ccEventNormalizer{
 		toolInputBuf:      make(map[string]string),
 		toolInputToolName: make(map[string]string),
-		heldCalls:         make(map[string]ToolCall),
 	}
 }
 
@@ -68,49 +63,37 @@ func (n *ccEventNormalizer) Consume(ev CCStreamEvent) ([]normalizedCCEvent, erro
 		if err != nil {
 			return nil, err
 		}
-		// This event carries the upstream's own complete input, so it supersedes
-		// anything reconstructed from deltas for the same id.
-		n.dropHeldCall(call.ID)
-		return []normalizedCCEvent{{kind: normalizedToolCall, toolCall: &call}}, nil
+		n.toolCalls.Add(call)
+		return nil, nil
 	case "tool-input-start":
 		id := eventToolCallID(ev)
-		if id != "" {
-			n.trackToolInput(id)
-			n.toolInputBuf[id] = ""
-			n.toolInputToolName[id] = ev.ToolName
+		if id == "" {
+			return nil, fmt.Errorf("tool-input-start missing tool call id")
 		}
+		n.trackToolInput(id)
+		n.toolInputBuf[id] = ""
+		n.toolInputToolName[id] = ev.ToolName
 		return nil, nil
 	case "tool-input-delta":
 		id := eventToolCallID(ev)
-		if id != "" {
-			n.trackToolInput(id)
-			n.toolInputBuf[id] += ev.Delta
-			if ev.ToolName != "" {
-				n.toolInputToolName[id] = ev.ToolName
-			}
+		if id == "" {
+			return nil, fmt.Errorf("tool-input-delta missing tool call id")
+		}
+		n.trackToolInput(id)
+		n.toolInputBuf[id] += ev.Delta
+		if ev.ToolName != "" {
+			n.toolInputToolName[id] = ev.ToolName
 		}
 		return nil, nil
 	case "tool-input-end", "tool-input-available", "tool-error":
-		// tool-error carries the same identifiers as tool-input-end and can
-		// arrive in its place. Treat it as a terminator so the buffered input is
-		// emitted instead of being dropped; a duplicate is suppressed downstream
-		// by toolCallDeduper.
 		call, ok, err := n.finishToolInput(ev)
 		if err != nil {
 			return nil, err
 		}
-		if !ok {
-			return nil, nil
+		if ok {
+			n.toolCalls.Add(call)
 		}
-		if call.repaired {
-			// The deltas were cut off and only parse because repair patched
-			// them. The upstream usually follows with a tool-call event holding
-			// the complete input, so hold this guess back rather than racing it
-			// to the client — once emitted, a streamed call cannot be corrected.
-			n.holdCall(call)
-			return nil, nil
-		}
-		return []normalizedCCEvent{{kind: normalizedToolCall, toolCall: &call}}, nil
+		return nil, nil
 	case "finish-step":
 		if n.finished {
 			return nil, nil
@@ -120,20 +103,44 @@ func (n *ccEventNormalizer) Consume(ev CCStreamEvent) ([]normalizedCCEvent, erro
 		}
 		return nil, nil
 	case "finish":
-		if ev.TotalUsage != nil {
-			n.setUsage(ev.TotalUsage)
+		if n.finished {
+			return nil, nil
 		}
-		n.finished = true
-		// The upstream can end a stream while tool inputs are still buffered,
-		// for example when it is cut off by the output-token cap. Emit them
-		// rather than dropping the model's intent on the floor.
-		out, err := n.drainToolInputs()
+		reason := ev.FinishReason
+		if strings.TrimSpace(reason) == "" {
+			reason = ev.RawFinishReason
+		}
+		finishReason, err := normalizeFinishReason(reason)
 		if err != nil {
 			return nil, err
 		}
+		if ev.TotalUsage != nil {
+			n.setUsage(ev.TotalUsage)
+		}
+		drained, err := n.drainToolInputs()
+		if err != nil {
+			return nil, err
+		}
+		for _, event := range drained {
+			if event.toolCall != nil {
+				n.toolCalls.Add(*event.toolCall)
+			}
+		}
+
+		n.finished = true
+		n.truncated = false
+		out := make([]normalizedCCEvent, 0, len(n.toolCalls.kept)+1)
+		for i := range n.toolCalls.kept {
+			call := n.toolCalls.kept[i]
+			if call.unsafeArguments() {
+				n.truncated = true
+			}
+			toolCall := call
+			out = append(out, normalizedCCEvent{kind: normalizedToolCall, toolCall: &toolCall})
+		}
 		return append(out, normalizedCCEvent{
 			kind:         normalizedFinish,
-			finishReason: normalizeFinishReason(ev.FinishReason),
+			finishReason: finishReason,
 			usage:        n.usage,
 			truncated:    n.truncated,
 		}), nil
@@ -180,53 +187,6 @@ func (n *ccEventNormalizer) setUsage(usage *CCUsage) {
 	}
 }
 
-// holdCall parks a repair-derived call until the stream ends, so a later
-// authoritative tool-call event for the same id can replace it.
-func (n *ccEventNormalizer) holdCall(call ToolCall) {
-	if _, seen := n.heldCalls[call.ID]; !seen {
-		n.heldOrder = append(n.heldOrder, call.ID)
-	}
-	n.heldCalls[call.ID] = call
-}
-
-func (n *ccEventNormalizer) dropHeldCall(id string) {
-	if _, held := n.heldCalls[id]; !held {
-		return
-	}
-	delete(n.heldCalls, id)
-	for i, pending := range n.heldOrder {
-		if pending == id {
-			n.heldOrder = append(n.heldOrder[:i], n.heldOrder[i+1:]...)
-			break
-		}
-	}
-}
-
-// releaseHeldCalls emits the repair-derived calls no authoritative event
-// superseded. They are the model's intent as best it can be reconstructed, so
-// dropping them would lose the call entirely.
-func (n *ccEventNormalizer) releaseHeldCalls() []normalizedCCEvent {
-	out := make([]normalizedCCEvent, 0, len(n.heldOrder))
-	for _, id := range n.heldOrder {
-		call := n.heldCalls[id]
-		delete(n.heldCalls, id)
-		toolCall := call
-		// A repaired guess is only a truncation the client must know about once
-		// it is the version actually delivered. If an authoritative event had
-		// superseded it, it would never reach here.
-		n.markTruncated(toolCall)
-		out = append(out, normalizedCCEvent{kind: normalizedToolCall, toolCall: &toolCall})
-	}
-	n.heldOrder = nil
-	return out
-}
-
-func (n *ccEventNormalizer) markTruncated(call ToolCall) {
-	if call.repaired {
-		n.truncated = true
-	}
-}
-
 // trackToolInput registers an id on first sight so drainToolInputs can replay
 // buffered inputs in arrival order.
 func (n *ccEventNormalizer) trackToolInput(id string) {
@@ -270,23 +230,27 @@ func (n *ccEventNormalizer) drainToolInputs() ([]normalizedCCEvent, error) {
 			continue
 		}
 		toolCall := call
-		n.markTruncated(toolCall)
 		out = append(out, normalizedCCEvent{kind: normalizedToolCall, toolCall: &toolCall})
 	}
-	// Nothing more can supersede a held call once the stream is over.
-	return append(out, n.releaseHeldCalls()...), nil
+	return out, nil
 }
 
 func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, error) {
 	id := eventToolCallID(ev)
+	if id == "" {
+		return ToolCall{}, false, fmt.Errorf("%s missing tool call id", ev.Type)
+	}
 	name := n.toolInputToolName[id]
 	if name == "" {
 		name = ev.ToolName
 	}
 	raw := n.toolInputBuf[id]
 	n.forgetToolInput(id)
-	repaired := false
+	if name == "" {
+		return ToolCall{}, false, fmt.Errorf("tool call %q missing function name", id)
+	}
 
+	repairKind := toolInputRepairNone
 	if raw == "" {
 		input := eventToolInput(ev)
 		if input == nil {
@@ -298,23 +262,24 @@ func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, e
 		}
 		raw = encoded
 	} else {
-		var input any
-		if err := json.Unmarshal([]byte(raw), &input); err != nil {
-			log.Printf("%s parse tool input %q for tool %q failed: %v, attempting repair/fallback", colorize("[WARN]", ansiYellow), id, name, err)
-			repaired = true
-			raw = repairOrFallbackToolInput(raw, name)
+		encoded, kind, err := normalizeToolInput(raw, name)
+		if err != nil {
+			return ToolCall{}, false, fmt.Errorf("normalize tool input %q: %w", id, err)
 		}
+		if kind != toolInputRepairNone {
+			log.Printf("%s normalized tool input %q for tool %q with repair kind %d",
+				colorize("[WARN]", ansiYellow), id, name, kind)
+		}
+		raw = encoded
+		repairKind = kind
 	}
 
-	if id == "" || name == "" {
-		log.Printf("%s dropping tool call with empty id/name (id=%q name=%q, %d bytes of arguments)",
-			colorize("[WARN]", ansiYellow), id, name, len(raw))
-		return ToolCall{}, false, nil
-	}
 	return ToolCall{
-		ID:       id,
-		Type:     "function",
-		repaired: repaired,
+		ID:         id,
+		Type:       "function",
+		source:     toolCallSourceToolInput,
+		repairKind: repairKind,
+		repaired:   repairKind != toolInputRepairNone,
 		Function: CallFunc{
 			Name:      name,
 			Arguments: raw,
@@ -322,23 +287,48 @@ func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, e
 	}, true, nil
 }
 
-func repairOrFallbackToolInput(raw string, toolName string) string {
+func normalizeToolInput(raw, toolName string) (string, toolInputRepairKind, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "{}"
+		return "{}", toolInputRepairNone, nil
 	}
-
-	// Match command-code's normalization order: accept objects, recursively
-	// unwrap JSON-stringified objects, escape bare control characters, repair
-	// truncated JSON, and unwrap a single-object array.
-	if input, ok := parseToolInputObject(raw, 0); ok {
-		encoded, err := json.Marshal(input)
-		if err == nil {
-			return string(encoded)
+	if strings.HasPrefix(raw, "{") {
+		if _, ok := decodeToolInputObject(raw, 0); ok {
+			return raw, toolInputRepairNone, nil
 		}
 	}
 
-	// Fallback to wrapping raw non-JSON text as a valid tool object.
+	candidates := []string{raw}
+	if escaped := escapeControlCharsInJSONStrings(raw); escaped != raw {
+		candidates = append(candidates, escaped)
+	}
+	for index, candidate := range candidates {
+		if input, ok := decodeToolInputObject(candidate, 0); ok {
+			encoded, err := json.Marshal(input)
+			if err != nil {
+				return "", toolInputRepairNone, err
+			}
+			kind := toolInputRepairSyntax
+			if index == 0 && strings.HasPrefix(candidate, "{") {
+				kind = toolInputRepairNone
+			}
+			return string(encoded), kind, nil
+		}
+		if repaired, ok, truncated := tryRepairJSONDetailed(candidate); ok {
+			if input, ok := decodeToolInputObject(repaired, 0); ok {
+				encoded, err := json.Marshal(input)
+				if err != nil {
+					return "", toolInputRepairNone, err
+				}
+				kind := toolInputRepairSyntax
+				if truncated {
+					kind = toolInputRepairTruncated
+				}
+				return string(encoded), kind, nil
+			}
+		}
+	}
+
 	fallback := make(map[string]any)
 	switch strings.ToLower(toolName) {
 	case "bash", "exec", "command", "sh":
@@ -346,21 +336,26 @@ func repairOrFallbackToolInput(raw string, toolName string) string {
 	case "read", "view", "cat":
 		fallback["path"] = raw
 	case "write":
-		// Never fabricate content:"" — a client executing that would truncate
-		// the target file to zero bytes. Omitting the required content field
-		// makes the call fail schema validation instead, so the model gets an
-		// actionable error rather than destroying a file.
+		// Omitting content makes schema validation fail instead of truncating a
+		// target file to zero bytes.
 		fallback["path"] = raw
 	default:
 		fallback["command"] = raw
 		fallback["input"] = raw
 	}
-
 	encoded, err := json.Marshal(fallback)
+	if err != nil {
+		return "", toolInputRepairNone, err
+	}
+	return string(encoded), toolInputRepairFallback, nil
+}
+
+func repairOrFallbackToolInput(raw string, toolName string) string {
+	encoded, _, err := normalizeToolInput(raw, toolName)
 	if err != nil {
 		return "{}"
 	}
-	return string(encoded)
+	return encoded
 }
 
 func parseToolInputObject(raw string, depth int) (map[string]any, bool) {
@@ -371,12 +366,11 @@ func parseToolInputObject(raw string, depth int) (map[string]any, bool) {
 	if escaped := escapeControlCharsInJSONStrings(raw); escaped != raw {
 		candidates = append(candidates, escaped)
 	}
-
 	for _, candidate := range candidates {
 		if input, ok := decodeToolInputObject(candidate, depth); ok {
 			return input, true
 		}
-		if repaired, ok := tryRepairJSON(candidate); ok {
+		if repaired, ok, _ := tryRepairJSONDetailed(candidate); ok {
 			if input, ok := decodeToolInputObject(repaired, depth); ok {
 				return input, true
 			}
@@ -386,24 +380,25 @@ func parseToolInputObject(raw string, depth int) (map[string]any, bool) {
 }
 
 func decodeToolInputObject(raw string, depth int) (map[string]any, bool) {
-	// UseNumber keeps integers exact. A plain json.Unmarshal into any turns every
-	// number into a float64, so re-marshalling a 19-digit id like a Discord
-	// snowflake or a nanosecond timestamp would silently round it — the repaired
-	// call would then act on the wrong resource with no error anywhere.
+	if depth > 2 {
+		return nil, false
+	}
+	// UseNumber keeps large integer identifiers exact through normalization.
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.UseNumber()
 	var value any
 	if decoder.Decode(&value) != nil {
 		return nil, false
 	}
-	if decoder.More() {
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
 		return nil, false
 	}
 	switch typed := value.(type) {
 	case map[string]any:
 		return typed, true
 	case string:
-		return parseToolInputObject(strings.TrimSpace(typed), depth+1)
+		return decodeToolInputObject(strings.TrimSpace(typed), depth+1)
 	case []any:
 		if len(typed) == 1 {
 			if input, ok := typed[0].(map[string]any); ok {
@@ -466,9 +461,14 @@ func escapeControlCharsInJSONStrings(raw string) string {
 }
 
 func tryRepairJSON(s string) (string, bool) {
+	repaired, ok, _ := tryRepairJSONDetailed(s)
+	return repaired, ok
+}
+
+func tryRepairJSONDetailed(s string) (string, bool, bool) {
 	s = strings.TrimSpace(s)
 	if !strings.HasPrefix(s, "{") && !strings.HasPrefix(s, "[") {
-		return "", false
+		return "", false, false
 	}
 
 	var stack []byte
@@ -505,13 +505,14 @@ func tryRepairJSON(s string) (string, bool) {
 				stack = stack[:len(stack)-1]
 				b = append(b, ch)
 			}
-			// Ignore unmatched closing delimiters. This repairs a common model
-			// output shape where an otherwise complete tool object ends in `}}`.
+			// Unmatched closing delimiters are syntax noise, not evidence that
+			// the payload was cut off.
 		default:
 			b = append(b, ch)
 		}
 	}
 
+	truncated := inString || len(stack) > 0
 	if inString {
 		if escaped && len(b) > 0 && b[len(b)-1] == '\\' {
 			b = b[:len(b)-1]
@@ -521,11 +522,16 @@ func tryRepairJSON(s string) (string, bool) {
 
 	for len(b) > 0 {
 		last := b[len(b)-1]
-		if last == ' ' || last == '\t' || last == '\n' || last == '\r' || last == ',' || last == ':' {
+		if last == ' ' || last == '\t' || last == '\n' || last == '\r' {
 			b = b[:len(b)-1]
-		} else {
-			break
+			continue
 		}
+		if last == ',' || last == ':' {
+			truncated = true
+			b = b[:len(b)-1]
+			continue
+		}
+		break
 	}
 
 	for i := len(stack) - 1; i >= 0; i-- {
@@ -533,49 +539,83 @@ func tryRepairJSON(s string) (string, bool) {
 	}
 
 	candidate := string(b)
-	var v any
-	if json.Unmarshal([]byte(candidate), &v) == nil {
-		return candidate, true
+	if _, ok := decodeToolInputObject(candidate, 0); ok {
+		return candidate, true, truncated
 	}
-
-	return "", false
+	return "", false, false
 }
 
-// marshalToolInput renders an event's tool input as the JSON object the OpenAI
-// arguments field must contain.
-//
-// The upstream is inconsistent: tool-call events carry input as an object,
-// while tool-error events carry the same payload as a pre-encoded JSON string.
-// Marshalling a string yields a quoted string, so the client's json.loads
-// returns text instead of arguments and the call is unusable. Pass through a
-// string that is already valid JSON.
+// marshalToolInput renders a JSON object for OpenAI function.arguments.
 func marshalToolInput(input any) (string, error) {
+	if input == nil {
+		return "{}", nil
+	}
 	if text, ok := input.(string); ok {
 		trimmed := strings.TrimSpace(text)
-		if json.Valid([]byte(trimmed)) {
-			return trimmed, nil
+		if !strings.HasPrefix(trimmed, "{") {
+			return "", fmt.Errorf("tool arguments must be a JSON object")
 		}
+		if _, ok := decodeToolInputObject(trimmed, 0); !ok {
+			return "", fmt.Errorf("tool arguments must be one valid JSON object")
+		}
+		return trimmed, nil
 	}
 	encoded, err := json.Marshal(input)
 	if err != nil {
 		return "", err
 	}
-	return string(encoded), nil
+	object, ok := decodeToolInputObject(string(encoded), 0)
+	if !ok {
+		return "", fmt.Errorf("tool arguments must be a JSON object")
+	}
+	// A singleton array is accepted by the upstream normalizer as a recovery
+	// shape, but OpenAI function.arguments itself must be an object.
+	canonical, err := json.Marshal(object)
+	if err != nil {
+		return "", err
+	}
+	return string(canonical), nil
+}
+
+func validateToolCall(call ToolCall) error {
+	if strings.TrimSpace(call.ID) == "" {
+		return fmt.Errorf("tool call missing id")
+	}
+	if strings.TrimSpace(call.Function.Name) == "" {
+		return fmt.Errorf("tool call %q missing function name", call.ID)
+	}
+	if call.Type != "function" {
+		return fmt.Errorf("tool call %q has unsupported type %q", call.ID, call.Type)
+	}
+	arguments := strings.TrimSpace(call.Function.Arguments)
+	if !strings.HasPrefix(arguments, "{") {
+		return fmt.Errorf("tool call %q arguments must be one JSON object", call.ID)
+	}
+	if _, ok := decodeToolInputObject(arguments, 0); !ok {
+		return fmt.Errorf("tool call %q arguments must be one JSON object", call.ID)
+	}
+	return nil
 }
 
 func toolCallFromEvent(ev CCStreamEvent) (ToolCall, error) {
+	id := eventToolCallID(ev)
 	encoded, err := marshalToolInput(eventToolInput(ev))
 	if err != nil {
-		return ToolCall{}, fmt.Errorf("marshal tool call %q: %w", eventToolCallID(ev), err)
+		return ToolCall{}, fmt.Errorf("marshal tool call %q: %w", id, err)
 	}
-	return ToolCall{
-		ID:   eventToolCallID(ev),
-		Type: "function",
+	call := ToolCall{
+		ID:     id,
+		Type:   "function",
+		source: toolCallSourceAuthoritative,
 		Function: CallFunc{
 			Name:      ev.ToolName,
 			Arguments: encoded,
 		},
-	}, nil
+	}
+	if err := validateToolCall(call); err != nil {
+		return ToolCall{}, err
+	}
+	return call, nil
 }
 
 func eventToolCallID(ev CCStreamEvent) string {
@@ -626,21 +666,29 @@ type toolCallDeduper struct {
 	paired []bool
 }
 
-// Add performs one-to-one cross-representation deduplication. One structured
-// call suppresses at most one equivalent recovered DSML call, preserving the
-// multiplicity of intentional repeated invokes.
+// Add preserves the first-seen slot while allowing a higher-authority
+// representation to replace provisional arguments before wire emission.
 func (d *toolCallDeduper) Add(candidate ToolCall) bool {
-	for _, existing := range d.kept {
-		if toolCallKey(existing) == toolCallKey(candidate) {
+	for i, existing := range d.kept {
+		if existing.ID != "" && existing.ID == candidate.ID {
+			if candidate.source > existing.source {
+				d.kept[i] = candidate
+			}
 			return false
 		}
 	}
+
 	semanticKey := toolCallSemanticKey(candidate)
 	for i, existing := range d.kept {
-		if d.paired[i] || existing.recoveredRawDSML == candidate.recoveredRawDSML {
+		crossRepresentation := existing.source != candidate.source ||
+			existing.recoveredRawDSML != candidate.recoveredRawDSML
+		if d.paired[i] || !crossRepresentation {
 			continue
 		}
 		if toolCallSemanticKey(existing) == semanticKey {
+			if candidate.source > existing.source {
+				d.kept[i] = candidate
+			}
 			d.paired[i] = true
 			return false
 		}
@@ -648,4 +696,13 @@ func (d *toolCallDeduper) Add(candidate ToolCall) bool {
 	d.kept = append(d.kept, candidate)
 	d.paired = append(d.paired, false)
 	return true
+}
+
+func (d *toolCallDeduper) hasUnsafeArguments() bool {
+	for _, call := range d.kept {
+		if call.unsafeArguments() {
+			return true
+		}
+	}
+	return false
 }

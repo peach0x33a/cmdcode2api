@@ -71,8 +71,9 @@ func TestRepairedCallStillDeliveredWithoutAuthoritative(t *testing.T) {
 	}
 }
 
-// An aborted stream must also release held calls.
-func TestHeldCallReleasedOnAbort(t *testing.T) {
+// A provisional call is retained internally but never released without a
+// validated finish event.
+func TestBufferedCallNotReleasedOnAbort(t *testing.T) {
 	n := newCCEventNormalizer()
 	mustConsume(t, n, CCStreamEvent{Type: "tool-input-start", ID: "c1", ToolName: "bash"})
 	mustConsume(t, n, CCStreamEvent{Type: "tool-input-delta", ID: "c1", Delta: `{"command":"ls`})
@@ -82,8 +83,8 @@ func TestHeldCallReleasedOnAbort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drain: %v", err)
 	}
-	if len(drained) != 1 || drained[0].toolCall == nil || drained[0].toolCall.ID != "c1" {
-		t.Fatalf("abort lost the held call: %+v", drained)
+	if len(drained) != 0 || len(n.toolCalls.kept) != 1 {
+		t.Fatalf("provisional call escaped before finish: drained=%+v kept=%+v", drained, n.toolCalls.kept)
 	}
 }
 
@@ -91,10 +92,13 @@ func TestHeldCallReleasedOnAbort(t *testing.T) {
 // double-encoded: the client has to be able to decode arguments as an object.
 func TestToolErrorStringInputNotDoubleEncoded(t *testing.T) {
 	n := newCCEventNormalizer()
-	events := mustConsume(t, n, CCStreamEvent{
+	if events := mustConsume(t, n, CCStreamEvent{
 		Type: "tool-error", ToolCallID: "c1", ToolName: "write",
 		Input: `{"path":"/a.py","content":"x"}`,
-	})
+	}); len(events) != 0 {
+		t.Fatalf("tool call emitted before finish: %+v", events)
+	}
+	events := mustConsume(t, n, CCStreamEvent{Type: "finish", FinishReason: "tool-calls"})
 	call := onlyToolCall(t, events)
 	var obj map[string]any
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &obj); err != nil {
@@ -106,9 +110,9 @@ func TestToolErrorStringInputNotDoubleEncoded(t *testing.T) {
 	}
 }
 
-// The non-streaming path must recover buffered calls on an aborted upstream
-// too, and must not discard a partial turn that already holds complete calls.
-func TestNonStreamRecoversOnAbort(t *testing.T) {
+// The non-streaming path must reject an aborted upstream instead of returning
+// a successful partial turn.
+func TestNonStreamRejectsAbort(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"type":"tool-input-start","id":"c1","toolName":"bash"}`,
 		`data: {"type":"tool-input-delta","id":"c1","delta":"{\"command\":\"ls -la\"}"}`,
@@ -119,24 +123,14 @@ func TestNonStreamRecoversOnAbort(t *testing.T) {
 	handleNonStream(rec, &http.Response{Body: io.NopCloser(strings.NewReader(body))},
 		"test-model", &UsageTracker{}, &Config{})
 
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, want 200. body = %s", rec.Code, rec.Body.String())
-	}
-	var out ChatResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	calls := out.Choices[0].Message.ToolCalls
-	if len(calls) != 1 || calls[0].Function.Name != "bash" {
-		t.Fatalf("aborted non-stream lost the buffered call: %+v", calls)
-	}
-	if !strings.Contains(calls[0].Function.Arguments, "ls -la") {
-		t.Fatalf("wrong arguments: %s", calls[0].Function.Arguments)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "upstream_stream_incomplete") {
+		t.Fatalf("status = %d, want 502 incomplete-stream error. body = %s", rec.Code, rec.Body.String())
 	}
 }
 
-// A malformed line after real content must not throw the whole turn away.
-func TestNonStreamKeepsCallsDespiteLateParseError(t *testing.T) {
+// A malformed line after real content still makes the whole non-streaming
+// response an error; partial tool calls must not be presented as completed.
+func TestNonStreamRejectsLateParseError(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"type":"tool-call","toolCallId":"c1","toolName":"bash","input":{"command":"ls"}}`,
 		`data: {oops not json}`,
@@ -147,16 +141,8 @@ func TestNonStreamKeepsCallsDespiteLateParseError(t *testing.T) {
 	handleNonStream(rec, &http.Response{Body: io.NopCloser(strings.NewReader(body))},
 		"test-model", &UsageTracker{}, &Config{})
 
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, want 200 (a complete call had already arrived)", rec.Code)
-	}
-	var out ChatResponse
-	json.Unmarshal(rec.Body.Bytes(), &out)
-	if len(out.Choices[0].Message.ToolCalls) != 1 {
-		t.Fatalf("call discarded by the late parse error: %+v", out.Choices[0].Message.ToolCalls)
-	}
-	if got := out.Choices[0].FinishReason; got != "length" {
-		t.Errorf("finish_reason = %q, want \"length\" for a truncated turn", got)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "upstream_stream_error") {
+		t.Fatalf("status = %d, want 502 stream error. body = %s", rec.Code, rec.Body.String())
 	}
 }
 

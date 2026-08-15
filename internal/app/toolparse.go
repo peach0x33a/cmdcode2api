@@ -256,6 +256,7 @@ func scanLegacyToolCalls(raw string, done bool, recoveredDSMLIDs map[string]bool
 		calls = append(calls, ToolCall{
 			ID:               toolID,
 			Type:             "function",
+			source:           toolCallSourceRecoveredText,
 			recoveredRawDSML: recoveredDSMLIDs[toolID],
 			Function: CallFunc{
 				Name:      toolName,
@@ -592,6 +593,7 @@ func parseRawDSMLInvokes(body string) ([]ToolCall, bool) {
 		calls = append(calls, ToolCall{
 			ID:               id,
 			Type:             "function",
+			source:           toolCallSourceRecoveredText,
 			recoveredRawDSML: true,
 			Function: CallFunc{
 				Name:      toolName,

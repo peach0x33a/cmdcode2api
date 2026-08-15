@@ -243,7 +243,7 @@ func TestHandleNonStreamIgnoresFinishStep(t *testing.T) {
 	}
 }
 
-func TestHandleNonStreamFinishStepWithoutFinishYieldsEmptyState(t *testing.T) {
+func TestHandleNonStreamRejectsFinishStepWithoutFinish(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
 			`data: {"type":"text-delta","text":"hello"}`,
@@ -255,19 +255,8 @@ func TestHandleNonStreamFinishStepWithoutFinishYieldsEmptyState(t *testing.T) {
 
 	handleNonStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
-	}
-
-	var got ChatResponse
-	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v body = %s", err, rec.Body.String())
-	}
-	if got.Choices[0].FinishReason != "" {
-		t.Fatalf("finish_reason = %q, want \"\" (no finish event)", got.Choices[0].FinishReason)
-	}
-	if got.Usage.PromptTokens != 0 || got.Usage.CompletionTokens != 0 {
-		t.Fatalf("usage = %+v, want zero (no finish event)", got.Usage)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "upstream_stream_incomplete") {
+		t.Fatalf("status = %d, want 502 incomplete-stream error. body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -307,7 +296,7 @@ func TestHandleStreamUsesTotalUsageTotalTokens(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+	handleStreamWithOptions(rec, resp, "test-model", &UsageTracker{}, &Config{}, true)
 
 	body := rec.Body.String()
 	if !strings.Contains(body, `"finish_reason":"length"`) {
@@ -336,10 +325,9 @@ func TestHandleStreamEmitsDoneOnFinishOnly(t *testing.T) {
 	}
 }
 
-// An upstream that stops after finish-step, without ever sending finish, still
-// has to leave the client with a terminated stream. Emitting no [DONE] leaves
-// OpenAI clients waiting on a response that will never arrive.
-func TestHandleStreamTerminatesWhenFinishNeverArrives(t *testing.T) {
+// finish-step is not a terminal event. If [DONE] arrives without finish, the
+// proxy must surface an error rather than certify partial text as complete.
+func TestHandleStreamRejectsWhenFinishNeverArrives(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
 			`data: {"type":"text-delta","text":"partial"}`,
@@ -358,14 +346,15 @@ func TestHandleStreamTerminatesWhenFinishNeverArrives(t *testing.T) {
 	if !strings.Contains(body, `"content":"partial"`) {
 		t.Errorf("buffered content was dropped. body = %s", body)
 	}
-	if !strings.Contains(body, `"finish_reason":"stop"`) {
-		t.Errorf("no terminating finish_reason. body = %s", body)
+	payloads := decodeStreamPayloads(t, body)
+	if !hasStreamError(payloads) || hasAnyFinishReason(payloads) {
+		t.Errorf("incomplete stream was not surfaced as an error. body = %s", body)
 	}
 }
 
-// The same abort, but with a tool call still buffered: it must be recovered
-// rather than dropped, and the stream must still terminate.
-func TestHandleStreamRecoversToolCallWhenUpstreamAborts(t *testing.T) {
+// An aborted tool input remains provisional and must not be released for
+// execution without a validated finish event.
+func TestHandleStreamRejectsToolCallWhenUpstreamAborts(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
 			`data: {"type":"tool-input-start","id":"c1","toolName":"bash"}`,
@@ -378,14 +367,12 @@ func TestHandleStreamRecoversToolCallWhenUpstreamAborts(t *testing.T) {
 	handleStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
 
 	body := rec.Body.String()
-	if !strings.Contains(body, `"name":"bash"`) || !strings.Contains(body, `ls -la`) {
-		t.Fatalf("aborted stream lost the buffered tool call. body = %s", body)
+	payloads := decodeStreamPayloads(t, body)
+	if len(streamToolCalls(t, payloads)) != 0 || !hasStreamError(payloads) || hasAnyFinishReason(payloads) {
+		t.Fatalf("aborted provisional call was exposed: %s", body)
 	}
 	if n := strings.Count(body, "data: [DONE]"); n != 1 {
 		t.Fatalf("got %d `data: [DONE]` markers, want 1. body = %s", n, body)
-	}
-	if !strings.Contains(body, `"finish_reason":"tool_calls"`) {
-		t.Errorf("recovered call did not produce finish_reason tool_calls. body = %s", body)
 	}
 }
 

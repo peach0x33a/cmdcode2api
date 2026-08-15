@@ -92,9 +92,9 @@ func TestNoArgToolGetsEmptySchema(t *testing.T) {
 	}
 }
 
-// A mid-stream error must not discard a tool call the model embedded in its
-// reasoning; the non-stream path parses reasoning before deciding to 502.
-func TestNonStreamKeepsReasoningCallOnError(t *testing.T) {
+// A mid-stream error invalidates the whole non-streaming response, including
+// any provisional tool call embedded in reasoning.
+func TestNonStreamRejectsReasoningCallOnError(t *testing.T) {
 	dsml := "<｜｜DSML｜｜tool_calls><invoke name=\"bash\">" +
 		"<parameter name=\"command\" string=\"true\">rm -rf /tmp/x</parameter></invoke></｜｜DSML｜｜tool_calls>"
 	reasoning, _ := json.Marshal(dsml)
@@ -106,15 +106,8 @@ func TestNonStreamKeepsReasoningCallOnError(t *testing.T) {
 	handleNonStream(rec, &http.Response{Body: io.NopCloser(strings.NewReader(body))},
 		"m", &UsageTracker{}, &Config{})
 
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, want 200 (a reasoning-embedded call survived)", rec.Code)
-	}
-	var out ChatResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(out.Choices[0].Message.ToolCalls) != 1 {
-		t.Fatalf("reasoning-embedded call lost: %+v", out.Choices[0].Message.ToolCalls)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "upstream_stream_error") {
+		t.Fatalf("status = %d, want 502 stream error. body = %s", rec.Code, rec.Body.String())
 	}
 }
 

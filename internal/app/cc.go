@@ -235,64 +235,111 @@ func decodeSSEEvent(payload string) (CCStreamEvent, error) {
 	return ev, nil
 }
 
-// ParseStreamEvents 从 resp.Body 读取 SSE 流，逐事件回调 onEvent。
+type streamEndKind uint8
+
+const (
+	streamEndEOF streamEndKind = iota + 1
+	streamEndDone
+)
+
+// ParseStreamEvents reads upstream SSE events. Callers that need to distinguish
+// an explicit [DONE] from a bare EOF use parseStreamEvents directly.
 func ParseStreamEvents(resp *http.Response, onEvent func(CCStreamEvent) error) error {
+	_, err := parseStreamEvents(resp, onEvent)
+	return err
+}
+
+func parseStreamEvents(resp *http.Response, onEvent func(CCStreamEvent) error) (streamEndKind, error) {
 	defer resp.Body.Close()
 	reader := bufio.NewReaderSize(resp.Body, 64*1024)
+	var dataLines []string
+	dataBytes := 0
+
+	dispatch := func() (bool, error) {
+		if len(dataLines) == 0 {
+			return false, nil
+		}
+		payload := strings.Join(dataLines, "\n")
+		dataLines = nil
+		dataBytes = 0
+		if strings.TrimSpace(payload) == "" {
+			return false, nil
+		}
+		if strings.TrimSpace(payload) == "[DONE]" {
+			return true, nil
+		}
+		ev, err := decodeSSEEvent(payload)
+		if err != nil {
+			return false, err
+		}
+		if err := onEvent(ev); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
 
 	for {
 		raw, readErr := readSSELine(reader)
-		if payload, ok := sseDataPayload(raw); ok {
-			if payload == "[DONE]" {
-				return nil
-			}
-			ev, err := decodeSSEEvent(payload)
+		line := strings.TrimSuffix(raw, "\r")
+
+		switch {
+		case line == "":
+			done, err := dispatch()
 			if err != nil {
-				return err
+				return 0, err
 			}
-			if err := onEvent(ev); err != nil {
-				return err
+			if done {
+				return streamEndDone, nil
+			}
+		case strings.HasPrefix(line, ":"):
+			// SSE comment/keep-alive.
+		case strings.HasPrefix(line, "data:"):
+			value := strings.TrimPrefix(line, "data:")
+			if strings.HasPrefix(value, " ") {
+				value = value[1:]
+			}
+			dataBytes += len(value)
+			if dataBytes > maxSSELineBytes {
+				return 0, fmt.Errorf("sse event exceeds %d bytes", maxSSELineBytes)
+			}
+			dataLines = append(dataLines, value)
+		case isSSEFieldLine(line):
+			// event, id and retry fields do not carry the JSON payload.
+		default:
+			// Preserve compatibility with upstreams that send bare JSON lines.
+			if len(dataLines) > 0 {
+				done, err := dispatch()
+				if err != nil {
+					return 0, err
+				}
+				if done {
+					return streamEndDone, nil
+				}
+			}
+			dataLines = append(dataLines, strings.TrimSpace(line))
+			done, err := dispatch()
+			if err != nil {
+				return 0, err
+			}
+			if done {
+				return streamEndDone, nil
 			}
 		}
 
 		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				return nil
+			if !errors.Is(readErr, io.EOF) {
+				return 0, readErr
 			}
-			return readErr
+			done, err := dispatch()
+			if err != nil {
+				return 0, err
+			}
+			if done {
+				return streamEndDone, nil
+			}
+			return streamEndEOF, nil
 		}
 	}
-}
-
-// sseDataPayload returns the payload of a data line, or ok=false for anything
-// that is not one.
-//
-// Per the SSE grammar a line is a "field: value" pair, and only the data field
-// carries the JSON this proxy consumes. Comments (":..."), other fields
-// (event:, id:, retry:) and blank keep-alive lines must be skipped, not handed
-// to the JSON decoder — decoding "id: 42" as JSON would abort the whole stream
-// and lose every event after it.
-func sseDataPayload(raw string) (string, bool) {
-	line := strings.TrimSpace(raw)
-	if line == "" || strings.HasPrefix(line, ":") {
-		return "", false
-	}
-	payload, ok := strings.CutPrefix(line, "data:")
-	if !ok {
-		// Some upstreams stream bare JSON with no field prefix; accept it, but
-		// never a recognised non-data SSE field line.
-		if isSSEFieldLine(line) {
-			return "", false
-		}
-		return line, true
-	}
-	payload = strings.TrimSpace(payload)
-	if payload == "" {
-		// An empty data line is a keep-alive, not an event; decoding "" as JSON
-		// returns io.EOF and would abort the whole stream.
-		return "", false
-	}
-	return payload, true
 }
 
 // isSSEFieldLine reports whether a line begins with a known non-data SSE field.

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const maxChatRequestBytes = 50 * 1024 * 1024
@@ -72,7 +73,8 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 		}
 
 		if req.Stream {
-			handleStream(w, resp, req.Model, usage, cfg)
+			includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
+			handleStreamWithOptions(w, resp, req.Model, usage, cfg, includeUsage)
 		} else {
 			handleNonStream(w, resp, req.Model, usage, cfg)
 		}
@@ -83,6 +85,10 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 }
 
 func handleStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config) {
+	handleStreamWithOptions(w, resp, model, usage, cfg, false)
+}
+
+func handleStreamWithOptions(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config, includeUsage bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, 500, "server_error", "streaming not supported")
@@ -93,16 +99,16 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
+	streamID := genStreamID()
+	created := time.Now().Unix()
 	firstText := true
-	var done bool     // [DONE] has been written; nothing more may be emitted
+	var done bool      // [DONE] has been written; nothing more may be emitted
 	var finishing bool // finishStream is running its final flush
 
 	normalizer := newCCEventNormalizer()
 	textParser := NewToolCallParser()
 	reasoningParser := NewToolCallParser()
-	hasToolCalls := false
-	var emittedToolCalls toolCallDeduper
-	toolCallIndex := 0
+	var collectedToolCalls toolCallDeduper
 
 	emitContent := func(content string, reasoning bool) {
 		if content == "" || done {
@@ -122,9 +128,10 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 			firstText = false
 		}
 		writeSSE(w, flusher, ChatStreamChunk{
-			ID:     genStreamID(),
-			Object: "chat.completion.chunk",
-			Model:  model,
+			ID:      streamID,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   model,
 			Choices: []StreamChoice{{
 				Index: 0,
 				Delta: delta,
@@ -132,74 +139,105 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 		})
 	}
 
-	emitToolCall := func(tc ToolCall) {
-		if done {
-			// A stray event after [DONE] must not be written past it, where no
-			// OpenAI client could read it. The final flush (finishing=true,
-			// done=false) is still permitted.
-			log.Printf("%s tool call %q arrived after the stream was terminated; dropping it",
-				colorize("[WARN]", ansiYellow), tc.ID)
-			return
+	collectToolCall := func(tc ToolCall) error {
+		if err := validateToolCall(tc); err != nil {
+			return err
 		}
-		if !emittedToolCalls.Add(tc) {
-			return
-		}
-		delta := StreamDelta{ToolCalls: []StreamToolCall{{
-			Index:    toolCallIndex,
-			ID:       tc.ID,
-			Type:     tc.Type,
-			Function: &tc.Function,
-		}}}
-		toolCallIndex++
-		if firstText {
-			delta.Role = "assistant"
-			firstText = false
-		}
-		writeSSE(w, flusher, ChatStreamChunk{
-			ID:     genStreamID(),
-			Object: "chat.completion.chunk",
-			Model:  model,
-			Choices: []StreamChoice{{
-				Index: 0,
-				Delta: delta,
-			}},
-		})
-		hasToolCalls = true
+		collectedToolCalls.Add(tc)
+		return nil
 	}
 
-	flushParser := func(parser *ToolCallParser, reasoning bool) {
+	flushParser := func(parser *ToolCallParser, reasoning bool) error {
 		content, calls := parser.Feed("", true)
 		emitContent(content, reasoning)
 		for _, tc := range calls {
-			emitToolCall(tc)
+			if err := collectToolCall(tc); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	emitCollectedToolCalls := func() {
+		for index := range collectedToolCalls.kept {
+			tc := &collectedToolCalls.kept[index]
+			delta := StreamDelta{ToolCalls: []StreamToolCall{{
+				Index:    index,
+				ID:       tc.ID,
+				Type:     tc.Type,
+				Function: &tc.Function,
+			}}}
+			if firstText {
+				delta.Role = "assistant"
+				firstText = false
+			}
+			writeSSE(w, flusher, ChatStreamChunk{
+				ID:      streamID,
+				Object:  "chat.completion.chunk",
+				Created: created,
+				Model:   model,
+				Choices: []StreamChoice{{Index: 0, Delta: delta}},
+			})
 		}
 	}
 
-	// finishStream emits everything still held back, then the terminating chunk
-	// and [DONE]. It runs for a normal finish event and again after the read
-	// loop returns, so a stream the upstream abandons mid-tool-call still
-	// delivers that call and still terminates in a shape OpenAI clients accept.
-	finishStream := func(reason string, usageInfo Usage, truncated bool) {
+	// finishStream is the commit point: provisional calls have now had a chance
+	// to be replaced by authoritative events and can be emitted exactly once.
+	finishStream := func(reason string, usageInfo Usage, truncated bool) error {
 		if done || finishing {
-			return
+			return nil
 		}
 		finishing = true
-		flushParser(reasoningParser, true)
-		flushParser(textParser, false)
+		if err := flushParser(reasoningParser, true); err != nil {
+			return err
+		}
+		if err := flushParser(textParser, false); err != nil {
+			return err
+		}
 
+		hasToolCalls := len(collectedToolCalls.kept) > 0
+		if reason == "tool_calls" && !hasToolCalls {
+			return fmt.Errorf("finish reason tool_calls contained no valid tool calls")
+		}
+		truncated = truncated || collectedToolCalls.hasUnsafeArguments()
+		emitCollectedToolCalls()
 		finish := resolveFinishReason(reason, hasToolCalls, truncated)
 		writeSSE(w, flusher, ChatStreamChunk{
-			ID:     genStreamID(),
-			Object: "chat.completion.chunk",
-			Model:  model,
+			ID:      streamID,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   model,
 			Choices: []StreamChoice{{
 				Index:        0,
 				Delta:        StreamDelta{},
 				FinishReason: &finish,
 			}},
-			Usage: &usageInfo,
 		})
-		fmt.Fprintf(w, "data: [DONE]\n\n")
+		if includeUsage {
+			writeSSE(w, flusher, ChatStreamChunk{
+				ID:      streamID,
+				Object:  "chat.completion.chunk",
+				Created: created,
+				Model:   model,
+				Choices: []StreamChoice{},
+				Usage:   &usageInfo,
+			})
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		done = true
+		if debugMode {
+			log.Printf("%s %s", colorize("[DEBUG]", ansiDim), colorize(">> [DONE]", ansiGreen))
+		}
+		flusher.Flush()
+		return nil
+	}
+
+	failStream := func(code, message string) {
+		if done {
+			return
+		}
+		writeSSEError(w, flusher, code, message)
+		fmt.Fprint(w, "data: [DONE]\n\n")
 		done = true
 		if debugMode {
 			log.Printf("%s %s", colorize("[DEBUG]", ansiDim), colorize(">> [DONE]", ansiGreen))
@@ -207,7 +245,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 		flusher.Flush()
 	}
 
-	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
+	endKind, err := parseStreamEvents(resp, func(ev CCStreamEvent) error {
 		if cfg.Debug {
 			raw, _ := json.Marshal(ev)
 			log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
@@ -222,24 +260,36 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 				content, calls := textParser.Feed(event.text, false)
 				emitContent(content, false)
 				for _, call := range calls {
-					emitToolCall(call)
+					if err := collectToolCall(call); err != nil {
+						return err
+					}
 				}
 			case normalizedReasoning:
 				content, calls := reasoningParser.Feed(event.text, false)
 				emitContent(content, true)
 				for _, call := range calls {
-					emitToolCall(call)
+					if err := collectToolCall(call); err != nil {
+						return err
+					}
 				}
 			case normalizedToolCall:
 				if event.toolCall != nil {
-					emitToolCall(*event.toolCall)
+					if err := collectToolCall(*event.toolCall); err != nil {
+						return err
+					}
 				}
 			case normalizedReasoningEnd:
-				flushParser(reasoningParser, true)
+				if err := flushParser(reasoningParser, true); err != nil {
+					return err
+				}
 			case normalizedTextEnd:
-				flushParser(textParser, false)
+				if err := flushParser(textParser, false); err != nil {
+					return err
+				}
 			case normalizedFinish:
-				finishStream(event.finishReason, event.usage, event.truncated)
+				if err := finishStream(event.finishReason, event.usage, event.truncated); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -247,33 +297,14 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 
 	if err != nil {
 		log.Printf("%s stream parse: %v", colorize("[ERROR]", ansiRed), err)
-	}
-
-	// The upstream can stop without ever sending finish — a dropped connection,
-	// a mid-stream error, or a truncated response. Recover whatever it already
-	// told us rather than leaving the client with a stream that just stops.
-	if !done {
-		// The turn did not complete. "length" is the OpenAI value for a response
-		// that was cut off; reporting "stop" would repeat the lie that a partial
-		// turn finished cleanly.
-		reason := "stop"
-		if err != nil {
-			reason = "length"
+		failStream("upstream_stream_error", "upstream stream error: "+err.Error())
+	} else if !done {
+		message := "upstream connection closed before a finish event"
+		if endKind == streamEndDone {
+			message = "upstream sent [DONE] before a finish event"
 		}
-		drained, drainErr := normalizer.drainToolInputs()
-		if drainErr != nil {
-			log.Printf("%s drain tool inputs: %v", colorize("[ERROR]", ansiRed), drainErr)
-		}
-		for _, event := range drained {
-			if event.kind == normalizedToolCall && event.toolCall != nil {
-				emitToolCall(*event.toolCall)
-			}
-		}
-		if err != nil || len(drained) > 0 {
-			log.Printf("%s stream ended without a finish event; terminating with %d recovered tool call(s)",
-				colorize("[WARN]", ansiYellow), len(drained))
-		}
-		finishStream(reason, normalizer.FinalUsageInfo(), normalizer.truncated)
+		log.Printf("%s %s", colorize("[ERROR]", ansiRed), message)
+		failStream("upstream_stream_incomplete", message)
 	}
 
 	promptTokens, completionTokens, cacheRead, cacheWrite := normalizer.Usage()
@@ -288,8 +319,15 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 	var reasoningContent strings.Builder
 	var finishReason string
 	var truncated bool
+	addToolCall := func(call ToolCall) error {
+		if err := validateToolCall(call); err != nil {
+			return err
+		}
+		toolCalls.Add(call)
+		return nil
+	}
 
-	err := ParseStreamEvents(resp, func(ev CCStreamEvent) error {
+	endKind, err := parseStreamEvents(resp, func(ev CCStreamEvent) error {
 		if cfg.Debug {
 			raw, _ := json.Marshal(ev)
 			log.Printf("%s %s event type=%s raw=%s", colorize("[DEBUG]", ansiDim), colorize("<< cc", ansiCyan), ev.Type, colorize(string(raw), ansiCyan))
@@ -306,7 +344,9 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 				reasoningContent.WriteString(event.text)
 			case normalizedToolCall:
 				if event.toolCall != nil {
-					toolCalls.Add(*event.toolCall)
+					if err := addToolCall(*event.toolCall); err != nil {
+						return err
+					}
 				}
 			case normalizedFinish:
 				finishReason = event.finishReason
@@ -316,32 +356,32 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		return nil
 	})
 
-	// Recover anything the upstream buffered but never terminated, exactly as
-	// the streaming path does.
+	if err != nil {
+		log.Printf("%s non-stream parse: %v", colorize("[ERROR]", ansiRed), err)
+		writeErrorWithCode(w, http.StatusBadGateway, "server_error", "upstream_stream_error", "upstream stream error: "+err.Error())
+		return
+	}
 	if !normalizer.finished {
-		drained, drainErr := normalizer.drainToolInputs()
-		if drainErr != nil {
-			log.Printf("%s drain tool inputs: %v", colorize("[ERROR]", ansiRed), drainErr)
+		message := "upstream connection closed before a finish event"
+		if endKind == streamEndDone {
+			message = "upstream sent [DONE] before a finish event"
 		}
-		for _, event := range drained {
-			if event.kind == normalizedToolCall && event.toolCall != nil {
-				toolCalls.Add(*event.toolCall)
-			}
-		}
-		truncated = truncated || normalizer.truncated
+		log.Printf("%s %s", colorize("[ERROR]", ansiRed), message)
+		writeErrorWithCode(w, http.StatusBadGateway, "server_error", "upstream_stream_incomplete", message)
+		return
 	}
 
-	// Extract text content and parse embedded tool calls. This must run before
-	// the error check below: a call the model wrote as text inside its reasoning
-	// only becomes visible here, and discarding the turn before parsing it would
-	// lose it.
+	// Extract embedded tool calls only after the upstream turn completed.
 	visibleText := textContent.String()
 	if visibleText != "" {
 		tcp := NewToolCallParser()
 		strippedContent, parsedCalls := tcp.Feed(visibleText, true)
 		if len(parsedCalls) > 0 {
 			for _, call := range parsedCalls {
-				toolCalls.Add(call)
+				if err := addToolCall(call); err != nil {
+					writeErrorWithCode(w, http.StatusBadGateway, "server_error", "invalid_tool_call", err.Error())
+					return
+				}
 			}
 			visibleText = strippedContent
 		}
@@ -354,27 +394,22 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		strippedReasoning, parsedCalls := tcp.Feed(reasoningText, true)
 		if len(parsedCalls) > 0 {
 			for _, call := range parsedCalls {
-				toolCalls.Add(call)
+				if err := addToolCall(call); err != nil {
+					writeErrorWithCode(w, http.StatusBadGateway, "server_error", "invalid_tool_call", err.Error())
+					return
+				}
 			}
 			reasoningText = strippedReasoning
 		}
 	}
 
-	if err != nil {
-		log.Printf("%s non-stream parse: %v", colorize("[ERROR]", ansiRed), err)
-		// Discarding a partial turn wholesale loses tool calls the upstream
-		// already delivered in full — including ones embedded in reasoning.
-		// Return what survived and mark it truncated; only a turn with nothing
-		// at all in it is a failed request.
-		if len(toolCalls.kept) == 0 && strings.TrimSpace(visibleText) == "" && strings.TrimSpace(reasoningText) == "" {
-			writeError(w, 502, "server_error", "upstream stream error")
-			return
-		}
-		truncated = true
-	}
-
 	msg.Content = TextContent(visibleText)
 	msg.ToolCalls = toolCalls.kept
+	if finishReason == "tool_calls" && len(msg.ToolCalls) == 0 {
+		writeErrorWithCode(w, http.StatusBadGateway, "server_error", "invalid_tool_call", "finish reason tool_calls contained no valid tool calls")
+		return
+	}
+	truncated = truncated || toolCalls.hasUnsafeArguments()
 	finishReason = resolveFinishReason(finishReason, len(msg.ToolCalls) > 0, truncated)
 	if reasoningText != "" {
 		msg.ReasoningContent = reasoningText
@@ -383,9 +418,10 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
 
 	res := ChatResponse{
-		ID:     genStreamID(),
-		Object: "chat.completion",
-		Model:  model,
+		ID:      genStreamID(),
+		Object:  "chat.completion",
+		Created: time.Now().Unix(),
+		Model:   model,
 		Choices: []Choice{{
 			Index:        0,
 			Message:      msg,
@@ -452,6 +488,21 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, chunk ChatStreamChunk
 	flusher.Flush()
 }
 
+func writeSSEError(w http.ResponseWriter, flusher http.Flusher, code, message string) {
+	payload := map[string]any{"error": map[string]any{
+		"message": message,
+		"type":    "server_error",
+		"code":    code,
+		"param":   nil,
+	}}
+	data, _ := json.Marshal(payload)
+	if debugMode {
+		log.Printf("%s %s %s", colorize("[DEBUG]", ansiDim), colorize(">> sse error", ansiRed), colorize(string(data), ansiCyan))
+	}
+	fmt.Fprintf(w, "data: %s\n\n", data)
+	flusher.Flush()
+}
+
 func streamEventText(ev CCStreamEvent) string {
 	if ev.Text != "" {
 		return ev.Text
@@ -468,8 +519,11 @@ func streamEventText(ev CCStreamEvent) string {
 // keeps the truncation visible so the client can retry or refuse instead of
 // executing a silently truncated write.
 func resolveFinishReason(upstream string, hasToolCalls, truncated bool) string {
-	if upstream == "length" || truncated {
+	if truncated {
 		return "length"
+	}
+	if upstream == "content_filter" {
+		return "content_filter"
 	}
 	if hasToolCalls {
 		return "tool_calls"
@@ -477,14 +531,20 @@ func resolveFinishReason(upstream string, hasToolCalls, truncated bool) string {
 	return upstream
 }
 
-func normalizeFinishReason(reason string) string {
-	switch reason {
-	case "tool-calls":
-		return "tool_calls"
-	case "max_tokens", "max_output_tokens":
-		return "length"
+func normalizeFinishReason(reason string) (string, error) {
+	switch strings.TrimSpace(reason) {
+	case "stop", "end", "end_turn":
+		return "stop", nil
+	case "tool-calls", "tool_calls", "tool_use", "function_call":
+		return "tool_calls", nil
+	case "max_tokens", "max_output_tokens", "length":
+		return "length", nil
+	case "content_filter":
+		return "content_filter", nil
+	case "":
+		return "", fmt.Errorf("finish event missing finish reason")
 	default:
-		return reason
+		return "", fmt.Errorf("unsupported finish reason %q", reason)
 	}
 }
 

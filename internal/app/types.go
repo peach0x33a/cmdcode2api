@@ -19,9 +19,14 @@ type ChatRequest struct {
 	// replacement and is what current clients actually send, so both are read
 	// and MaxCompletionTokens wins. Accepting only max_tokens silently dropped
 	// the caller's budget and cut tool arguments off at the default.
-	MaxTokens           int    `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int    `json:"max_completion_tokens,omitempty"`
-	Tools               []Tool `json:"tools,omitempty"`
+	MaxTokens           int            `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int            `json:"max_completion_tokens,omitempty"`
+	Tools               []Tool         `json:"tools,omitempty"`
+	StreamOptions       *StreamOptions `json:"stream_options,omitempty"`
+}
+
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
 // OutputTokenBudget returns the caller's requested completion-token limit,
@@ -143,21 +148,44 @@ type ToolFunction struct {
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
+type toolCallSource uint8
+
+const (
+	toolCallSourceUnknown toolCallSource = iota
+	toolCallSourceRecoveredText
+	toolCallSourceToolInput
+	toolCallSourceAuthoritative
+)
+
+type toolInputRepairKind uint8
+
+const (
+	toolInputRepairNone toolInputRepairKind = iota
+	toolInputRepairSyntax
+	toolInputRepairTruncated
+	toolInputRepairFallback
+)
+
 type ToolCall struct {
 	ID       string   `json:"id"`
 	Type     string   `json:"type"` // "function"
 	Function CallFunc `json:"function"`
 
-	// recoveredRawDSML distinguishes a protocol-recovery artifact from an
-	// intentional structured call. It is internal-only and enables safe
-	// cross-representation deduplication without collapsing two intentional,
-	// semantically identical calls.
+	// Internal provenance lets a later authoritative event replace a provisional
+	// reconstruction before anything is emitted on the OpenAI stream.
+	source     toolCallSource
+	repairKind toolInputRepairKind
+
+	// Retained for the raw-DSML one-to-one semantic deduplication rule.
 	recoveredRawDSML bool
 
-	// repaired marks arguments that only parse because truncated JSON was
-	// patched. Such a call is a best guess and must yield to an authoritative
-	// payload for the same id.
+	// repaired remains a coarse compatibility signal for parser tests. Safety
+	// decisions use repairKind so syntax normalization is not called truncation.
 	repaired bool
+}
+
+func (c ToolCall) unsafeArguments() bool {
+	return c.repairKind == toolInputRepairTruncated || c.repairKind == toolInputRepairFallback
 }
 
 type CallFunc struct {
@@ -169,6 +197,7 @@ type CallFunc struct {
 type ChatResponse struct {
 	ID      string   `json:"id"`
 	Object  string   `json:"object"`
+	Created int64    `json:"created"`
 	Model   string   `json:"model"`
 	Choices []Choice `json:"choices"`
 	Usage   Usage    `json:"usage,omitempty"`
@@ -190,6 +219,7 @@ type Usage struct {
 type ChatStreamChunk struct {
 	ID      string         `json:"id"`
 	Object  string         `json:"object"`
+	Created int64          `json:"created"`
 	Model   string         `json:"model"`
 	Choices []StreamChoice `json:"choices"`
 	Usage   *Usage         `json:"usage,omitempty"`

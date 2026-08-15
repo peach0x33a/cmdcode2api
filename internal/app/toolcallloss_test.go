@@ -54,8 +54,10 @@ func TestToolErrorTerminatesToolInput(t *testing.T) {
 	mustConsume(t, n, CCStreamEvent{Type: "tool-input-start", ID: "c2", ToolName: "write"})
 	mustConsume(t, n, CCStreamEvent{Type: "tool-input-delta", ID: "c2", Delta: `{"path":"/a","content":"x"}`})
 
-	events := mustConsume(t, n, CCStreamEvent{Type: "tool-error", ToolCallID: "c2", ToolName: "write"})
-
+	if events := mustConsume(t, n, CCStreamEvent{Type: "tool-error", ToolCallID: "c2", ToolName: "write"}); len(events) != 0 {
+		t.Fatalf("tool call emitted before finish: %+v", events)
+	}
+	events := mustConsume(t, n, CCStreamEvent{Type: "finish", FinishReason: "tool-calls"})
 	call := onlyToolCall(t, events)
 	if call.ID != "c2" || call.Function.Arguments != `{"path":"/a","content":"x"}` {
 		t.Fatalf("tool-error lost the call: %+v", call)
@@ -74,6 +76,7 @@ func TestToolErrorAfterEndDoesNotDuplicate(t *testing.T) {
 		{Type: "tool-input-end", ID: "c3"},
 		{Type: "tool-call", ToolCallID: "c3", ToolName: "bash", Input: map[string]any{"command": "echo hi"}},
 		{Type: "tool-error", ToolCallID: "c3", ToolName: "bash", Input: `{"command":"echo hi"}`},
+		{Type: "finish", FinishReason: "tool-calls"},
 	} {
 		for _, out := range mustConsume(t, n, ev) {
 			if out.kind == normalizedToolCall {
@@ -115,9 +118,9 @@ func TestResolveFinishReason(t *testing.T) {
 		{"tool_calls", true, false, "tool_calls"},
 		{"stop", true, false, "tool_calls"},
 		{"stop", false, false, "stop"},
-		{"length", true, false, "length"},  // upstream hit the cap mid-call
-		{"stop", true, true, "length"},     // arguments needed repair
-		{"length", false, false, "length"}, // plain text truncation
+		{"length", true, false, "tool_calls"}, // authoritative call is complete
+		{"stop", true, true, "length"},        // arguments needed repair
+		{"length", false, false, "length"},    // plain text truncation
 	}
 	for _, c := range cases {
 		if got := resolveFinishReason(c.upstream, c.hasToolCalls, c.trunc); got != c.want {

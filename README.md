@@ -10,15 +10,19 @@ The project was originally named `cc-gateway`; it was renamed to avoid confusion
 
 - OpenAI-compatible HTTP API
   - `POST /v1/chat/completions`
+  - `POST /v1/responses` (OpenAI Responses API, for Codex CLI compatibility)
   - `GET /v1/models`
 - Streaming and non-streaming chat completions
 - OpenAI base64 data `image_url` conversion to Command Code / Anthropic-style image blocks
-- Browser OAuth helper for obtaining a Command Code API key
+- Browser OAuth helper for obtaining Command Code API keys for one or more named accounts
+- Multi-account rotation: requests round-robin across configured accounts, with automatic failover and staleness detection
 - Local bearer-token auth for clients
 - CORS enabled for local UI clients
 - Usage counter persisted to `usage.json`
 - Health endpoint: `GET /health`
-- Usage endpoint: `GET /usage`
+- Usage endpoint: `GET /usage` — unauthenticated, global totals only, unchanged
+- Admin usage endpoint: `GET /admin/usage` — loopback-gated, adds a per-account breakdown
+- Accounts endpoint: `GET /accounts`
 
 ## Build
 
@@ -33,6 +37,20 @@ cmd/cmdcode2api/   CLI entrypoint
 internal/app/      gateway implementation
 ```
 
+## Web UI
+
+The account-management UI served at `/ui` is a TypeScript + React app built
+with Vite, living in `internal/app/webui-src/`. Its build output is committed
+to `internal/app/webui/dist/` and embedded into the Go binary, so `go build`
+never needs Node installed. After editing the UI, rebuild and commit the
+output:
+
+```bash
+cd internal/app/webui-src
+npm install
+npm run build
+```
+
 ## First run
 
 Run the binary once to generate `config.yaml`:
@@ -41,19 +59,22 @@ Run the binary once to generate `config.yaml`:
 ./cmdcode2api
 ```
 
-Then complete Command Code OAuth:
+Then connect a Command Code account, giving it a name:
 
 ```bash
-./cmdcode2api --oauth
+./cmdcode2api --oauth --account personal
 ```
 
-The OAuth flow writes the Command Code API key into `config.yaml`.
+`--account <name>` is required whenever you use `--oauth`. The OAuth flow
+writes the Command Code API key into `config.yaml` under that account name.
+Run the same command again with a different `--account` name to add more
+accounts. See [Accounts](#accounts) below for how the gateway uses them.
 
 On a remote server without a browser, keep the callback server bound to
 `127.0.0.1` and provide the callback URL that Command Code should call:
 
 ```bash
-./cmdcode2api --oauth --oauth-callback http://localhost:5959/callback
+./cmdcode2api --oauth --account personal --oauth-callback http://localhost:5959/callback
 ```
 
 If your browser is on a different machine, forward that callback URL to the
@@ -63,6 +84,52 @@ server, for example:
 ssh -L 5959:127.0.0.1:5959 user@server
 ```
 
+## Accounts
+
+Command Code accounts are stored by name in `config.yaml`. Add as many as
+you like:
+
+```bash
+./cmdcode2api --oauth --account personal
+./cmdcode2api --oauth --account work
+```
+
+Running `--oauth --account <name>` again for a name that already exists
+overwrites that account's key. That's also how you reauthorize an account
+that has gone stale.
+
+List configured accounts and their live status without starting the server:
+
+```bash
+./cmdcode2api --list-accounts
+```
+
+Remove an account:
+
+```bash
+./cmdcode2api --remove-account work
+```
+
+### Rotation and failover
+
+While the server is running, `/v1/chat/completions` requests round-robin
+across every account that isn't marked stale. If Command Code returns `401`
+or `403` for an account, the gateway marks it stale and routes subsequent
+requests to the remaining accounts. A background probe also rechecks every
+account roughly every 10 minutes (a lightweight authenticated call against
+Command Code), so a dead key gets caught even without live traffic. A `200`
+response clears a stale flag; transient failures such as timeouts or 5xx
+responses are recorded but leave the account's status untouched.
+
+Command Code API keys have no refresh mechanism, so a stale account needs a
+fresh login, not a restart:
+
+```bash
+./cmdcode2api --oauth --account <name>
+```
+
+Check current status anytime with `--list-accounts` or `GET /accounts`.
+
 ## Configuration
 
 `config.yaml` is created automatically and intentionally ignored by git.
@@ -71,9 +138,10 @@ Example shape:
 
 ```yaml
 api_key: ccgw-generated-local-client-key
-commandcode:
-  api_key: your-command-code-api-key
-  base_url: https://api.commandcode.ai
+accounts:
+  - name: personal
+    api_key: your-command-code-api-key
+    base_url: https://api.commandcode.ai
 host: localhost
 port: 11434
 exclude_models:
@@ -85,11 +153,14 @@ exclude_models:
 Fields:
 
 - `api_key` — local bearer token required by clients calling this gateway.
-- `commandcode.api_key` — Command Code API key obtained via `--oauth`.
-- `commandcode.base_url` — Command Code API base URL.
+- `accounts` — list of Command Code accounts, each with a `name`, an `api_key` obtained via `--oauth --account <name>`, and a `base_url`.
 - `host` — HTTP listen host. Defaults to `localhost`. Use `0.0.0.0` to listen on all interfaces.
 - `port` — local listen port. Defaults to `11434`.
-- `exclude_models` — model ID prefixes hidden from `/v1/models` and rejected by `/v1/chat/completions`.
+- `exclude_models` — model ID prefixes hidden from `/v1/models` and rejected by `/v1/chat/completions`. Also applies to `/v1/responses`, which shares the same dispatch logic.
+
+If you have a `config.yaml` from before multi-account support, its single
+`commandcode: {api_key, base_url}` block is migrated automatically into an
+`accounts` list with one account named `default` the next time it loads.
 
 New configs exclude `gpt-`, `claude-`, and `gemini-` by default. These prefixes match both plain model IDs such as `gpt-4` and provider-qualified IDs such as `openai/gpt-4` by checking the part after the final `/`.
 
@@ -181,7 +252,65 @@ No authentication required. Returns locally accumulated usage counters:
 }
 ```
 
-Usage is persisted to `usage.json`, which is ignored by git.
+Usage is persisted to `usage.json`, which is ignored by git. This is the
+global-totals view only; it never breaks usage down by account.
+
+### `GET /admin/usage`
+
+Not reachable from the network: like `/admin/models` and `/admin/connection`,
+this endpoint only answers requests that pass the loopback+Host+Origin gate
+used for the account-management UI (same-machine TCP peer, a `Host` header of
+`localhost`/`127.0.0.1`/`[::1]`, and — if present — an `Origin` that matches
+it). It returns the same global totals as `GET /usage` plus a per-account
+breakdown:
+
+```json
+{
+  "total_requests": 12,
+  "prompt_tokens": 41200,
+  "completion_tokens": 980,
+  "cache_read_tokens": 39000,
+  "cache_write_tokens": 0,
+  "accounts": [
+    {
+      "account": "personal",
+      "total_requests": 7,
+      "prompt_tokens": 25000,
+      "completion_tokens": 600,
+      "cache_read_tokens": 24000,
+      "cache_write_tokens": 0
+    },
+    {
+      "account": "work",
+      "total_requests": 5,
+      "prompt_tokens": 16200,
+      "completion_tokens": 380,
+      "cache_read_tokens": 15000,
+      "cache_write_tokens": 0
+    }
+  ]
+}
+```
+
+```bash
+curl http://localhost:11434/admin/usage
+```
+
+(run from the machine hosting the gateway — a remote request is rejected
+regardless of bearer token.)
+
+### `GET /accounts`
+
+Requires the same bearer token as `/v1/chat/completions`, unlike `/health` and `/usage`. Returns each configured account's name and live status, never the API key:
+
+```json
+[
+  {"name": "personal", "status": "healthy", "last_checked": "2026-08-24T10:00:00Z"},
+  {"name": "work", "status": "stale", "last_checked": "2026-08-24T09:50:00Z", "last_error": "http 401"}
+]
+```
+
+`status` is `unknown` (not probed yet), `healthy`, or `stale`. Reauthorize a stale account with `--oauth --account <name>`.
 
 ### `GET /v1/models`
 
@@ -201,6 +330,29 @@ Supported request styles:
 
 Remote HTTP(S) image URLs are rejected with `400 invalid_request_error`; image
 content must be supplied as a base64 `data:image/...;base64,...` URL.
+
+### `POST /v1/responses`
+
+Implements OpenAI's Responses API protocol, for compatibility with clients
+that speak it instead of Chat Completions (notably Codex CLI). Requires the
+same bearer token as `/v1/chat/completions`, and is adapted onto the same
+Command Code dispatch pipeline, so it shares that endpoint's model exclusion,
+account rotation, and failover behavior.
+
+The gateway is stateless: `previous_response_id` is not supported, since
+there's no server-side conversation store to resolve it against. Send the
+full conversation in `input` on every request.
+
+```bash
+curl http://localhost:11434/v1/responses \
+  -H "Authorization: Bearer <local-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek/deepseek-v4-pro",
+    "input": "Hello!",
+    "stream": false
+  }'
+```
 
 ## Files intentionally not committed
 

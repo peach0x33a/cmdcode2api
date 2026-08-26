@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +17,12 @@ const maxChatRequestBytes = 50 * 1024 * 1024
 
 var debugMode bool
 
-func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.HandlerFunc {
+// maxFailoverAttempts caps how many accounts one request will try before
+// giving up. Capped rather than trying every account so a request against a
+// large pool of mostly-stale accounts still fails fast.
+const maxFailoverAttempts = 3
+
+func handleChatCompletions(pool *AccountPool, cfg *Config, usage *UsageTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxChatRequestBytes)
 
@@ -35,48 +41,16 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 			return
 		}
 
-		if req.Model == "" {
-			writeError(w, 400, "invalid_request_error", "model is required")
-			return
-		}
-		if isModelExcluded(req.Model, cfg.ExcludeModels) {
-			writeError(w, 404, "invalid_request_error", fmt.Sprintf("model %q is not available", req.Model))
-			return
-		}
-		if len(req.Messages) == 0 {
-			writeError(w, 400, "invalid_request_error", "messages is required")
-			return
-		}
-
-		resp, err := cc.Send(r.Context(), &req)
-		if err != nil {
-			var invalid *invalidRequestError
-			if errors.As(err, &invalid) {
-				writeError(w, http.StatusBadRequest, "invalid_request_error", invalid.Error())
-				return
-			}
-			var upstreamErr *upstreamAPIError
-			if errors.As(err, &upstreamErr) {
-				log.Printf("%s cc send: %v", colorize("[ERROR]", ansiRed), upstreamErr)
-				if upstreamErr.RetryAfter != "" {
-					w.Header().Set("Retry-After", upstreamErr.RetryAfter)
-				}
-				if upstreamErr.RequestID != "" {
-					w.Header().Set("x-request-id", upstreamErr.RequestID)
-				}
-				writeErrorWithCode(w, upstreamErr.Status, upstreamErr.Type, upstreamErr.Code, upstreamErr.Message)
-				return
-			}
-			log.Printf("%s cc send: %v", colorize("[ERROR]", ansiRed), err)
-			writeError(w, http.StatusBadGateway, "server_error", "upstream error: "+err.Error())
+		disp, ok := dispatchToCC(w, r.Context(), pool, cfg, &req)
+		if !ok {
 			return
 		}
 
 		if req.Stream {
 			includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
-			handleStreamWithOptions(w, resp, req.Model, usage, cfg, includeUsage)
+			handleStreamForAccount(w, disp.resp, req.Model, usage, cfg, includeUsage, disp.account)
 		} else {
-			handleNonStream(w, resp, req.Model, usage, cfg)
+			handleNonStreamForAccount(w, disp.resp, req.Model, usage, cfg, disp.account)
 		}
 		if err := usage.save(); err != nil {
 			log.Printf("%s save usage: %v", colorize("[ERROR]", ansiRed), err)
@@ -84,11 +58,181 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 	}
 }
 
+// ccDispatch bundles a successful upstream response together with the name
+// of the account that actually served it, so callers can credit usage to the
+// right account instead of the one(s) that failed over before it.
+type ccDispatch struct {
+	resp    *http.Response
+	account string
+}
+
+// dispatchToCC validates the request, guards against no-accounts/excluded
+// models, and sends it through sendWithFailover, translating any resulting
+// error into an HTTP response. It returns (disp, true) on success and
+// writes the error response itself on failure, returning (ccDispatch{}, false).
+func dispatchToCC(w http.ResponseWriter, ctx context.Context, pool *AccountPool, cfg *Config, req *ChatRequest) (ccDispatch, bool) {
+	if req.Model == "" {
+		writeError(w, 400, "invalid_request_error", "model is required")
+		return ccDispatch{}, false
+	}
+	if isModelExcluded(req.Model, cfg.ExcludeModels) {
+		writeError(w, 404, "invalid_request_error", fmt.Sprintf("model %q is not available", req.Model))
+		return ccDispatch{}, false
+	}
+	if len(req.Messages) == 0 {
+		writeError(w, 400, "invalid_request_error", "messages is required")
+		return ccDispatch{}, false
+	}
+
+	// No accounts configured at all is a distinct, much more common case
+	// for a fresh install than every account going stale — surface it as
+	// its own clean error pointing at /ui instead of the generic
+	// "exhausted/stale" message sendWithFailover would otherwise produce.
+	if pool.Len() == 0 {
+		writeErrorWithCode(w, http.StatusServiceUnavailable, "server_error", "no_accounts_configured",
+			"no accounts configured — add one at /ui")
+		return ccDispatch{}, false
+	}
+
+	disp, err := sendWithFailover(ctx, pool, req)
+	if err != nil {
+		var authExhausted *authExhaustedError
+		if errors.As(err, &authExhausted) {
+			log.Printf("%s %s", colorize("[ERROR]", ansiRed), authExhausted.Error())
+			writeErrorWithCode(w, http.StatusBadGateway, "server_error", "no_healthy_accounts",
+				"all configured Command Code accounts are stale or unavailable; check GET /accounts or run --oauth --account <name> to reauthorize")
+			return ccDispatch{}, false
+		}
+		var invalid *invalidRequestError
+		if errors.As(err, &invalid) {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", invalid.Error())
+			return ccDispatch{}, false
+		}
+		var upstreamErr *upstreamAPIError
+		if errors.As(err, &upstreamErr) {
+			log.Printf("%s cc send: %v", colorize("[ERROR]", ansiRed), upstreamErr)
+			if upstreamErr.RetryAfter != "" {
+				w.Header().Set("Retry-After", upstreamErr.RetryAfter)
+			}
+			if upstreamErr.RequestID != "" {
+				w.Header().Set("x-request-id", upstreamErr.RequestID)
+			}
+			writeErrorWithCode(w, upstreamErr.Status, upstreamErr.Type, upstreamErr.Code, upstreamErr.Message)
+			return ccDispatch{}, false
+		}
+		log.Printf("%s cc send: %v", colorize("[ERROR]", ansiRed), err)
+		writeError(w, http.StatusBadGateway, "server_error", "upstream error: "+err.Error())
+		return ccDispatch{}, false
+	}
+
+	return disp, true
+}
+
+// authExhaustedError means every account this request tried came back with an
+// auth failure (or the pool had no eligible account to try in the first
+// place). It is reported distinctly from a plain upstreamAPIError because the
+// fix is different: reauthorize an account, not retry the request.
+type authExhaustedError struct {
+	cause error
+}
+
+func (e *authExhaustedError) Error() string {
+	return fmt.Sprintf("all command code accounts exhausted or stale: %v", e.cause)
+}
+
+func (e *authExhaustedError) Unwrap() error {
+	return e.cause
+}
+
+// sendWithFailover tries up to maxFailoverAttempts accounts from pool. A
+// 401/403 (stale key) or a rate-limit/quota-exhaustion 429 is treated as
+// worth failing over from — the pool likely has another account that is not
+// currently limited, and Next() specifically keeps StatusLimited accounts
+// eligible so they can be retried once the limit resets, which only helps if
+// this loop actually moves on instead of handing the caller an immediate
+// 429. A rate limit on the last available attempt is returned to the caller
+// as-is (rather than folded into authExhaustedError below) since there is no
+// further account to try and authExhaustedError's "every account is a dead
+// key, go reauthorize" message would be actively wrong for "every account
+// happens to be rate-limited right now." A bad request, 5xx, or network
+// error is returned immediately without touching the account's status
+// (beyond RecordError's lastError bookkeeping), since none of those indicate
+// another account would fare any better.
+//
+// Every non-nil error from client.Send, not just ones that assert to
+// *upstreamAPIError, is passed to pool.RecordError: a network-level failure
+// (timeout, connection reset, DNS error) never produces an *upstreamAPIError
+// but is just as real a reason for /accounts to show something other than a
+// blank lastError next to a "healthy" status. RecordError itself does the
+// errors.As check to decide whether the failure is Command Code's
+// rate-limit/quota-exhaustion signal, which is the only case that changes
+// status — health-check probes only exercise the unmetered
+// /provider/v1/models endpoint and cannot see quota exhaustion on their own.
+//
+// A successful response calls pool.MarkHealthy: real traffic succeeding is
+// the only thing that proves a StatusLimited account's quota has actually
+// recovered, as opposed to the periodic probe's blind model-listing check.
+func sendWithFailover(ctx context.Context, pool *AccountPool, req *ChatRequest) (ccDispatch, error) {
+	attempts := pool.Len()
+	if attempts > maxFailoverAttempts {
+		attempts = maxFailoverAttempts
+	}
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		acct, err := pool.Next()
+		if err != nil {
+			return ccDispatch{}, &authExhaustedError{cause: err}
+		}
+
+		// acct.client can be rebuilt concurrently by UpdateAccount, so copy
+		// the pointer under the lock and release before the network call —
+		// the lock must never be held across I/O.
+		acct.mu.Lock()
+		client := acct.client
+		acct.mu.Unlock()
+
+		resp, err := client.Send(ctx, req)
+		if err == nil {
+			pool.MarkHealthy(acct.Name)
+			return ccDispatch{resp: resp, account: acct.Name}, nil
+		}
+
+		var upstreamErr *upstreamAPIError
+		if errors.As(err, &upstreamErr) && (upstreamErr.Status == http.StatusUnauthorized || upstreamErr.Status == http.StatusForbidden) {
+			pool.MarkStale(acct.Name, upstreamErr.Error())
+			lastErr = err
+			continue
+		}
+		pool.RecordError(acct.Name, err)
+		// A rate limit is worth trying the next account for — but only if
+		// there is another attempt left to make. On the last attempt there is
+		// nothing left to fail over to, so the caller should see the real 429
+		// (and its Retry-After/message) rather than the generic
+		// authExhaustedError below, which is written for "every account is a
+		// dead key" and would be a misleading message for "every account
+		// happens to be rate-limited right now."
+		if errors.As(err, &upstreamErr) && upstreamErr.Type == "rate_limit_error" && i < attempts-1 {
+			lastErr = err
+			continue
+		}
+		return ccDispatch{}, err
+	}
+	return ccDispatch{}, &authExhaustedError{cause: lastErr}
+}
+
 func handleStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config) {
 	handleStreamWithOptions(w, resp, model, usage, cfg, false)
 }
 
 func handleStreamWithOptions(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config, includeUsage bool) {
+	handleStreamForAccount(w, resp, model, usage, cfg, includeUsage, "")
+}
+
+func handleStreamForAccount(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config, includeUsage bool, account string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, 500, "server_error", "streaming not supported")
@@ -308,10 +452,14 @@ func handleStreamWithOptions(w http.ResponseWriter, resp *http.Response, model s
 	}
 
 	promptTokens, completionTokens, cacheRead, cacheWrite := normalizer.Usage()
-	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
+	usage.RecordFor(account, promptTokens, completionTokens, cacheRead, cacheWrite)
 }
 
 func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config) {
+	handleNonStreamForAccount(w, resp, model, usage, cfg, "")
+}
+
+func handleNonStreamForAccount(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config, account string) {
 	msg := Message{Role: "assistant"}
 	var toolCalls toolCallDeduper
 	normalizer := newCCEventNormalizer()
@@ -415,7 +563,7 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		msg.ReasoningContent = reasoningText
 	}
 	promptTokens, completionTokens, cacheRead, cacheWrite := normalizer.FinalUsage()
-	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
+	usage.RecordFor(account, promptTokens, completionTokens, cacheRead, cacheWrite)
 
 	res := ChatResponse{
 		ID:      genStreamID(),

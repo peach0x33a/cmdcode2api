@@ -227,13 +227,68 @@ func TestContentToCCRejectsRemoteImageURL(t *testing.T) {
 	}
 }
 
+func TestResolveModelNameRejectsUnknownModel(t *testing.T) {
+	oldCatalog := modelCatalog
+	t.Cleanup(func() { modelCatalog = oldCatalog })
+	modelCatalog = nil
+
+	_, err := resolveModelName("mimo-2.5")
+	var invalid *invalidRequestError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("error = %v, want invalidRequestError", err)
+	}
+}
+
+func TestResolveModelNameRecognizesPrefixesAndCatalog(t *testing.T) {
+	oldCatalog := modelCatalog
+	t.Cleanup(func() { modelCatalog = oldCatalog })
+	modelCatalog = []ModelInfo{
+		{ID: "deepseek/deepseek-chat"},
+	}
+
+	cases := []struct {
+		model string
+		want  string
+	}{
+		{"gemini-1.5-pro", "google/gemini-1.5-pro"},
+		{"claude-3-opus", "anthropic/claude-3-opus"},
+		{"gpt-4o", "openai/gpt-4o"},
+		{"deepseek-chat", "deepseek/deepseek-chat"},
+		{"anthropic/claude-3-opus", "anthropic/claude-3-opus"},
+	}
+	for _, c := range cases {
+		got, err := resolveModelName(c.model)
+		if err != nil {
+			t.Fatalf("resolveModelName(%q): %v", c.model, err)
+		}
+		if got != c.want {
+			t.Fatalf("resolveModelName(%q) = %q, want %q", c.model, got, c.want)
+		}
+	}
+}
+
+func TestOpenAIToCCRejectsUnknownModel(t *testing.T) {
+	oldCatalog := modelCatalog
+	t.Cleanup(func() { modelCatalog = oldCatalog })
+	modelCatalog = nil
+
+	_, err := openAIToCC(&ChatRequest{
+		Model:    "mimo-2.5",
+		Messages: []Message{{Role: "user", Content: TextContent("hello")}},
+	})
+	var invalid *invalidRequestError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("error = %v, want invalidRequestError", err)
+	}
+}
+
 func TestCCClientSendUsesRequestContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	client := NewCCClient("test-key", "http://127.0.0.1:1")
 	_, err := client.Send(ctx, &ChatRequest{
-		Model:    "test-model",
+		Model:    "test/test-model",
 		Messages: []Message{{Role: "user", Content: TextContent("hello")}},
 	})
 	if !errors.Is(err, context.Canceled) {
@@ -252,7 +307,7 @@ func TestCCClientSendParsesTopLevelRateLimitError(t *testing.T) {
 
 	client := NewCCClient("test-key", upstream.URL)
 	_, err := client.Send(context.Background(), &ChatRequest{
-		Model:    "test-model",
+		Model:    "test/test-model",
 		Messages: []Message{{Role: "user", Content: TextContent("hello")}},
 	})
 
@@ -291,7 +346,7 @@ func TestCCClientSendPreservesNestedUpstreamErrorCode(t *testing.T) {
 
 	client := NewCCClient("test-key", upstream.URL)
 	_, err := client.Send(context.Background(), &ChatRequest{
-		Model:    "test-model",
+		Model:    "test/test-model",
 		Messages: []Message{{Role: "user", Content: TextContent("hello")}},
 	})
 

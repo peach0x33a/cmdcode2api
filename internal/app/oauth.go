@@ -17,8 +17,12 @@ const (
 	oauthPortStart = 5959
 	oauthPortRange = 10
 	studioBaseURL  = "https://commandcode.ai"
-	oauthTimeout   = 10 * time.Minute
 )
+
+// oauthTimeout is a var (not const) so tests can temporarily lower it to
+// exercise oauthListener.Wait's timeout branch without waiting out the real
+// 10-minute default.
+var oauthTimeout = 10 * time.Minute
 
 type oauthCallback struct {
 	APIKey   string `json:"apiKey"`
@@ -32,7 +36,7 @@ type OAuthOptions struct {
 	CallbackURL string
 }
 
-// generateState 生成随机 state token 防 CSRF
+// generateState generates a random state token to prevent CSRF.
 func generateState() (string, error) {
 	state, err := randomHex(32)
 	if err != nil {
@@ -41,20 +45,39 @@ func generateState() (string, error) {
 	return base64.URLEncoding.EncodeToString([]byte(state)), nil
 }
 
-// runOAuth 启动本地 HTTP server，打印授权链接，等待 CC 回调，返回 API Key。
-func runOAuth(opts OAuthOptions) (string, error) {
-	// 找一个可用端口
+// oauthListener is a started-but-not-yet-resolved local OAuth callback
+// server: the port is bound, the auth URL is ready to show the user, and
+// /callback is being served in the background. Wait blocks until it
+// resolves. Splitting this out of runOAuth is what lets a session stay open
+// across HTTP requests (see ReauthManager) instead of blocking one goroutine
+// for the lifetime of the flow.
+type oauthListener struct {
+	AuthURL     string
+	CallbackURL string
+	State       string
+	Port        int
+
+	server   *http.Server
+	resultCh chan oauthCallback
+	errCh    chan error
+}
+
+// startOAuthListener finds an available port, starts a local HTTP server, and
+// returns the authorization link; it does not block waiting for the
+// callback — callers wait for the result via the returned value's Wait().
+func startOAuthListener(opts OAuthOptions) (*oauthListener, error) {
+	// Find an available port
 	listenHost := "127.0.0.1"
 	listenPort := oauthPortStart
 	if opts.CallbackURL != "" {
 		if err := validateCallbackURL(opts.CallbackURL); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", listenHost, listenPort))
 	if err != nil {
-		// 尝试下一个端口
+		// Try the next port
 		for port := oauthPortStart + 1; port < oauthPortStart+oauthPortRange; port++ {
 			listener, err = net.Listen("tcp", fmt.Sprintf("%s:%d", listenHost, port))
 			if err == nil {
@@ -63,7 +86,7 @@ func runOAuth(opts OAuthOptions) (string, error) {
 			}
 		}
 		if err != nil {
-			return "", fmt.Errorf("无法启动回调服务器: %w", err)
+			return nil, fmt.Errorf("failed to start callback server: %w", err)
 		}
 	}
 
@@ -104,12 +127,12 @@ func runOAuth(opts OAuthOptions) (string, error) {
 			return
 		}
 
-		// 错误回调
+		// Error callback
 		if errMsg, _ := r.URL.Query()["error"]; len(errMsg) > 0 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
 			json.NewEncoder(w).Encode(map[string]any{"success": true})
-			errCh <- fmt.Errorf("授权被取消: %s", errMsg[0])
+			errCh <- fmt.Errorf("authorization canceled: %s", errMsg[0])
 			return
 		}
 
@@ -118,7 +141,7 @@ func runOAuth(opts OAuthOptions) (string, error) {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]any{
 				"success": false,
-				"error":   "缺少必要字段",
+				"error":   "missing required fields",
 			})
 			return
 		}
@@ -133,7 +156,7 @@ func runOAuth(opts OAuthOptions) (string, error) {
 	server := &http.Server{Handler: mux}
 	go func() {
 		if err := server.Serve(listener); err != http.ErrServerClosed {
-			// server 被关闭是正常的
+			// server being closed is expected
 		}
 	}()
 
@@ -141,7 +164,7 @@ func runOAuth(opts OAuthOptions) (string, error) {
 	state, err := generateState()
 	if err != nil {
 		server.Close()
-		return "", err
+		return nil, err
 	}
 	callbackURL := opts.CallbackURL
 	if callbackURL == "" {
@@ -150,17 +173,82 @@ func runOAuth(opts OAuthOptions) (string, error) {
 	authURL := fmt.Sprintf("%s/studio/auth/cli?callback=%s&state=%s",
 		studioBaseURL, callbackURL, state)
 
-	// 写入文件便于后续读取（解决 background 模式下日志不可见的问题）
+	// Write to a file for later reading (works around logs being invisible in background mode)
 	if err := os.WriteFile(".oauth_state", []byte(state), 0600); err != nil {
 		server.Close()
-		return "", fmt.Errorf("write oauth state: %w", err)
+		return nil, fmt.Errorf("write oauth state: %w", err)
 	}
 	if err := os.WriteFile(".oauth_url", []byte(authURL), 0600); err != nil {
 		server.Close()
-		return "", fmt.Errorf("write oauth url: %w", err)
+		return nil, fmt.Errorf("write oauth url: %w", err)
 	}
 
-	log.Printf("waiting for Command Code OAuth callback on http://127.0.0.1:%d/callback", port)
+	return &oauthListener{
+		AuthURL:     authURL,
+		CallbackURL: callbackURL,
+		State:       state,
+		Port:        port,
+		server:      server,
+		resultCh:    resultCh,
+		errCh:       errCh,
+	}, nil
+}
+
+// Wait blocks until the callback resolves, an error is signaled, or
+// oauthTimeout elapses, closing the listener's server in every case. It
+// discards the identity fields on the callback (UserID/UserName/KeyName) —
+// callers that need those should use WaitCallback instead.
+func (l *oauthListener) Wait() (string, error) {
+	cb, err := l.WaitCallback()
+	if err != nil {
+		return "", err
+	}
+	return cb.APIKey, nil
+}
+
+// WaitCallback blocks until the callback resolves, an error is signaled, or
+// oauthTimeout elapses, closing the listener's server in every case. Unlike
+// Wait, it returns the full callback payload so callers can persist the
+// identity fields (UserID/UserName/KeyName) alongside the API key.
+func (l *oauthListener) WaitCallback() (oauthCallback, error) {
+	select {
+	case cb := <-l.resultCh:
+		l.server.Close()
+		if cb.State != l.State {
+			return oauthCallback{}, fmt.Errorf("state token mismatch, possibly tampered")
+		}
+		log.Printf("✓ authorization succeeded — user: %s, key: %s", cb.UserName, cb.KeyName)
+		return cb, nil
+	case err := <-l.errCh:
+		l.server.Close()
+		return oauthCallback{}, err
+	case <-time.After(oauthTimeout):
+		l.server.Close()
+		return oauthCallback{}, fmt.Errorf("OAuth timed out after %s", oauthTimeout)
+	}
+}
+
+// runOAuth starts a local HTTP server, prints the authorization link, waits
+// for the CC callback, and returns the API Key.
+func runOAuth(opts OAuthOptions) (string, error) {
+	cb, err := runOAuthWithCallback(opts)
+	if err != nil {
+		return "", err
+	}
+	return cb.APIKey, nil
+}
+
+// runOAuthWithCallback behaves like runOAuth but returns the full callback
+// payload — including the identity fields (UserID/UserName/KeyName) that
+// Wait/runOAuth discard — for callers that need to persist them alongside
+// the API key (e.g. the --oauth CLI path and the reauth flow).
+func runOAuthWithCallback(opts OAuthOptions) (oauthCallback, error) {
+	l, err := startOAuthListener(opts)
+	if err != nil {
+		return oauthCallback{}, err
+	}
+
+	log.Printf("waiting for Command Code OAuth callback on http://127.0.0.1:%d/callback", l.Port)
 
 	fmt.Printf(`Command Code OAuth
 
@@ -175,24 +263,9 @@ If this is running on a remote server, make sure that callback URL reaches:
 
 Waiting for authorization, timeout: %s
 
-`, authURL, callbackURL, port, oauthTimeout)
+`, l.AuthURL, l.CallbackURL, l.Port, oauthTimeout)
 
-	// 等待结果或错误
-	select {
-	case cb := <-resultCh:
-		server.Close()
-		if cb.State != state {
-			return "", fmt.Errorf("state token 不匹配，可能被篡改")
-		}
-		log.Printf("✓ 授权成功 — 用户: %s, Key: %s", cb.UserName, cb.KeyName)
-		return cb.APIKey, nil
-	case err := <-errCh:
-		server.Close()
-		return "", err
-	case <-time.After(oauthTimeout):
-		server.Close()
-		return "", fmt.Errorf("OAuth timed out after %s", oauthTimeout)
-	}
+	return l.WaitCallback()
 }
 
 func validateCallbackURL(rawURL string) error {

@@ -154,8 +154,9 @@ func NewCCClient(apiKey, baseURL string) *CCClient {
 	}
 }
 
-// ConvertOpenAIToCC 把 OpenAI 格式的 ChatRequest 转成 CC 格式并发请求。
-// 返回 HTTP response body，调用者负责解析 SSE 流。
+// ConvertOpenAIToCC converts an OpenAI-format ChatRequest into CC format and
+// sends the request. Returns the HTTP response body; the caller is
+// responsible for parsing the SSE stream.
 func (c *CCClient) Send(ctx context.Context, req *ChatRequest) (*http.Response, error) {
 	ccReq, err := openAIToCC(req)
 	if err != nil {
@@ -352,34 +353,38 @@ func isSSEFieldLine(line string) bool {
 	return false
 }
 
-// ====================== 格式转换 ======================
+// ====================== Format conversion ======================
 
-// resolveModelName 将客户端传来的 model ID 映射为 CC API 期望的格式。
-// 优先使用动态 modelCatalog（来自 /provider/v1/models），
-// 回退到根据模型名推断 provider 前缀。
-func resolveModelName(model string) string {
-	// 已有 provider 前缀（含 /），直接使用
+// resolveModelName maps the client-supplied model ID to the format the CC
+// API expects. It prefers the dynamic modelCatalog (from
+// /provider/v1/models), falling back to inferring the provider prefix from
+// the model name. If the model isn't in the catalog and doesn't match a
+// known provider prefix, it returns an *invalidRequestError rather than
+// forwarding the bare model name upstream, where an unprefixed model
+// defaults to the anthropic provider and produces a confusing error.
+func resolveModelName(model string) (string, error) {
+	// Already has a provider prefix (contains /) — use as-is
 	if strings.Contains(model, "/") {
-		return model
+		return model, nil
 	}
 
-	// 在动态 catalog 中查找匹配的 ID（catalog 中的 ID 已含正确前缀）
+	// Look up a matching ID in the dynamic catalog (catalog IDs already include the correct prefix)
 	for _, m := range modelCatalog {
 		if m.ID == model || strings.HasSuffix(m.ID, "/"+model) {
-			return m.ID
+			return m.ID, nil
 		}
 	}
 
-	// catalog 中未找到，根据模型名前缀推断 provider
+	// Not found in the catalog — infer the provider from the model name prefix
 	switch {
 	case strings.HasPrefix(model, "gemini-"):
-		return "google/" + model
+		return "google/" + model, nil
 	case strings.HasPrefix(model, "claude-"):
-		return "anthropic/" + model
+		return "anthropic/" + model, nil
 	case strings.HasPrefix(model, "gpt-"):
-		return "openai/" + model
+		return "openai/" + model, nil
 	default:
-		return model
+		return "", &invalidRequestError{message: fmt.Sprintf("unknown model %q: not found in provider catalog and no recognized provider prefix", model)}
 	}
 }
 
@@ -396,6 +401,11 @@ func openAIToCC(req *ChatRequest) (CCRequest, error) {
 	}
 	system := extractSystem(req.Messages)
 
+	model, err := resolveModelName(req.Model)
+	if err != nil {
+		return CCRequest{}, err
+	}
+
 	cc := CCRequest{
 		Config: CCConfig{
 			WorkingDir:    "/",
@@ -409,12 +419,12 @@ func openAIToCC(req *ChatRequest) (CCRequest, error) {
 		Skills:         nil,
 		PermissionMode: "standard",
 		Params: CCParams{
-			Model:     resolveModelName(req.Model),
+			Model:     model,
 			Messages:  msgs,
 			Tools:     tools,
 			System:    system,
 			MaxTokens: req.OutputTokenBudget(),
-			Stream:    true, // CC API 只支持流式
+			Stream:    true, // CC API only supports streaming
 		},
 	}
 	// command-code's main agent, print mode, and subagents all request 64k
@@ -445,7 +455,7 @@ func messagesToCC(msgs []Message) ([]CCMsg, error) {
 	var out []CCMsg
 	for _, m := range msgs {
 		if m.Role == "system" || m.Role == "developer" {
-			continue // 已提取到 top-level system
+			continue // already extracted into top-level system
 		}
 		content, err := contentToCC(m)
 		if err != nil {
@@ -505,7 +515,7 @@ func contentToCC(m Message) ([]CCPart, error) {
 		}
 	}
 
-	// 工具调用
+	// Tool calls
 	for _, tc := range m.ToolCalls {
 		// Pass the arguments through verbatim rather than unmarshalling into a map
 		// and re-marshalling. That round-trip turned every JSON number into a

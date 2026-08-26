@@ -36,13 +36,14 @@ type ccEventNormalizer struct {
 	toolInputToolName map[string]string
 	// toolInputOrder and toolCalls preserve the model's first-seen order. A
 	// higher-authority event replaces a provisional call in that same slot.
-	toolInputOrder []string
-	toolCalls      toolCallDeduper
-	usage          Usage
-	cacheRead      int
-	cacheWrite     int
-	finished       bool
-	truncated      bool
+	toolInputOrder  []string
+	toolCalls       toolCallDeduper
+	usage           Usage
+	cacheRead       int
+	cacheWrite      int
+	reasoningTokens int
+	finished        bool
+	truncated       bool
 }
 
 func newCCEventNormalizer() *ccEventNormalizer {
@@ -173,6 +174,15 @@ func (n *ccEventNormalizer) FinalUsageInfo() Usage {
 	return n.usage
 }
 
+// ReasoningTokens returns the reasoning-token count reported by the
+// upstream's usage event, if any. It is only meaningful once the stream has
+// finished (mirrors FinalUsage's finished gate is not enforced here since,
+// unlike prompt/completion tokens, a 0 default is indistinguishable from
+// "not yet reported" and callers only read this after a finish event).
+func (n *ccEventNormalizer) ReasoningTokens() int {
+	return n.reasoningTokens
+}
+
 func (n *ccEventNormalizer) setUsage(usage *CCUsage) {
 	n.usage.PromptTokens = usage.InputTokens
 	n.usage.CompletionTokens = usage.OutputTokens
@@ -181,6 +191,7 @@ func (n *ccEventNormalizer) setUsage(usage *CCUsage) {
 	} else {
 		n.usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	}
+	n.reasoningTokens = usage.ReasoningTokens
 	if usage.InputTokenDetails != nil {
 		n.cacheRead = usage.InputTokenDetails.CacheReadTokens
 		n.cacheWrite = usage.InputTokenDetails.CacheWriteTokens

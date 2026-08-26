@@ -8,7 +8,7 @@ import (
 )
 
 // ============================================================================
-// OpenAI 兼容格式（客户端 ↔ 我们）
+// OpenAI-compatible format (client ↔ us)
 // ============================================================================
 
 type ChatRequest struct {
@@ -193,7 +193,7 @@ type CallFunc struct {
 	Arguments string `json:"arguments"`
 }
 
-// 非流式响应
+// Non-streaming response
 type ChatResponse struct {
 	ID      string   `json:"id"`
 	Object  string   `json:"object"`
@@ -215,7 +215,7 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
-// 流式响应块
+// Streaming response chunk
 type ChatStreamChunk struct {
 	ID      string         `json:"id"`
 	Object  string         `json:"object"`
@@ -249,7 +249,7 @@ type StreamDelta struct {
 	ToolCalls        []StreamToolCall `json:"tool_calls,omitempty"`
 }
 
-// MODELS 列表
+// MODELS list
 type ModelInfo struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
@@ -262,21 +262,50 @@ type ModelList struct {
 	Data   []ModelInfo `json:"data"`
 }
 
-// CCProviderModel CC API /provider/v1/models 返回的单个模型
+// AdminModel is the web UI's richer view of a model — unlike ModelInfo (the
+// OpenAI-compatible /v1/models shape), it carries the upstream Name and
+// ContextLength fields and whether exclude_models currently filters it out
+// of /v1/models, so the Models tab can show a model even while it's excluded.
+type AdminModel struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ContextLength int    `json:"context_length"`
+	OwnedBy       string `json:"owned_by"`
+	Excluded      bool   `json:"excluded"`
+}
+
+type AdminModelList struct {
+	Object string       `json:"object"`
+	Data   []AdminModel `json:"data"`
+}
+
+// ConnectionInfo is the web UI Setup tab's view of how a client should reach
+// this gateway: the base URL to point an OpenAI-compatible client at and the
+// bearer API key it should send. It intentionally never includes per-account
+// Command Code credentials (Config.Accounts) — those are internal to the
+// gateway, not something a connecting client needs.
+type ConnectionInfo struct {
+	BaseURL string `json:"base_url"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	APIKey  string `json:"api_key"`
+}
+
+// CCProviderModel is a single model returned by the CC API /provider/v1/models
 type CCProviderModel struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	ContextLength int    `json:"context_length"`
 }
 
-// CCProviderModelList CC API /provider/v1/models 响应
+// CCProviderModelList is the CC API /provider/v1/models response
 type CCProviderModelList struct {
 	Object string            `json:"object"`
 	Data   []CCProviderModel `json:"data"`
 }
 
 // ============================================================================
-// Command Code 内部格式（我们 ↔ CC 服务器）
+// Command Code internal format (us ↔ CC server)
 // ============================================================================
 
 type CCRequest struct {
@@ -330,7 +359,7 @@ type CCTool struct {
 	InputSchema map[string]any `json:"input_schema,omitempty"`
 }
 
-// CC SSE 事件
+// CC SSE event
 type CCStreamEvent struct {
 	Type            string   `json:"type"`
 	ID              string   `json:"id,omitempty"`

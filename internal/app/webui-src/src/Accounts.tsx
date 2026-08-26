@@ -1,0 +1,200 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import AccountRow from "./AccountRow";
+import { deleteAccount, fetchAccounts, pollReauth, probeAccounts, startReauth } from "./api";
+import ListPanel from "./ListPanel";
+import { errorMessage, errorSession, TERMINAL_REAUTH_STATUSES } from "./reauth";
+import type { AccountView, ReauthSession } from "./types";
+
+const POLL_INTERVAL_MS = 15000;
+const REAUTH_POLL_MS = 2000;
+
+export default function Accounts() {
+  const [accounts, setAccounts] = useState<AccountView[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const [newName, setNewName] = useState("");
+  const [reauthSessions, setReauthSessions] = useState<Record<string, ReauthSession>>({});
+  const pollTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  const loadAccounts = useCallback(async () => {
+    try {
+      const data = await fetchAccounts();
+      setAccounts(data || []);
+      setError("");
+    } catch (err) {
+      setError("Failed to load accounts: " + errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadAccounts();
+    const id = setInterval(loadAccounts, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [loadAccounts]);
+
+  useEffect(() => {
+    // Stop every in-flight reauth poll on unmount, so a fast-navigating
+    // browser tab doesn't leak timers.
+    const timers = pollTimers.current;
+    return () => {
+      Object.values(timers).forEach(clearTimeout);
+    };
+  }, []);
+
+  const pollUntilTerminal = useCallback(
+    (name: string) => {
+      const tick = async () => {
+        try {
+          const session = await pollReauth(name);
+          setReauthSessions((prev) => ({ ...prev, [name]: session }));
+          if (TERMINAL_REAUTH_STATUSES.has(session.status)) {
+            delete pollTimers.current[name];
+            if (session.status === "success") {
+              loadAccounts();
+            }
+            return;
+          }
+        } catch (err) {
+          setReauthSessions((prev) => ({ ...prev, [name]: errorSession(name, err) }));
+          delete pollTimers.current[name];
+          return;
+        }
+        pollTimers.current[name] = setTimeout(tick, REAUTH_POLL_MS);
+      };
+      tick();
+    },
+    [loadAccounts]
+  );
+
+  const handleReauth = useCallback(
+    async (name: string) => {
+      try {
+        const session = await startReauth(name);
+        setReauthSessions((prev) => ({ ...prev, [name]: session }));
+        if (session.auth_url) {
+          window.open(session.auth_url, "_blank", "noopener");
+        }
+        pollUntilTerminal(name);
+      } catch (err) {
+        setReauthSessions((prev) => ({ ...prev, [name]: errorSession(name, err) }));
+      }
+    },
+    [pollUntilTerminal]
+  );
+
+  const handleDelete = useCallback(
+    async (name: string) => {
+      if (!window.confirm(`Delete account "${name}"? This removes its saved credentials.`)) {
+        return;
+      }
+      // Stop polling for this account immediately, and drop its reauth
+      // session, so an in-flight reauth can't call loadAccounts() on
+      // eventual success and make the just-deleted account reappear.
+      const timer = pollTimers.current[name];
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        delete pollTimers.current[name];
+      }
+      setReauthSessions((prev) => {
+        if (!(name in prev)) return prev;
+        const next = { ...prev };
+        delete next[name];
+        return next;
+      });
+      setAccounts((prev) => prev.filter((a) => a.name !== name));
+      try {
+        await deleteAccount(name);
+      } catch (err) {
+        setError("Failed to delete " + name + ": " + errorMessage(err));
+      } finally {
+        loadAccounts();
+      }
+    },
+    [loadAccounts]
+  );
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const data = await probeAccounts();
+      setAccounts(data || []);
+      setError("");
+    } catch (err) {
+      setError("Failed to refresh status: " + errorMessage(err));
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
+
+  const handleAdd = useCallback(
+    (evt: React.FormEvent) => {
+      evt.preventDefault();
+      const name = newName.trim();
+      if (!name) return;
+      setNewName("");
+      handleReauth(name);
+    },
+    [newName, handleReauth]
+  );
+
+  return (
+    <div>
+      <p className="subtitle">Command Code accounts configured for this gateway.</p>
+
+      <ListPanel
+        error={error}
+        loading={loading}
+        refreshing={refreshing}
+        refreshLabel="Refresh status"
+        onRefresh={handleRefresh}
+      >
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Account</th>
+              <th>Status</th>
+              <th>Last checked</th>
+              <th>Last error</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="muted">
+                  No accounts configured yet — add one below to get started.
+                </td>
+              </tr>
+            ) : (
+              accounts.map((a) => (
+                <AccountRow
+                  key={a.name}
+                  account={a}
+                  reauth={reauthSessions[a.name]}
+                  onReauth={handleReauth}
+                  onDelete={handleDelete}
+                />
+              ))
+            )}
+          </tbody>
+        </table>
+      </ListPanel>
+
+      <form className="add-account" onSubmit={handleAdd}>
+        <input
+          type="text"
+          placeholder="New account name"
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+        />
+        <button className="primary" type="submit">
+          Add account
+        </button>
+      </form>
+    </div>
+  );
+}

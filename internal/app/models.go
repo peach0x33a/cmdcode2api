@@ -10,7 +10,16 @@ import (
 
 var modelCatalog []ModelInfo
 
-// FetchProviderModels 从 CC API 拉取模型列表，填充 modelCatalog。
+// modelCatalogDetail carries the fields CCProviderModel has that ModelInfo
+// discards (Name, ContextLength), for the web UI's Models tab. modelCatalog
+// has no lock or atomic swap of its own — FetchProviderModels only ever runs
+// once, at startup, before any request-serving goroutine reads it — so
+// modelCatalogDetail follows that same discipline. What matters is that both
+// vars are built in the same loop and assigned right next to each other (see
+// FetchProviderModels), so a reader never sees one updated without the other.
+var modelCatalogDetail []CCProviderModel
+
+// FetchProviderModels fetches the model list from the CC API and populates modelCatalog.
 func FetchProviderModels(baseURL, apiKey string) {
 	url := baseURL + "/provider/v1/models"
 
@@ -41,6 +50,7 @@ func FetchProviderModels(baseURL, apiKey string) {
 	}
 
 	catalog := make([]ModelInfo, 0, len(list.Data))
+	detail := make([]CCProviderModel, 0, len(list.Data))
 	for _, m := range list.Data {
 		catalog = append(catalog, ModelInfo{
 			ID:      m.ID,
@@ -48,9 +58,27 @@ func FetchProviderModels(baseURL, apiKey string) {
 			Created: 1700000000,
 			OwnedBy: "commandcode",
 		})
+		detail = append(detail, m)
 	}
 	modelCatalog = catalog
+	modelCatalogDetail = detail
 	log.Printf("models: %d loaded from %s", len(modelCatalog), url)
+}
+
+// adminModels builds the web UI's Models tab view from modelCatalogDetail,
+// flagging each model's current exclude_models status.
+func adminModels(cfg *Config) []AdminModel {
+	out := make([]AdminModel, 0, len(modelCatalogDetail))
+	for _, m := range modelCatalogDetail {
+		out = append(out, AdminModel{
+			ID:            m.ID,
+			Name:          m.Name,
+			ContextLength: m.ContextLength,
+			OwnedBy:       "commandcode",
+			Excluded:      isModelExcluded(m.ID, cfg.ExcludeModels),
+		})
+	}
+	return out
 }
 
 func availableModels() []string {

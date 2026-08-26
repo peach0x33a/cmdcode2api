@@ -5,6 +5,7 @@ usage.json
 *.exe
 .oauth_state
 .oauth_url
+nul
 
 # --debug writes full request bodies and SSE events, so these hold developer
 # prompts and user source. Never commit them.
@@ -12,3 +13,8 @@ log.txt*
 *.log
 *.patch
 changes_report.md
+
+# webui-src build tooling/deps: internal/app/webui/dist (its build output) is
+# committed, see internal/app/webui-src/README.md.
+internal/app/webui-src/node_modules/
+internal/app/webui-src/*.tsbuildinfo

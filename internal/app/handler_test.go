@@ -10,7 +10,7 @@ import (
 )
 
 func TestChatCompletionsRequiresModel(t *testing.T) {
-	handler := handleChatCompletions(&CCClient{}, &Config{}, &UsageTracker{})
+	handler := handleChatCompletions(singleAccountPool(&CCClient{}), &Config{}, &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
 
@@ -25,7 +25,7 @@ func TestChatCompletionsRequiresModel(t *testing.T) {
 }
 
 func TestChatCompletionsRequiresMessages(t *testing.T) {
-	handler := handleChatCompletions(&CCClient{}, &Config{}, &UsageTracker{})
+	handler := handleChatCompletions(singleAccountPool(&CCClient{}), &Config{}, &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek/deepseek-v4-flash"}`))
 	rec := httptest.NewRecorder()
 
@@ -40,7 +40,7 @@ func TestChatCompletionsRequiresMessages(t *testing.T) {
 }
 
 func TestChatCompletionsBlocksExcludedModel(t *testing.T) {
-	handler := handleChatCompletions(&CCClient{Client: &http.Client{}}, &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
+	handler := handleChatCompletions(singleAccountPool(&CCClient{Client: &http.Client{}}), &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`))
 	rec := httptest.NewRecorder()
 
@@ -58,8 +58,8 @@ func TestChatCompletionsBlocksExcludedModel(t *testing.T) {
 }
 
 func TestChatCompletionsAllowsNonExcludedModel(t *testing.T) {
-	handler := handleChatCompletions(&CCClient{Client: &http.Client{}}, &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek-chat","messages":[{"role":"user","content":"hello"}]}`))
+	handler := handleChatCompletions(singleAccountPool(&CCClient{Client: &http.Client{}}), &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}]}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -74,7 +74,7 @@ func TestChatCompletionsAllowsNonExcludedModel(t *testing.T) {
 }
 
 func TestChatCompletionsBlocksProviderQualified(t *testing.T) {
-	handler := handleChatCompletions(&CCClient{Client: &http.Client{}}, &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
+	handler := handleChatCompletions(singleAccountPool(&CCClient{Client: &http.Client{}}), &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"openai/gpt-4","messages":[{"role":"user","content":"hello"}]}`))
 	rec := httptest.NewRecorder()
 
@@ -100,8 +100,8 @@ func TestChatCompletionsReturnsNormalizedUpstreamRateLimit(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler := handleChatCompletions(NewCCClient("test-key", upstream.URL), &Config{}, &UsageTracker{})
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`))
+	handler := handleChatCompletions(singleAccountPool(NewCCClient("test-key", upstream.URL)), &Config{}, &UsageTracker{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hello"}]}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -127,10 +127,202 @@ func TestChatCompletionsReturnsNormalizedUpstreamRateLimit(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsFailsOverToNextAccountOnAuthError(t *testing.T) {
+	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"message":"invalid api key","type":"authentication_error"}`)
+	}))
+	defer stale.Close()
+
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"type":"text-delta","text":"hi"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))
+	}))
+	defer healthy.Close()
+
+	pool := newTestAccountPool(
+		testAccountEntry{Name: "stale-account", Client: NewCCClient("stale-key", stale.URL)},
+		testAccountEntry{Name: "healthy-account", Client: NewCCClient("healthy-key", healthy.URL)},
+	)
+
+	handler := handleChatCompletions(pool, &Config{}, &UsageTracker{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"content":"hi"`) {
+		t.Fatalf("body missing content from healthy account: %s", rec.Body.String())
+	}
+
+	var staleStatus AccountStatus
+	for _, view := range pool.Snapshot() {
+		if view.Name == "stale-account" {
+			staleStatus = view.Status
+		}
+	}
+	if staleStatus != StatusStale {
+		t.Fatalf("stale-account status = %q, want %q", staleStatus, StatusStale)
+	}
+}
+
+// TestChatCompletionsCreditsUsageToServingAccount is the regression guard for
+// the failover + usage-tracking interaction: usage must be credited to the
+// account that actually served the request, not the one(s) that failed over
+// before it (which sendWithFailover never even returns to the caller).
+func TestChatCompletionsCreditsUsageToServingAccount(t *testing.T) {
+	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"message":"invalid api key","type":"authentication_error"}`)
+	}))
+	defer stale.Close()
+
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"type":"text-delta","text":"hi"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":7,"outputTokens":3}}`,
+			`data: [DONE]`,
+		}, "\n\n"))
+	}))
+	defer healthy.Close()
+
+	pool := newTestAccountPool(
+		testAccountEntry{Name: "stale-account", Client: NewCCClient("stale-key", stale.URL)},
+		testAccountEntry{Name: "healthy-account", Client: NewCCClient("healthy-key", healthy.URL)},
+	)
+
+	usage := &UsageTracker{}
+	handler := handleChatCompletions(pool, &Config{}, usage)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+
+	report := usage.Report()
+	if len(report.Accounts) != 1 {
+		t.Fatalf("accounts = %#v, want exactly one entry", report.Accounts)
+	}
+	got := report.Accounts[0]
+	if got.Account != "healthy-account" {
+		t.Fatalf("credited account = %q, want %q", got.Account, "healthy-account")
+	}
+	if got.PromptTokens != 7 || got.CompletionTokens != 3 {
+		t.Fatalf("account usage = %#v, want prompt=7 completion=3", got)
+	}
+}
+
+// A rate-limited account must not make the whole request fail when another
+// account in the pool is healthy — Next() deliberately keeps StatusLimited
+// accounts in rotation so they can be retried later, which only helps if
+// sendWithFailover actually tries the next account instead of returning the
+// 429 straight to the caller.
+func TestChatCompletionsFailsOverToNextAccountOnRateLimit(t *testing.T) {
+	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"You've reached your 5-hour usage limit for your plan.","type":"server_error"}`)
+	}))
+	defer limited.Close()
+
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"type":"text-delta","text":"hi"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))
+	}))
+	defer healthy.Close()
+
+	pool := newTestAccountPool(
+		testAccountEntry{Name: "limited-account", Client: NewCCClient("limited-key", limited.URL)},
+		testAccountEntry{Name: "healthy-account", Client: NewCCClient("healthy-key", healthy.URL)},
+	)
+
+	handler := handleChatCompletions(pool, &Config{}, &UsageTracker{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"content":"hi"`) {
+		t.Fatalf("body missing content from healthy account: %s", rec.Body.String())
+	}
+
+	var limitedStatus AccountStatus
+	for _, view := range pool.Snapshot() {
+		if view.Name == "limited-account" {
+			limitedStatus = view.Status
+		}
+	}
+	if limitedStatus != StatusLimited {
+		t.Fatalf("limited-account status = %q, want %q", limitedStatus, StatusLimited)
+	}
+}
+
+func TestChatCompletionsReturns502WhenAllAccountsExhausted(t *testing.T) {
+	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"message":"invalid api key","type":"authentication_error"}`)
+	}))
+	defer stale.Close()
+
+	pool := newTestAccountPool(testAccountEntry{Name: "only-account", Client: NewCCClient("stale-key", stale.URL)})
+	handler := handleChatCompletions(pool, &Config{}, &UsageTracker{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "no_healthy_accounts") {
+		t.Fatalf("body missing no_healthy_accounts code: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "--oauth --account") {
+		t.Fatalf("body missing remediation hint: %s", rec.Body.String())
+	}
+}
+
+// A zero-account pool is the normal state for a fresh install before the
+// first account is added via /ui — it must return a clean, informative
+// error instead of panicking or falling through to the generic
+// "all accounts exhausted" message.
+func TestChatCompletionsReturns503WhenNoAccountsConfigured(t *testing.T) {
+	pool := newTestAccountPool()
+	handler := handleChatCompletions(pool, &Config{}, &UsageTracker{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "no_accounts_configured") {
+		t.Fatalf("body missing no_accounts_configured code: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "/ui") {
+		t.Fatalf("body missing /ui pointer: %s", rec.Body.String())
+	}
+}
+
 func TestChatCompletionsRejectsRemoteImageURL(t *testing.T) {
-	handler := handleChatCompletions(&CCClient{}, &Config{}, &UsageTracker{})
+	handler := handleChatCompletions(singleAccountPool(&CCClient{}), &Config{}, &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"test-model",
+		"model":"test/test-model",
 		"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]
 	}`))
 	rec := httptest.NewRecorder()

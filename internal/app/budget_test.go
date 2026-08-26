@@ -33,7 +33,7 @@ func TestOpenAIToCCUsesCompletionTokenBudget(t *testing.T) {
 	msgs := []Message{{Role: "user", Content: TextContent("hi")}}
 
 	// The exact shape every request in the captured production logs used.
-	cc, err := openAIToCC(&ChatRequest{Model: "m", Messages: msgs, MaxCompletionTokens: 384000})
+	cc, err := openAIToCC(&ChatRequest{Model: "test/m", Messages: msgs, MaxCompletionTokens: 384000})
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestOpenAIToCCUsesCompletionTokenBudget(t *testing.T) {
 			cc.Params.MaxTokens, maximumCCMaxTokens)
 	}
 
-	cc, err = openAIToCC(&ChatRequest{Model: "m", Messages: msgs, MaxCompletionTokens: 8192})
+	cc, err = openAIToCC(&ChatRequest{Model: "test/m", Messages: msgs, MaxCompletionTokens: 8192})
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestOpenAIToCCUsesCompletionTokenBudget(t *testing.T) {
 		t.Errorf("upstream max_tokens = %d, want 8192", cc.Params.MaxTokens)
 	}
 
-	cc, err = openAIToCC(&ChatRequest{Model: "m", Messages: msgs})
+	cc, err = openAIToCC(&ChatRequest{Model: "test/m", Messages: msgs})
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}

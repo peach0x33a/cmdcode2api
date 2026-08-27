@@ -32,6 +32,20 @@ func singleAccountPool(client *CCClient) *AccountPool {
 	return newTestAccountPool(testAccountEntry{Name: "default", Client: client})
 }
 
+// testModelEnabledConfig returns a *Config with an explicit ModelOverrides
+// entry enabling "test/test-model" and "test-model" — the model IDs used
+// throughout the dispatch tests in this package that exercise behavior past
+// the enabled-model gate (failover, usage crediting, rate limits, etc.) and
+// aren't themselves testing that gate. Every model is disabled by default,
+// so those tests need an explicit override to reach the code they're
+// actually testing.
+func testModelEnabledConfig() *Config {
+	return &Config{ModelOverrides: map[string]bool{
+		"test/test-model": true,
+		"test-model":      true,
+	}}
+}
+
 func TestAccountPoolRoundRobinsHealthyAndUnknown(t *testing.T) {
 	pool := newTestAccountPool(
 		testAccountEntry{Name: "a", Client: NewCCClient("ka", "http://a.example")},

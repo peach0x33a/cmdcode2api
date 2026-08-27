@@ -66,16 +66,24 @@ func FetchProviderModels(baseURL, apiKey string) {
 }
 
 // adminModels builds the web UI's Models tab view from modelCatalogDetail,
-// flagging each model's current exclude_models status.
-func adminModels(cfg *Config) []AdminModel {
+// flagging each model's current enabled/excluded status per policy and
+// filling in its family/variant grouping (see groupModel) and whether an
+// explicit per-model override determined that status.
+func adminModels(policy *ModelPolicy) []AdminModel {
 	out := make([]AdminModel, 0, len(modelCatalogDetail))
 	for _, m := range modelCatalogDetail {
+		grouping := groupModel(m.ID)
+		enabled, overridden := policy.Describe(m.ID, grouping.Family)
 		out = append(out, AdminModel{
 			ID:            m.ID,
 			Name:          m.Name,
 			ContextLength: m.ContextLength,
 			OwnedBy:       "commandcode",
-			Excluded:      isModelExcluded(m.ID, cfg.ExcludeModels),
+			Excluded:      !enabled,
+			Family:        grouping.Family,
+			FamilyLabel:   grouping.FamilyLabel,
+			Variant:       grouping.Variant,
+			Overridden:    overridden,
 		})
 	}
 	return out
@@ -85,6 +93,19 @@ func availableModels() []string {
 	out := make([]string, 0, len(modelCatalog))
 	for _, model := range modelCatalog {
 		out = append(out, model.ID)
+	}
+	return out
+}
+
+// knownModelIDs returns the set of model IDs currently in the catalog, for
+// validating a /admin/models/toggle request body against real models. An
+// empty catalog (e.g. before the first account is added) returns an empty
+// set — callers should skip validation entirely in that case rather than
+// rejecting every model ID as unknown.
+func knownModelIDs() map[string]bool {
+	out := make(map[string]bool, len(modelCatalogDetail))
+	for _, m := range modelCatalogDetail {
+		out[m.ID] = true
 	}
 	return out
 }

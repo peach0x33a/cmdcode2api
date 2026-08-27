@@ -175,10 +175,10 @@ func (n *ccEventNormalizer) FinalUsageInfo() Usage {
 }
 
 // ReasoningTokens returns the reasoning-token count reported by the
-// upstream's usage event, if any. It is only meaningful once the stream has
-// finished (mirrors FinalUsage's finished gate is not enforced here since,
-// unlike prompt/completion tokens, a 0 default is indistinguishable from
-// "not yet reported" and callers only read this after a finish event).
+// upstream's usage event, if any. Unlike FinalUsage, this does not gate on
+// n.finished: a genuine "no reasoning tokens" value and "not yet reported"
+// are both 0 and indistinguishable, so gating would add no value. Callers
+// are expected to read this only after a finish event.
 func (n *ccEventNormalizer) ReasoningTokens() int {
 	return n.reasoningTokens
 }

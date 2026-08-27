@@ -1,7 +1,5 @@
 # cmdcode2api
 
-[中文说明](README.zh-CN.md)
-
 `cmdcode2api` is a small OpenAI-compatible gateway for [Command Code](https://commandcode.ai/). It lets OpenAI-style clients call Command Code models through familiar endpoints such as `/v1/chat/completions` and `/v1/models`.
 
 The project was originally named `cc-gateway`; it was renamed to avoid confusion with Claude Code's common `cc` abbreviation.
@@ -19,9 +17,12 @@ The project was originally named `cc-gateway`; it was renamed to avoid confusion
 - Local bearer-token auth for clients
 - CORS enabled for local UI clients
 - Usage counter persisted to `usage.json`
+- Per-account billing/credit polling from Command Code (five-hour, weekly, and monthly windows), shown in the web UI and `GET /admin/billing`
+- Optional Discord alerts for usage thresholds and expiring subscriptions or billing sessions
 - Health endpoint: `GET /health`
 - Usage endpoint: `GET /usage` — unauthenticated, global totals only, unchanged
 - Admin usage endpoint: `GET /admin/usage` — loopback-gated, adds a per-account breakdown
+- Admin billing endpoint: `GET /admin/billing` — loopback-gated, per-account credit windows
 - Accounts endpoint: `GET /accounts`
 
 ## Build
@@ -144,31 +145,68 @@ accounts:
     base_url: https://api.commandcode.ai
 host: localhost
 port: 11434
-exclude_models:
-  - gpt-
-  - claude-
-  - gemini-
+allow_lan: false
+allow_tailscale: false
+model_overrides:
+  deepseek/deepseek-v4-pro: true
 ```
 
 Fields:
 
 - `api_key` — local bearer token required by clients calling this gateway.
-- `accounts` — list of Command Code accounts, each with a `name`, an `api_key` obtained via `--oauth --account <name>`, and a `base_url`.
+- `accounts` — list of Command Code accounts, each with a `name`, an `api_key` obtained via `--oauth --account <name>`, and a `base_url`. An optional `session_token` (the `__Secure-commandcode_prod_.session_token` cookie) enables billing/credit polling and the credit-window Discord alerts for that account; set it from the web UI's Alerts tab.
 - `host` — HTTP listen host. Defaults to `localhost`. Use `0.0.0.0` to listen on all interfaces.
 - `port` — local listen port. Defaults to `11434`.
-- `exclude_models` — model ID prefixes hidden from `/v1/models` and rejected by `/v1/chat/completions`. Also applies to `/v1/responses`, which shares the same dispatch logic.
+- `allow_lan` — when `true`, other devices on your local network can reach this gateway. Detects your LAN IP automatically at startup and prints it in the log. Defaults to `false`. If `host` is still the default `localhost`, enabling this switches it to `0.0.0.0` for you.
+- `allow_tailscale` — same, but for a device reachable over [Tailscale](https://tailscale.com/), if it's installed and connected on this machine. Detects the Tailscale IP automatically at startup. Defaults to `false`.
+- `model_overrides` — per-model enabled/disabled overrides, keyed by exact model ID. This is the only way to enable a model — see below.
+- `discord_webhook_url` — optional Discord webhook URL for five-hour/weekly usage threshold and subscription-ending alerts. The URL is never logged.
+- `discord_alert_state_file` — optional durable deduplication state path; defaults to `discord-alerts.json`.
+- `discord_alerts` — optional Discord alert settings. `webhook_url` and `state_file` are equivalent to the legacy top-level fields. The UI never returns the webhook URL: its write-only password field keeps the existing URL when blank, replaces it when a new URL is entered, and offers an explicit clear action. `hourly_cap`, `weekly_cap`, and `monthly_cap` default to 3, 6, and 10. The hourly cap applies to the upstream five-hour window. The monthly API value `monthlyCredits` is a remaining balance, so monthly consumed credits are calculated as `monthly_cap - monthlyCredits`, clamped to the configured cap. Thus remaining values of 1, 0.5, and 0 correspond to 90%, 95%, and 100% consumed when the default monthly cap is 10.
+- Session-token expiration alerts are sent only when a billing session expires within 24 hours. Subscription expiration alerts remain within seven days.
+- Set `mention_everyone: true` under `discord_alerts` to prefix every alert with the plain-text Discord `@everyone` mention. It defaults to `false`.
+- `family_overrides` — per-family enabled/disabled overrides, keyed by family (e.g. `deepseek/deepseek-v4`). Set from the web UI's Models tab, which expands the family into exact `model_overrides` entries; applies to new models added to that family later.
+- `exclude_models` — legacy prefix-blocklist field from before every model was disabled by default. Still decoded from old config files so they load without error, but no longer consulted for anything.
+
+`allow_lan`/`allow_tailscale` only make the port reachable — they do not
+weaken authentication. The web UI's tokenless convenience login only
+applies to a genuine same-machine (loopback) request; from a LAN or
+Tailscale device (or anywhere else) you still need the `api_key`, which the
+web UI will prompt you for the first time you open it from that device.
 
 If you have a `config.yaml` from before multi-account support, its single
 `commandcode: {api_key, base_url}` block is migrated automatically into an
 `accounts` list with one account named `default` the next time it loads.
 
-New configs exclude `gpt-`, `claude-`, and `gemini-` by default. These prefixes match both plain model IDs such as `gpt-4` and provider-qualified IDs such as `openai/gpt-4` by checking the part after the final `/`.
+### Enabling models
 
-To make all models available, remove the entries or set an empty list:
+Every model starts disabled — a fresh `config.yaml` has no `model_overrides`
+at all, and `GET /v1/models` returns an empty list until you enable
+something. Enable the models your plan actually serves from the web UI's
+Models tab at `http://localhost:11434/ui#models`, which persists your
+choices to `model_overrides` in `config.yaml`. See
+[commandcode.ai/docs/plans/go#models](https://commandcode.ai/docs/plans/go#models)
+for what's included on the Go plan.
 
-```yaml
-exclude_models: []
-```
+### Discord alerts
+
+Set a `webhook_url` under `discord_alerts` (or the legacy top-level
+`discord_webhook_url`) to get a Discord message when usage crosses a
+configured threshold or a subscription is about to lapse. The web UI's
+Alerts tab writes these, and its webhook field is write-only — blank keeps
+the current URL, a new value replaces it, and there's an explicit clear.
+
+Threshold alerts need per-account credit data, which comes from a
+`session_token` on the account (Alerts tab, or `session_token` in
+`config.yaml`). Without one, only the config that has a webhook still
+sends subscription- and session-expiry warnings.
+
+Caps default to `hourly_cap: 3`, `weekly_cap: 6`, `monthly_cap: 10`; the
+hourly cap tracks Command Code's rolling five-hour window. Subscription
+expiry alerts fire within seven days, session-token expiry within 24
+hours. Set `mention_everyone: true` to prefix each alert with `@everyone`.
+Dedup state is written to `discord-alerts.json` (override with
+`state_file`), which git ignores.
 
 ## Run
 
@@ -182,11 +220,26 @@ To listen on all interfaces, useful for systemd or a remote server:
 ./cmdcode2api --host 0.0.0.0
 ```
 
-The server listens on:
+To open the gateway up to your local network and/or Tailscale, use
+`--allow-lan`/`--allow-tailscale` (or the matching `config.yaml` fields)
+instead — these also switch `host` to `0.0.0.0` for you if it's still the
+default:
+
+```bash
+./cmdcode2api --allow-lan --allow-tailscale
+```
+
+The server logs every URL it's actually reachable at, e.g.:
 
 ```text
-http://localhost:11434
+cmdcode2api starting, listening on 0.0.0.0:11434
+reachable at http://localhost:11434 (loopback, no API key needed for /ui)
+reachable at http://192.168.1.50:11434 (LAN — /ui requires the API key)
+reachable at http://100.101.102.103:11434 (Tailscale — /ui requires the API key)
 ```
+
+If `allow_tailscale` is set but Tailscale isn't installed or connected, the
+log says so instead of printing a URL.
 
 ## Use with OpenAI-compatible clients
 
@@ -257,12 +310,14 @@ global-totals view only; it never breaks usage down by account.
 
 ### `GET /admin/usage`
 
-Not reachable from the network: like `/admin/models` and `/admin/connection`,
-this endpoint only answers requests that pass the loopback+Host+Origin gate
-used for the account-management UI (same-machine TCP peer, a `Host` header of
-`localhost`/`127.0.0.1`/`[::1]`, and — if present — an `Origin` that matches
-it). It returns the same global totals as `GET /usage` plus a per-account
-breakdown:
+Like `/admin/models` and `/admin/connection`, a genuine same-machine
+(loopback) browser request gets in without a bearer token — the
+loopback+Host+Origin gate used for the account-management UI (same-machine
+TCP peer, a `Host` header of `localhost`/`127.0.0.1`/`[::1]`, and — if
+present — an `Origin` that matches it). Any other caller, including a LAN
+or Tailscale device once `allow_lan`/`allow_tailscale` is on, needs the
+correct `api_key` as a bearer token like any other endpoint. It returns the
+same global totals as `GET /usage` plus a per-account breakdown:
 
 ```json
 {
@@ -296,8 +351,17 @@ breakdown:
 curl http://localhost:11434/admin/usage
 ```
 
-(run from the machine hosting the gateway — a remote request is rejected
-regardless of bearer token.)
+(from the machine hosting the gateway, no `Authorization` header needed;
+from anywhere else, add `-H "Authorization: Bearer <api_key>"`.)
+
+### `GET /admin/billing`
+
+Same loopback+Host+Origin gate as `/admin/usage`. Returns one row per
+account that has a `session_token`, each with the current five-hour,
+weekly, and monthly credit windows polled from Command Code plus the
+subscription and session expiry the Discord alerts watch. Accounts without
+a session token are omitted. This is the data behind the web UI's credit
+bar.
 
 ### `GET /accounts`
 
@@ -314,12 +378,14 @@ Requires the same bearer token as `/v1/chat/completions`, unlike `/health` and `
 
 ### `GET /v1/models`
 
-Returns the model list after applying `exclude_models` filtering.
+Returns only the models enabled via `model_overrides` (see
+[Enabling models](#enabling-models)) — an empty list until you've enabled at
+least one.
 
 ### `POST /v1/chat/completions`
 
 Accepts OpenAI-style chat completion requests and forwards them to Command Code.
-Requests for excluded models return `404` with the existing OpenAI-compatible error JSON shape.
+Requests for a disabled model return `404` with the existing OpenAI-compatible error JSON shape.
 
 Supported request styles:
 
@@ -336,8 +402,8 @@ content must be supplied as a base64 `data:image/...;base64,...` URL.
 Implements OpenAI's Responses API protocol, for compatibility with clients
 that speak it instead of Chat Completions (notably Codex CLI). Requires the
 same bearer token as `/v1/chat/completions`, and is adapted onto the same
-Command Code dispatch pipeline, so it shares that endpoint's model exclusion,
-account rotation, and failover behavior.
+Command Code dispatch pipeline, so it shares that endpoint's enabled-model
+gate, account rotation, and failover behavior.
 
 The gateway is stateless: `previous_response_id` is not supported, since
 there's no server-side conversation store to resolve it against. Send the
@@ -363,10 +429,16 @@ cmdcode2api
 cc-gateway
 config.yaml
 usage.json
+discord-alerts.json
 *.exe
 .oauth_state
 .oauth_url
 ```
+
+Debug dumps (`log.txt*`, `*.log`, `*.patch`) are ignored too — `--debug`
+writes full request bodies and SSE events, so they can contain prompts and
+source. Local agent/tooling state (`.claude/`, `.serena/`, `.sisyphus/`)
+is also excluded.
 
 ## Notes
 

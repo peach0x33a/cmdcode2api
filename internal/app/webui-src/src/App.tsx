@@ -4,6 +4,7 @@ import Models from "./Models";
 import Setup from "./Setup";
 import Tabs, { TAB_ORDER, type TabId } from "./Tabs";
 import Usage from "./Usage";
+import Alerts from "./Alerts";
 
 function tabFromHash(hash: string): TabId {
   const id = hash.replace(/^#/, "");
@@ -27,11 +28,13 @@ export default function App() {
       {active === "accounts" ? <Accounts /> : null}
       {active === "models" ? <Models /> : null}
       {active === "usage" ? <Usage /> : null}
+      {active === "alerts" ? <Alerts /> : null}
       {active === "setup" ? <Setup /> : null}
 
       <footer>
-        Served from the gateway itself — this page only works when opened from
-        this machine (127.0.0.1/localhost).
+        Served from the gateway itself. Opened from this machine
+        (127.0.0.1/localhost), it just works; from another device on your
+        network or Tailscale, it needs the gateway's API key to unlock.
       </footer>
     </div>
   );

@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,15 +27,82 @@ type Account struct {
 	Email   string `yaml:"email,omitempty"`
 	UserID  string `yaml:"user_id,omitempty"`
 	KeyName string `yaml:"key_name,omitempty"`
+
+	// SessionToken is the __Secure-commandcode_prod_.session_token cookie
+	// value used to authenticate billing API calls (see billing.go). It is a
+	// secret, exactly like APIKey: never included in AccountView or any other
+	// JSON-exposed struct.
+	SessionToken string `yaml:"session_token,omitempty"`
+
+	// SessionEmail/SessionExpiresAt identify which commandcode.ai login the
+	// session token belongs to and when that session expires, as reported by
+	// /auth/get-session. They are not credentials, just metadata kept
+	// durable across restarts for a future alerting mechanism that watches
+	// for tokens about to expire.
+	SessionEmail     string     `yaml:"session_email,omitempty"`
+	SessionExpiresAt *time.Time `yaml:"session_expires_at,omitempty"`
 }
 
 type Config struct {
-	APIKey        string    `yaml:"api_key"`
-	Accounts      []Account `yaml:"accounts"`
-	Host          string    `yaml:"host"`
-	Port          int       `yaml:"port"`
-	ExcludeModels []string  `yaml:"exclude_models"`
-	Debug         bool      `yaml:"-"` // runtime flag, not persisted
+	APIKey                string             `yaml:"api_key"`
+	Accounts              []Account          `yaml:"accounts"`
+	Host                  string             `yaml:"host"`
+	Port                  int                `yaml:"port"`
+	DiscordWebhookURL     string             `yaml:"discord_webhook_url,omitempty"`
+	DiscordAlertStateFile string             `yaml:"discord_alert_state_file,omitempty"`
+	DiscordAlerts         DiscordAlertConfig `yaml:"discord_alerts,omitempty"`
+
+	// ExcludeModels is a legacy compatibility field from when models were
+	// enabled by default and this prefix-blocklist was the only way to turn
+	// any off. It is still decoded from old config.yaml files so they load
+	// without error, but it is never consulted — every model now starts
+	// disabled and must be explicitly enabled via ModelOverrides (see
+	// ModelPolicy.Enabled).
+	ExcludeModels []string `yaml:"exclude_models"`
+
+	// AllowLAN and AllowTailscale opt into binding beyond loopback so other
+	// devices on the local network / a Tailscale tailnet can reach this
+	// gateway. Neither weakens admin auth: the loopback bypass in
+	// isLocalAdminRequest still only applies to loopback callers, so a LAN
+	// or Tailscale caller needs the bearer APIKey exactly like any other
+	// remote caller — see runServer and app.go's Run for how these flags
+	// drive the actual bind address and startup detection.
+	AllowLAN       bool `yaml:"allow_lan"`
+	AllowTailscale bool `yaml:"allow_tailscale"`
+
+	// DetectedLANIP and DetectedTailscaleIP are populated once at startup
+	// (see runServer) purely for the startup log message — not persisted.
+	DetectedLANIP       string `yaml:"-"`
+	DetectedTailscaleIP string `yaml:"-"`
+
+	// ModelOverrides is an explicit per-model enabled/disabled override, keyed
+	// by exact catalog model ID. Every model is disabled unless it has a true
+	// entry here — see ModelPolicy.Enabled for the full decision rule.
+	ModelOverrides map[string]bool `yaml:"model_overrides,omitempty"`
+
+	// FamilyOverrides is a legacy compatibility field. Family state is never
+	// consulted, and family toggles expand to exact ModelOverrides entries.
+	FamilyOverrides map[string]bool `yaml:"family_overrides,omitempty"`
+
+	Debug bool `yaml:"-"` // runtime flag, not persisted
+
+	// DiscordAlertsEnabledSet distinguishes an explicit false from legacy
+	// configurations where the webhook URL implied enabled=true.
+	DiscordAlertsEnabledSet bool `yaml:"-"`
+}
+
+// DiscordAlertConfig controls optional billing alerts. A zero cap is replaced
+// by the documented default when the alerter is constructed. MonthlyCredits
+// is a remaining balance, not usage, so monthly alerts remain disabled until
+// the API exposes a reliable monthly-used value.
+type DiscordAlertConfig struct {
+	Enabled         bool    `yaml:"enabled"`
+	WebhookURL      string  `yaml:"webhook_url,omitempty"`
+	StateFile       string  `yaml:"state_file,omitempty"`
+	HourlyCap       float64 `yaml:"hourly_cap,omitempty"`
+	WeeklyCap       float64 `yaml:"weekly_cap,omitempty"`
+	MonthlyCap      float64 `yaml:"monthly_cap,omitempty"`
+	MentionEveryone bool    `yaml:"mention_everyone,omitempty"`
 }
 
 func defaultConfig() (Config, error) {
@@ -43,10 +111,9 @@ func defaultConfig() (Config, error) {
 		return Config{}, err
 	}
 	c := Config{
-		APIKey:        apiKey,
-		Host:          "localhost",
-		Port:          11434,
-		ExcludeModels: []string{"gpt-", "claude-", "gemini-"},
+		APIKey: apiKey,
+		Host:   "localhost",
+		Port:   11434,
 	}
 	return c, nil
 }
@@ -93,6 +160,14 @@ func loadConfig(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	var raw struct {
+		DiscordAlerts *struct {
+			Enabled *bool `yaml:"enabled"`
+		} `yaml:"discord_alerts"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err == nil && raw.DiscordAlerts != nil && raw.DiscordAlerts.Enabled != nil {
+		cfg.DiscordAlertsEnabledSet = true
+	}
 
 	// Pre-multi-account config.yaml files carried a single commandcode.api_key
 	// instead of the accounts list. Detect that legacy shape (yaml.Unmarshal
@@ -117,6 +192,12 @@ func loadConfig(path string) (*Config, error) {
 			}
 		}
 	}
+	// Configurations written before the explicit enabled switch used a
+	// non-empty webhook URL as the enabled signal. Once the field is present,
+	// preserve an explicit false so the UI's disable action survives restart.
+	if !cfg.DiscordAlertsEnabledSet && (cfg.DiscordAlerts.WebhookURL != "" || cfg.DiscordWebhookURL != "") {
+		cfg.DiscordAlerts.Enabled = true
+	}
 
 	return &cfg, nil
 }
@@ -137,9 +218,10 @@ func writeConfigTemplate(path string, cfg *Config) error {
 	template := "# cmdcode2api configuration\n" +
 		"# See README.md for all options.\n" +
 		"\n" +
-		"# exclude_models is enabled by default for premium/non-open-source models\n" +
-		"# (e.g., GPT, Claude, Gemini) that may be unavailable on certain plans.\n" +
-		"# Remove entries below or set exclude_models: [] to make all models available.\n" +
+		"# Every model starts disabled. Enable only the ones your plan actually\n" +
+		"# serves from the Models tab at http://localhost:11434/ui#models — see\n" +
+		"# https://commandcode.ai/docs/plans/go#models for what's included on the\n" +
+		"# Go plan.\n" +
 		"\n" +
 		string(data)
 	return os.WriteFile(path, []byte(template), 0600)

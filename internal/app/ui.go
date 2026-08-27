@@ -38,6 +38,26 @@ func uiHandler() http.Handler {
 	})
 }
 
+// faviconHandler serves the embedded favicon at /favicon.ico. Browsers
+// request this path automatically, unauthenticated, for any page on the
+// origin (not just /ui), so it's registered at root rather than under /ui
+// and exempted from bearer auth in authMiddleware alongside /health and
+// /usage.
+func faviconHandler() http.Handler {
+	sub, err := fs.Sub(webUIFS, "webui/dist")
+	if err != nil {
+		panic("ui: embed webui/dist: " + err.Error())
+	}
+	fileServer := http.FileServer(http.FS(sub))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})
+}
+
 // isAdminPath identifies the account-management admin surface: /ui (the web
 // UI itself), /accounts* (its account API), and /admin/* (its models and
 // connection-info API). These routes get the loopback+Host admin bypass in

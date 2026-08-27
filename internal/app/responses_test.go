@@ -751,6 +751,33 @@ func TestResponsesNonStreamToolCallsBecomeFunctionCallItems(t *testing.T) {
 	}
 }
 
+// TestResponsesNonStreamContentFilterIsIncomplete verifies the finish-reason
+// mapping in handleResponsesNonStream: an upstream content_filter finish
+// reason must produce status "incomplete" with incomplete_details.reason
+// "content_filter", the same shape "length" gets for max_output_tokens.
+func TestResponsesNonStreamContentFilterIsIncomplete(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"hi"}`,
+			`data: {"type":"finish","finishReason":"content_filter","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleResponsesNonStream(rec, resp, "gpt-5", &UsageTracker{}, &Config{}, "")
+
+	var got ResponsesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v body = %s", err, rec.Body.String())
+	}
+	if got.Status != "incomplete" {
+		t.Fatalf("status = %q, want incomplete", got.Status)
+	}
+	if got.IncompleteDetails == nil || got.IncompleteDetails.Reason != "content_filter" {
+		t.Fatalf("incomplete_details = %#v, want reason %q", got.IncompleteDetails, "content_filter")
+	}
+}
+
 // TestResponsesStreamRecoversDSMLToolCallFromText ports
 // TestHandleStreamRepairsDSMLTerminatedTextToolCall (handler_test.go) to the
 // Responses stream path: a model response with a raw DSML tool-call
@@ -830,6 +857,50 @@ func TestResponsesStreamRejectsWhenFinishNeverArrives(t *testing.T) {
 	}
 }
 
+// TestResponsesStreamContentFilterIsIncomplete verifies the finish-reason
+// mapping in handleResponsesStream: an upstream content_filter finish reason
+// must terminate the stream with response.incomplete (incomplete_details
+// .reason "content_filter"), never response.completed.
+func TestResponsesStreamContentFilterIsIncomplete(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"hi"}`,
+			`data: {"type":"finish","finishReason":"content_filter","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+	handleResponsesStream(rec, resp, "gpt-5", &UsageTracker{}, &Config{}, true, "")
+
+	events := parseSSEEvents(t, rec.Body)
+	if len(events) == 0 {
+		t.Fatal("no events emitted")
+	}
+	last := events[len(events)-1]
+	if last.Event != "response.incomplete" {
+		t.Fatalf("terminal event = %q, want response.incomplete. body = %s", last.Event, rec.Body.String())
+	}
+	respObj, ok := last.Data["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("response.incomplete missing response object: %v", last.Data)
+	}
+	if respObj["status"] != "incomplete" {
+		t.Fatalf("response.status = %v, want incomplete", respObj["status"])
+	}
+	details, ok := respObj["incomplete_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("response.incomplete_details missing: %v", respObj)
+	}
+	if details["reason"] != "content_filter" {
+		t.Errorf("incomplete_details.reason = %v, want content_filter", details["reason"])
+	}
+	for _, ev := range events {
+		if ev.Event == "response.completed" {
+			t.Fatalf("response.completed must never be emitted for content_filter: %s", rec.Body.String())
+		}
+	}
+}
+
 func TestResponsesRouteRejectsGET(t *testing.T) {
 	handler := handleResponses(singleAccountPool(&CCClient{}), &Config{}, &UsageTracker{})
 	req := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
@@ -845,7 +916,7 @@ func TestResponsesRouteRejectsGET(t *testing.T) {
 func TestResponsesRouteRequiresBearerToken(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
 	pool := singleAccountPool(NewCCClient("key", "http://example.invalid"))
-	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t))
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5","input":"hi"}`))
 	rec := httptest.NewRecorder()
@@ -883,9 +954,10 @@ func TestResponsesCreditsUsageToServingAccount(t *testing.T) {
 		testAccountEntry{Name: "healthy-account", Client: NewCCClient("healthy-key", healthy.URL)},
 	)
 
-	cfg := &Config{APIKey: "secret"}
+	cfg := testModelEnabledConfig()
+	cfg.APIKey = "secret"
 	usage := &UsageTracker{}
-	handler := newHandler(pool, cfg, usage, noopReauthManager(), testStore(t))
+	handler := newHandler(pool, cfg, usage, noopReauthManager(), testStore(t), NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test/test-model","input":"hi"}`))
 	req.Header.Set("Authorization", "Bearer secret")

@@ -22,7 +22,16 @@ var debugMode bool
 // large pool of mostly-stale accounts still fails fast.
 const maxFailoverAttempts = 3
 
+// handleChatCompletions is a backward-compatible shim over
+// handleChatCompletionsWithPolicy for callers (mainly tests) that don't care
+// about model overrides: it builds a ModelPolicy from cfg once, at handler
+// construction time, exactly mirroring the exclude_models-only behavior this
+// function had before ModelPolicy existed.
 func handleChatCompletions(pool *AccountPool, cfg *Config, usage *UsageTracker) http.HandlerFunc {
+	return handleChatCompletionsWithPolicy(pool, cfg, usage, NewModelPolicy(cfg))
+}
+
+func handleChatCompletionsWithPolicy(pool *AccountPool, cfg *Config, usage *UsageTracker, policy *ModelPolicy) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxChatRequestBytes)
 
@@ -41,7 +50,7 @@ func handleChatCompletions(pool *AccountPool, cfg *Config, usage *UsageTracker) 
 			return
 		}
 
-		disp, ok := dispatchToCC(w, r.Context(), pool, cfg, &req)
+		disp, ok := dispatchToCCWithPolicy(w, r.Context(), pool, cfg, policy, &req)
 		if !ok {
 			return
 		}
@@ -66,17 +75,26 @@ type ccDispatch struct {
 	account string
 }
 
-// dispatchToCC validates the request, guards against no-accounts/excluded
-// models, and sends it through sendWithFailover, translating any resulting
-// error into an HTTP response. It returns (disp, true) on success and
-// writes the error response itself on failure, returning (ccDispatch{}, false).
+// dispatchToCC is a backward-compatible shim over dispatchToCCWithPolicy for
+// callers (mainly tests) that don't care about model overrides: it builds a
+// ModelPolicy from cfg on every call, exactly mirroring the
+// exclude_models-only behavior this function had before ModelPolicy existed.
 func dispatchToCC(w http.ResponseWriter, ctx context.Context, pool *AccountPool, cfg *Config, req *ChatRequest) (ccDispatch, bool) {
+	return dispatchToCCWithPolicy(w, ctx, pool, cfg, NewModelPolicy(cfg), req)
+}
+
+// dispatchToCCWithPolicy validates the request, guards against
+// no-accounts/disabled models (per policy — see ModelPolicy.Enabled), and
+// sends it through sendWithFailover, translating any resulting error into an
+// HTTP response. It returns (disp, true) on success and writes the error
+// response itself on failure, returning (ccDispatch{}, false).
+func dispatchToCCWithPolicy(w http.ResponseWriter, ctx context.Context, pool *AccountPool, cfg *Config, policy *ModelPolicy, req *ChatRequest) (ccDispatch, bool) {
 	if req.Model == "" {
 		writeError(w, 400, "invalid_request_error", "model is required")
 		return ccDispatch{}, false
 	}
-	if isModelExcluded(req.Model, cfg.ExcludeModels) {
-		writeError(w, 404, "invalid_request_error", fmt.Sprintf("model %q is not available", req.Model))
+	if !policy.Enabled(req.Model) {
+		writeError(w, 404, "invalid_request_error", fmt.Sprintf("model %q is not available — enable it in the Models tab at /ui#models", req.Model))
 		return ccDispatch{}, false
 	}
 	if len(req.Messages) == 0 {
@@ -591,12 +609,21 @@ func handleNonStreamForAccount(w http.ResponseWriter, resp *http.Response, model
 	json.NewEncoder(w).Encode(res)
 }
 
+// handleModels is a backward-compatible shim over handleModelsWithPolicy for
+// callers (mainly tests) that don't care about model overrides: it builds a
+// ModelPolicy from cfg once, at handler construction time, exactly
+// mirroring the exclude_models-only behavior this function had before
+// ModelPolicy existed.
 func handleModels(cfg *Config) http.HandlerFunc {
+	return handleModelsWithPolicy(NewModelPolicy(cfg))
+}
+
+func handleModelsWithPolicy(policy *ModelPolicy) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		filtered := make([]ModelInfo, 0, len(modelCatalog))
 		for _, m := range modelCatalog {
-			if !isModelExcluded(m.ID, cfg.ExcludeModels) {
+			if policy.Enabled(m.ID) {
 				filtered = append(filtered, m)
 			}
 		}

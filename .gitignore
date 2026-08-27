@@ -2,6 +2,7 @@
 /cc-gateway
 config.yaml
 usage.json
+discord-alerts.json
 *.exe
 .oauth_state
 .oauth_url
@@ -18,3 +19,8 @@ changes_report.md
 # committed, see internal/app/webui-src/README.md.
 internal/app/webui-src/node_modules/
 internal/app/webui-src/*.tsbuildinfo
+
+# Local agent/tooling state, not part of the project.
+.claude/
+.serena/
+.sisyphus/

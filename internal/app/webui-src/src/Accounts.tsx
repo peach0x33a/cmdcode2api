@@ -1,15 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import AccountRow from "./AccountRow";
-import { deleteAccount, fetchAccounts, pollReauth, probeAccounts, startReauth } from "./api";
+import {
+  deleteAccount,
+  fetchAccounts,
+  fetchBilling,
+  pollReauth,
+  probeAccounts,
+  saveBillingToken,
+  startReauth,
+} from "./api";
 import ListPanel from "./ListPanel";
 import { errorMessage, errorSession, TERMINAL_REAUTH_STATUSES } from "./reauth";
-import type { AccountView, ReauthSession } from "./types";
+import type { AccountBilling, AccountView, ReauthSession } from "./types";
 
 const POLL_INTERVAL_MS = 15000;
 const REAUTH_POLL_MS = 2000;
 
 export default function Accounts() {
   const [accounts, setAccounts] = useState<AccountView[]>([]);
+  const [billing, setBilling] = useState<Record<string, AccountBilling>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -29,11 +38,36 @@ export default function Accounts() {
     }
   }, []);
 
+  const loadBilling = useCallback(async () => {
+    try {
+      const data = await fetchBilling();
+      const byName: Record<string, AccountBilling> = {};
+      for (const row of data || []) {
+        byName[row.account] = row;
+      }
+      setBilling(byName);
+    } catch {
+      // Billing is a secondary panel — a failed fetch here shouldn't blank
+      // out the primary account list/error state above.
+    }
+  }, []);
+
   useEffect(() => {
     loadAccounts();
     const id = setInterval(loadAccounts, POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [loadAccounts]);
+
+  useEffect(() => {
+    loadBilling();
+    const id = setInterval(loadBilling, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [loadBilling]);
+
+  const handleSaveToken = useCallback(async (name: string, sessionToken: string) => {
+    const row = await saveBillingToken(name, sessionToken);
+    setBilling((prev) => ({ ...prev, [name]: row }));
+  }, []);
 
   useEffect(() => {
     // Stop every in-flight reauth poll on unmount, so a fast-navigating
@@ -175,8 +209,10 @@ export default function Accounts() {
                   key={a.name}
                   account={a}
                   reauth={reauthSessions[a.name]}
+                  billing={billing[a.name]}
                   onReauth={handleReauth}
                   onDelete={handleDelete}
+                  onSaveToken={handleSaveToken}
                 />
               ))
             )}

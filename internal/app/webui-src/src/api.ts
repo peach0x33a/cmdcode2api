@@ -1,4 +1,6 @@
+import { getStoredKey } from "./auth";
 import type {
+  AccountBilling,
   AccountUsage,
   AccountView,
   AdminModel,
@@ -6,7 +8,29 @@ import type {
   ConnectionInfo,
   ReauthSession,
   UsageReport,
+  DiscordAlertsConfig,
+  DiscordAlertsUpdate,
 } from "./types";
+
+// UnauthorizedError distinguishes a 401 (missing/wrong API key) from any
+// other request failure, so AuthGate can show a login prompt instead of a
+// generic error banner.
+export class UnauthorizedError extends Error {
+  constructor() {
+    super("unauthorized");
+    this.name = "UnauthorizedError";
+  }
+}
+
+function assertDiscordAlerts(value: unknown): DiscordAlertsConfig {
+  if (!isRecord(value) || typeof value.enabled !== "boolean" || typeof value.webhook_url !== "string" || typeof value.mention_everyone !== "boolean" || typeof value.hourly_cap !== "number" || typeof value.weekly_cap !== "number" || typeof value.monthly_cap !== "number") throw new Error("unexpected response shape: expected alert settings");
+  return value as unknown as DiscordAlertsConfig;
+}
+
+export async function fetchDiscordAlerts(): Promise<DiscordAlertsConfig> { return assertDiscordAlerts(await jsonFetch("/admin/alerts")); }
+export async function saveDiscordAlerts(config: DiscordAlertsUpdate): Promise<DiscordAlertsConfig> {
+  return assertDiscordAlerts(await jsonFetch("/admin/alerts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) }));
+}
 
 // isRecord narrows unknown to a non-null, non-array object — the shared
 // precondition for reading any expected field off a parsed JSON body.
@@ -66,7 +90,9 @@ function isConnectionInfo(value: unknown): value is ConnectionInfo {
     typeof value.base_url === "string" &&
     typeof value.host === "string" &&
     typeof value.port === "number" &&
-    typeof value.api_key === "string"
+    typeof value.api_key === "string" &&
+    (value.lan_base_url === undefined || typeof value.lan_base_url === "string") &&
+    (value.tailscale_base_url === undefined || typeof value.tailscale_base_url === "string")
   );
 }
 
@@ -102,8 +128,41 @@ function assertUsageReport(value: unknown): UsageReport {
   return value;
 }
 
+// isAccountBilling does a minimal shape check against AccountBilling (see
+// types.ts).
+function isAccountBilling(value: unknown): value is AccountBilling {
+  return isRecord(value) && typeof value.account === "string";
+}
+
+function assertAccountBillingArray(value: unknown): AccountBilling[] {
+  if (!Array.isArray(value) || !value.every(isAccountBilling)) {
+    throw new Error("unexpected response shape: expected an array of account billing info");
+  }
+  return value;
+}
+
+function assertAccountBilling(value: unknown): AccountBilling {
+  if (!isAccountBilling(value)) {
+    throw new Error("unexpected response shape: expected account billing info");
+  }
+  return value;
+}
+
 async function jsonFetch(url: string, options?: RequestInit): Promise<unknown> {
-  const res = await fetch(url, options);
+  // On loopback, the server's own tokenless bypass makes this header
+  // unnecessary; from another device (LAN/Tailscale/anywhere else) it's
+  // required, so attach it whenever a key has been stored — see AuthGate
+  // and auth.ts for where that key comes from.
+  const storedKey = getStoredKey();
+  const headers = new Headers(options?.headers);
+  if (storedKey && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${storedKey}`);
+  }
+
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    throw new UnauthorizedError();
+  }
   let body: unknown = null;
   try {
     body = await res.json();
@@ -159,10 +218,49 @@ export async function fetchModels(): Promise<AdminModel[]> {
   return assertAdminModelList(await jsonFetch("/admin/models"));
 }
 
+// setModelOverrides applies an explicit per-model enabled/disabled override
+// for every id in ids, returning the fresh full model list (POST
+// /admin/models/toggle with a "models" body).
+export async function setModelOverrides(ids: string[], enabled: boolean): Promise<AdminModel[]> {
+  return assertAdminModelList(
+    await jsonFetch("/admin/models/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ models: ids, enabled }),
+    })
+  );
+}
+
+// setFamilyOverride asks the server to expand family to current catalog
+// children and persist exact per-model overrides.
+export async function setFamilyOverride(family: string, enabled: boolean): Promise<AdminModel[]> {
+  return assertAdminModelList(
+    await jsonFetch("/admin/models/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ family, enabled }),
+    })
+  );
+}
+
 export async function fetchConnection(): Promise<ConnectionInfo> {
   return assertConnectionInfo(await jsonFetch("/admin/connection"));
 }
 
 export async function fetchUsage(): Promise<UsageReport> {
   return assertUsageReport(await jsonFetch("/admin/usage"));
+}
+
+export async function fetchBilling(): Promise<AccountBilling[]> {
+  return assertAccountBillingArray(await jsonFetch("/admin/billing"));
+}
+
+export async function saveBillingToken(name: string, sessionToken: string): Promise<AccountBilling> {
+  return assertAccountBilling(
+    await jsonFetch("/accounts/billing-token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, session_token: sessionToken }),
+    })
+  );
 }

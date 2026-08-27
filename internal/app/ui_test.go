@@ -77,7 +77,7 @@ func TestIsLocalAdminRequestAllowsMatchingOrigin(t *testing.T) {
 func TestAccountsAllowsLoopbackWithoutBearerToken(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
 	pool := newTestAccountPool(testAccountEntry{Name: "a", Client: NewCCClient("key", "http://a.example")})
-	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t))
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodGet, "/accounts", nil)
 	req.RemoteAddr = "127.0.0.1:54321"
@@ -93,7 +93,7 @@ func TestAccountsAllowsLoopbackWithoutBearerToken(t *testing.T) {
 func TestAccountsRejectsNonLoopbackWithoutBearerToken(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
 	pool := newTestAccountPool(testAccountEntry{Name: "a", Client: NewCCClient("key", "http://a.example")})
-	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t))
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodGet, "/accounts", nil)
 	req.RemoteAddr = "203.0.113.5:54321"
@@ -145,7 +145,7 @@ func TestAccountsDeleteRemovesFromStoreAndPool(t *testing.T) {
 		t.Fatalf("seed store: %v", err)
 	}
 	reauthMgr := noopReauthManager()
-	handler := newHandler(pool, cfg, &UsageTracker{}, reauthMgr, store)
+	handler := newHandler(pool, cfg, &UsageTracker{}, reauthMgr, store, NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodPost, "/accounts/delete", strings.NewReader(`{"name":"a"}`))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -171,7 +171,7 @@ func TestAccountsDeleteRemovesFromStoreAndPool(t *testing.T) {
 func TestAccountsDeleteReturns404ForUnknownAccount(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
 	pool := newTestAccountPool()
-	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t))
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodPost, "/accounts/delete", strings.NewReader(`{"name":"nope"}`))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -187,7 +187,7 @@ func TestAccountsDeleteReturns404ForUnknownAccount(t *testing.T) {
 func TestAccountsDeleteRequiresJSONContentType(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
 	pool := newTestAccountPool(testAccountEntry{Name: "a", Client: NewCCClient("key", "http://a.example")})
-	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t))
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodPost, "/accounts/delete", strings.NewReader(`{"name":"a"}`))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -206,7 +206,7 @@ func TestAccountsDeleteRequiresJSONContentType(t *testing.T) {
 func TestAccountsProbeReturnsFreshSnapshot(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
 	pool := newTestAccountPool(testAccountEntry{Name: "a", Client: NewCCClient("key", "http://a.example")})
-	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t))
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodPost, "/accounts/probe", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer secret")
@@ -222,7 +222,7 @@ func TestAccountsProbeReturnsFreshSnapshot(t *testing.T) {
 func TestAdminUsageAllowsLoopbackWithoutBearerToken(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
 	pool := newTestAccountPool()
-	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t))
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/usage", nil)
 	req.RemoteAddr = "127.0.0.1:54321"
@@ -238,7 +238,7 @@ func TestAdminUsageAllowsLoopbackWithoutBearerToken(t *testing.T) {
 func TestAdminUsageRejectsNonLoopbackWithoutBearerToken(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
 	pool := newTestAccountPool()
-	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t))
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/usage", nil)
 	req.RemoteAddr = "203.0.113.5:54321"
@@ -254,7 +254,7 @@ func TestAdminUsageRejectsNonLoopbackWithoutBearerToken(t *testing.T) {
 func TestAdminUsageRejectsWrongMethod(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
 	pool := newTestAccountPool()
-	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t))
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/usage", nil)
 	req.RemoteAddr = "127.0.0.1:54321"
@@ -270,7 +270,7 @@ func TestAdminUsageRejectsWrongMethod(t *testing.T) {
 func TestUIServesIndexHTML(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
 	pool := newTestAccountPool()
-	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t))
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
 
 	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	req.RemoteAddr = "127.0.0.1:54321"

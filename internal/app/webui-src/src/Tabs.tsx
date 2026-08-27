@@ -1,13 +1,14 @@
-export type TabId = "accounts" | "models" | "usage" | "setup";
+export type TabId = "accounts" | "models" | "usage" | "alerts" | "setup";
 
 const TAB_LABELS: Record<TabId, string> = {
   accounts: "Accounts",
   models: "Models",
   usage: "Usage",
+  alerts: "Alerts",
   setup: "Setup",
 };
 
-export const TAB_ORDER: TabId[] = ["accounts", "models", "usage", "setup"];
+export const TAB_ORDER: TabId[] = ["accounts", "models", "usage", "alerts", "setup"];
 
 export interface TabsProps {
   active: TabId;

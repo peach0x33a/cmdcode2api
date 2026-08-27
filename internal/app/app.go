@@ -16,6 +16,10 @@ const configFile = "config.yaml"
 // configured account once the server is running.
 const healthCheckInterval = 10 * time.Minute
 
+// billingFetchInterval is how often each account's billing/session data is
+// refetched once the server is running.
+const billingFetchInterval = 10 * time.Minute
+
 func Run() {
 	oauthMode := flag.Bool("oauth", false, "authorize via browser OAuth to obtain a Command Code API Key")
 	oauthCallbackFlag := flag.String("oauth-callback", "", "OAuth callback URL, e.g. http://server.example.com:5959/callback")
@@ -25,6 +29,8 @@ func Run() {
 	host := flag.String("host", "", "HTTP listen host, e.g. localhost or 0.0.0.0")
 	port := flag.Int("port", 0, "HTTP listen port")
 	debug := flag.Bool("debug", false, "print request body and all CC SSE events to stderr")
+	allowLAN := flag.Bool("allow-lan", false, "allow devices on the local network to reach this gateway (requires the API key; see README)")
+	allowTailscale := flag.Bool("allow-tailscale", false, "allow devices reachable via Tailscale to reach this gateway (requires the API key; see README)")
 	flag.Parse()
 
 	cfgPath := findConfig()
@@ -164,6 +170,16 @@ Use the local client key above as the Bearer token for your OpenAI client.
 		cfg.Debug = true
 		debugMode = true
 	}
+	if *allowLAN {
+		cfg.AllowLAN = true
+	}
+	if *allowTailscale {
+		cfg.AllowTailscale = true
+	}
+	if (cfg.AllowLAN || cfg.AllowTailscale) && cfg.Host == "localhost" {
+		log.Printf("allow_lan/allow_tailscale enabled: switching host from localhost to 0.0.0.0 so the network can actually reach it")
+		cfg.Host = "0.0.0.0"
+	}
 
 	pool := NewAccountPool(cfg.Accounts)
 
@@ -197,10 +213,26 @@ Use the local client key above as the Bearer token for your OpenAI client.
 		FetchProviderModels(cfg.Accounts[0].BaseURL, cfg.Accounts[0].APIKey)
 	}
 
+	billingTracker := NewBillingTracker()
+	discordConfig := cfg.DiscordAlerts
+	if discordConfig.WebhookURL == "" {
+		discordConfig.WebhookURL = cfg.DiscordWebhookURL
+	}
+	if !discordConfig.Enabled && !cfg.DiscordAlertsEnabledSet && discordConfig.WebhookURL != "" {
+		discordConfig.Enabled = true
+	}
+	if discordConfig.StateFile == "" {
+		discordConfig.StateFile = cfg.DiscordAlertStateFile
+	}
+	if discordConfig.Enabled && discordConfig.WebhookURL != "" {
+		billingTracker.SetDiscordAlerter(NewDiscordAlerterWithConfig(discordConfig))
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	pool.StartHealthChecks(ctx, healthCheckInterval)
+	billingTracker.StartAutoRefresh(ctx, store, billingFetchInterval)
 
-	err = runServer(pool, cfg, usage, reauthMgr, store)
+	err = runServer(pool, cfg, usage, reauthMgr, store, billingTracker)
 	cancel()
 	if err != nil {
 		log.Fatalf("server: %v", err)

@@ -8,19 +8,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestDefaultConfigHasExcludeModels(t *testing.T) {
+// defaultConfig no longer seeds ExcludeModels (a legacy field): every model
+// starts disabled and must be explicitly enabled via ModelOverrides instead.
+func TestDefaultConfigHasNoExcludeModelsOrOverrides(t *testing.T) {
 	cfg, err := defaultConfig()
 	if err != nil {
 		t.Fatalf("defaultConfig error: %v", err)
 	}
-	want := []string{"gpt-", "claude-", "gemini-"}
-	if len(cfg.ExcludeModels) != len(want) {
-		t.Fatalf("len(ExcludeModels) = %d, want %d", len(cfg.ExcludeModels), len(want))
+	if len(cfg.ExcludeModels) != 0 {
+		t.Fatalf("ExcludeModels = %#v, want empty", cfg.ExcludeModels)
 	}
-	for i, v := range want {
-		if cfg.ExcludeModels[i] != v {
-			t.Fatalf("ExcludeModels[%d] = %q, want %q", i, cfg.ExcludeModels[i], v)
-		}
+	if len(cfg.ModelOverrides) != 0 {
+		t.Fatalf("ModelOverrides = %#v, want empty", cfg.ModelOverrides)
 	}
 }
 
@@ -76,7 +75,7 @@ func TestLoadConfigEmptyExcludeModels(t *testing.T) {
 	}
 }
 
-func TestWriteConfigTemplateIncludesDefaultExclusionComment(t *testing.T) {
+func TestWriteConfigTemplateExplainsModelsDisabledByDefault(t *testing.T) {
 	cfg, err := defaultConfig()
 	if err != nil {
 		t.Fatalf("defaultConfig: %v", err)
@@ -90,14 +89,14 @@ func TestWriteConfigTemplateIncludesDefaultExclusionComment(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "# exclude_models is enabled by default") {
-		t.Fatalf("missing default exclusion comment in:\n%s", content)
+	if !strings.Contains(content, "Every model starts disabled") {
+		t.Fatalf("missing disabled-by-default comment in:\n%s", content)
 	}
-	if strings.Contains(content, "# exclude_models:") {
-		t.Fatalf("template should not include a duplicate commented exclude_models key:\n%s", content)
+	if !strings.Contains(content, "/ui#models") {
+		t.Fatalf("missing Models tab pointer in:\n%s", content)
 	}
-	if !strings.Contains(content, "exclude_models:\n    - gpt-") {
-		t.Fatalf("missing active default exclude_models in:\n%s", content)
+	if !strings.Contains(content, "https://commandcode.ai/docs/plans/go#models") {
+		t.Fatalf("missing Go plan docs link in:\n%s", content)
 	}
 	if !strings.Contains(content, cfg.APIKey) {
 		t.Fatalf("missing actual config content in:\n%s", content)
@@ -179,7 +178,122 @@ func TestLoadConfigNoAccountsNoLegacyKeyStaysEmpty(t *testing.T) {
 	}
 }
 
-func TestWriteConfigTemplateDefaultExclusionLoadsActive(t *testing.T) {
+func TestLoadConfigLegacyAlertEnabledDetectionIsStructural(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		enabled bool
+	}{
+		{name: "commented enabled", yaml: "# enabled: true\ndiscord_webhook_url: https://discord.example/webhook\n", enabled: true},
+		{name: "unrelated enabled", yaml: "enabled: true\ndiscord_webhook_url: https://discord.example/webhook\n", enabled: true},
+		{name: "nested explicit false", yaml: "discord_webhook_url: https://discord.example/webhook\ndiscord_alerts:\n  enabled: false\n", enabled: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := t.TempDir() + "/config.yaml"
+			if err := os.WriteFile(path, []byte(tt.yaml), 0600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			cfg, err := loadConfig(path)
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if cfg.DiscordAlerts.Enabled != tt.enabled {
+				t.Fatalf("enabled = %v, want %v", cfg.DiscordAlerts.Enabled, tt.enabled)
+			}
+		})
+	}
+}
+
+func TestConfigModelAndFamilyOverridesRoundTrip(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	cfg := &Config{
+		APIKey: "ccgw-test",
+		Host:   "localhost",
+		Port:   11434,
+		ModelOverrides: map[string]bool{
+			"deepseek/deepseek-v4-pro": false,
+			"openai/gpt-4":             true,
+		},
+		FamilyOverrides: map[string]bool{
+			"deepseek/deepseek-v4": true,
+		},
+	}
+	if err := saveConfig(path, cfg); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+
+	loaded, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(loaded.ModelOverrides) != 2 {
+		t.Fatalf("ModelOverrides = %#v, want 2 entries", loaded.ModelOverrides)
+	}
+	if v, ok := loaded.ModelOverrides["deepseek/deepseek-v4-pro"]; !ok || v {
+		t.Fatalf("ModelOverrides[deepseek/deepseek-v4-pro] = %v, %v, want false, true", v, ok)
+	}
+	if v, ok := loaded.ModelOverrides["openai/gpt-4"]; !ok || !v {
+		t.Fatalf("ModelOverrides[openai/gpt-4] = %v, %v, want true, true", v, ok)
+	}
+	if len(loaded.FamilyOverrides) != 1 {
+		t.Fatalf("FamilyOverrides = %#v, want 1 entry", loaded.FamilyOverrides)
+	}
+	if v, ok := loaded.FamilyOverrides["deepseek/deepseek-v4"]; !ok || !v {
+		t.Fatalf("FamilyOverrides[deepseek/deepseek-v4] = %v, %v, want true, true", v, ok)
+	}
+}
+
+func TestConfigModelAndFamilyOverridesAbsentAreNil(t *testing.T) {
+	yamlData := "host: localhost\nport: 11434\n"
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(yamlData), &cfg); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if cfg.ModelOverrides != nil {
+		t.Fatalf("ModelOverrides = %v, want nil", cfg.ModelOverrides)
+	}
+	if cfg.FamilyOverrides != nil {
+		t.Fatalf("FamilyOverrides = %v, want nil", cfg.FamilyOverrides)
+	}
+}
+
+// A legacy config.yaml written before model_overrides/family_overrides
+// existed (only exclude_models present) must still load cleanly, with both
+// new maps nil rather than erroring or defaulting to some non-nil zero
+// value.
+func TestConfigLegacyExcludeModelsOnlyStillLoads(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	legacyYAML := "api_key: ccgw-test\n" +
+		"host: localhost\n" +
+		"port: 11434\n" +
+		"exclude_models:\n" +
+		"  - gpt-\n" +
+		"  - claude-\n" +
+		"  - gemini-\n"
+	if err := os.WriteFile(path, []byte(legacyYAML), 0600); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(cfg.ExcludeModels) != 3 {
+		t.Fatalf("ExcludeModels = %#v, want 3 entries", cfg.ExcludeModels)
+	}
+	if cfg.ModelOverrides != nil {
+		t.Fatalf("ModelOverrides = %v, want nil for a legacy config", cfg.ModelOverrides)
+	}
+	if cfg.FamilyOverrides != nil {
+		t.Fatalf("FamilyOverrides = %v, want nil for a legacy config", cfg.FamilyOverrides)
+	}
+}
+
+// The template written for a fresh install must round-trip with no
+// ExcludeModels/ModelOverrides seeded — every model stays disabled until a
+// human explicitly enables it from the Models tab.
+func TestWriteConfigTemplateLoadsBackWithNoModelState(t *testing.T) {
 	cfg, err := defaultConfig()
 	if err != nil {
 		t.Fatalf("defaultConfig: %v", err)
@@ -192,13 +306,10 @@ func TestWriteConfigTemplateDefaultExclusionLoadsActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	want := []string{"gpt-", "claude-", "gemini-"}
-	if len(loaded.ExcludeModels) != len(want) {
-		t.Fatalf("len(ExcludeModels) = %d, want %d", len(loaded.ExcludeModels), len(want))
+	if len(loaded.ExcludeModels) != 0 {
+		t.Fatalf("ExcludeModels = %#v, want empty", loaded.ExcludeModels)
 	}
-	for i := range want {
-		if loaded.ExcludeModels[i] != want[i] {
-			t.Fatalf("ExcludeModels[%d] = %q, want %q", i, loaded.ExcludeModels[i], want[i])
-		}
+	if len(loaded.ModelOverrides) != 0 {
+		t.Fatalf("ModelOverrides = %#v, want empty", loaded.ModelOverrides)
 	}
 }

@@ -1,12 +1,32 @@
-import { useCallback, useEffect, useState } from "react";
-import { fetchModels } from "./api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { fetchModels, setFamilyOverride, setModelOverrides } from "./api";
 import ListPanel from "./ListPanel";
+import ModelFamilyGroup from "./ModelFamilyGroup";
 import { errorMessage } from "./reauth";
 import type { AdminModel } from "./types";
 
-function formatContextLength(value: number): string {
-  if (!value) return "—";
-  return value.toLocaleString();
+interface FamilyGroup {
+  family: string;
+  familyLabel: string;
+  models: AdminModel[];
+}
+
+// groupByFamily groups models by their Family field, preserving the
+// catalog's original order both across groups and within each group.
+function groupByFamily(models: AdminModel[]): FamilyGroup[] {
+  const order: string[] = [];
+  const byFamily = new Map<string, AdminModel[]>();
+  for (const m of models) {
+    if (!byFamily.has(m.family)) {
+      byFamily.set(m.family, []);
+      order.push(m.family);
+    }
+    byFamily.get(m.family)!.push(m);
+  }
+  return order.map((family) => {
+    const members = byFamily.get(family)!;
+    return { family, familyLabel: members[0].family_label, models: members };
+  });
 }
 
 export default function Models() {
@@ -14,6 +34,8 @@ export default function Models() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
+  const [busyFamilies, setBusyFamilies] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     try {
@@ -37,9 +59,75 @@ export default function Models() {
     load();
   }, [load]);
 
+  // Both handlers below optimistically flip the affected row(s) so the
+  // toggle feels instant, then replace local state with the server's fresh
+  // response on success. On failure they drop the optimistic update by
+  // re-fetching the authoritative list — mirroring Accounts.tsx's
+  // handleDelete, which resyncs via loadAccounts() in its `finally` rather
+  // than hand-rolling a snapshot restore.
+  const handleToggleModel = useCallback(
+    async (id: string, enabled: boolean) => {
+      setModels((prev) => prev.map((m) => (m.id === id ? { ...m, excluded: !enabled, overridden: true } : m)));
+      setBusyIds((prev) => new Set(prev).add(id));
+      try {
+        const fresh = await setModelOverrides([id], enabled);
+        setModels(fresh);
+        setError("");
+      } catch (err) {
+        setError("Failed to update " + id + ": " + errorMessage(err));
+        load();
+      } finally {
+        setBusyIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+    },
+    [load]
+  );
+
+  const handleToggleFamily = useCallback(
+    async (family: string, enabled: boolean) => {
+      setModels((prev) =>
+        prev.map((m) => (m.family === family ? { ...m, excluded: !enabled, overridden: true } : m))
+      );
+      setBusyFamilies((prev) => new Set(prev).add(family));
+      try {
+        const fresh = await setFamilyOverride(family, enabled);
+        setModels(fresh);
+        setError("");
+      } catch (err) {
+        setError("Failed to update " + family + ": " + errorMessage(err));
+        load();
+      } finally {
+        setBusyFamilies((prev) => {
+          const next = new Set(prev);
+          next.delete(family);
+          return next;
+        });
+      }
+    },
+    [load]
+  );
+
+  const groups = useMemo(() => groupByFamily(models), [models]);
+
   return (
     <div>
-      <p className="subtitle">Models available from the configured Command Code account(s).</p>
+      <div className="callout info">
+        Every model starts disabled. Enable only what your plan actually serves — check your plan's model list
+        first.{" "}
+        <a href="https://commandcode.ai/docs/plans/go#models" target="_blank" rel="noopener noreferrer">
+          Go plan models
+        </a>
+      </div>
+
+      <p className="subtitle">
+        Models available from the configured Command Code account(s). Disabled models — including every model
+        that has never been explicitly enabled — are hidden from /v1/models and rejected by chat/completions and
+        responses calls.
+      </p>
 
       <ListPanel error={error} loading={loading} refreshing={refreshing} refreshLabel="Refresh" onRefresh={handleRefresh}>
         <table>
@@ -49,34 +137,31 @@ export default function Models() {
               <th>Name</th>
               <th>Context length</th>
               <th>Owned by</th>
-              <th>Excluded</th>
+              <th>Enabled</th>
             </tr>
           </thead>
-          <tbody>
-            {models.length === 0 ? (
+          {models.length === 0 ? (
+            <tbody>
               <tr>
                 <td colSpan={5} className="muted">
                   No models loaded yet — add a Command Code account to populate this list.
                 </td>
               </tr>
-            ) : (
-              models.map((m) => (
-                <tr key={m.id}>
-                  <td>{m.id}</td>
-                  <td className="muted">{m.name || "—"}</td>
-                  <td>{formatContextLength(m.context_length)}</td>
-                  <td className="muted">{m.owned_by}</td>
-                  <td>
-                    {m.excluded ? (
-                      <span className="pill stale">excluded</span>
-                    ) : (
-                      <span className="pill healthy">available</span>
-                    )}
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
+            </tbody>
+          ) : (
+            groups.map((g) => (
+              <ModelFamilyGroup
+                key={g.family || g.models[0].id}
+                family={g.family}
+                familyLabel={g.familyLabel}
+                models={g.models}
+                busyIds={busyIds}
+                busyFamilies={busyFamilies}
+                onToggleModel={handleToggleModel}
+                onToggleFamily={handleToggleFamily}
+              />
+            ))
+          )}
         </table>
       </ListPanel>
     </div>

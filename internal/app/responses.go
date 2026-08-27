@@ -837,9 +837,13 @@ func handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, model 
 
 	status := "completed"
 	var incomplete *ResponsesIncompleteDetails
-	if finishReason == "length" {
+	switch finishReason {
+	case "length":
 		status = "incomplete"
 		incomplete = &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
+	case "content_filter":
+		status = "incomplete"
+		incomplete = &ResponsesIncompleteDetails{Reason: "content_filter"}
 	}
 
 	responsesUsage := buildResponsesUsage(promptTokens, completionTokens, cacheRead, normalizer.ReasoningTokens())
@@ -954,10 +958,14 @@ func handleResponsesStream(w http.ResponseWriter, resp *http.Response, model str
 		finish := resolveFinishReason(reason, hasToolCalls, truncated)
 		promptTokens, completionTokens, cacheRead, _ := normalizer.Usage()
 		responsesUsage := buildResponsesUsage(promptTokens, completionTokens, cacheRead, normalizer.ReasoningTokens())
-		if finish == "length" {
+		switch finish {
+		case "length":
 			return emitter.Incomplete("max_output_tokens", responsesUsage)
+		case "content_filter":
+			return emitter.Incomplete("content_filter", responsesUsage)
+		default:
+			return emitter.Complete(responsesUsage)
 		}
-		return emitter.Complete(responsesUsage)
 	}
 
 	endKind, err := parseStreamEvents(resp, func(ev CCStreamEvent) error {
@@ -1048,7 +1056,16 @@ func handleResponsesStream(w http.ResponseWriter, resp *http.Response, model str
 // and dispatchToCC, then branch on stream:true to drive either
 // handleResponsesStream or handleResponsesNonStream with the account that
 // actually served the request.
+// handleResponses is a backward-compatible shim over
+// handleResponsesWithPolicy for callers (mainly tests) that don't care about
+// model overrides: it builds a ModelPolicy from cfg once, at handler
+// construction time, exactly mirroring the exclude_models-only behavior this
+// function had before ModelPolicy existed.
 func handleResponses(pool *AccountPool, cfg *Config, usage *UsageTracker) http.HandlerFunc {
+	return handleResponsesWithPolicy(pool, cfg, usage, NewModelPolicy(cfg))
+}
+
+func handleResponsesWithPolicy(pool *AccountPool, cfg *Config, usage *UsageTracker, policy *ModelPolicy) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
@@ -1083,7 +1100,7 @@ func handleResponses(pool *AccountPool, cfg *Config, usage *UsageTracker) http.H
 			return
 		}
 
-		disp, ok := dispatchToCC(w, r.Context(), pool, cfg, chatReq)
+		disp, ok := dispatchToCCWithPolicy(w, r.Context(), pool, cfg, policy, chatReq)
 		if !ok {
 			return
 		}

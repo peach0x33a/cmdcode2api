@@ -264,14 +264,23 @@ type ModelList struct {
 
 // AdminModel is the web UI's richer view of a model — unlike ModelInfo (the
 // OpenAI-compatible /v1/models shape), it carries the upstream Name and
-// ContextLength fields and whether exclude_models currently filters it out
-// of /v1/models, so the Models tab can show a model even while it's excluded.
+// ContextLength fields and whether the model is currently filtered out of
+// /v1/models (by an explicit per-model override or the
+// exclude_models fallback — see ModelPolicy.Enabled), so the Models tab can
+// show a model even while it's excluded. Family/FamilyLabel/Variant come
+// from groupModel and are display/grouping-only. Overridden is true when an
+// explicit per-model override determined Excluded's value, false when
+// Excluded fell through to the exclude_models default.
 type AdminModel struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	ContextLength int    `json:"context_length"`
 	OwnedBy       string `json:"owned_by"`
 	Excluded      bool   `json:"excluded"`
+	Family        string `json:"family"`
+	FamilyLabel   string `json:"family_label"`
+	Variant       string `json:"variant"`
+	Overridden    bool   `json:"overridden"`
 }
 
 type AdminModelList struct {
@@ -284,11 +293,21 @@ type AdminModelList struct {
 // bearer API key it should send. It intentionally never includes per-account
 // Command Code credentials (Config.Accounts) — those are internal to the
 // gateway, not something a connecting client needs.
+//
+// LANBaseURL/TailscaleBaseURL are additional base URLs for reaching this
+// gateway from another device, populated only when the corresponding
+// allow_lan/allow_tailscale flag is on and an IP was actually detected at
+// startup — see handleAdminConnection. BaseURL/Host always reflect whatever
+// host the caller used to reach /admin/connection, which is the right
+// default for a same-machine Setup tab view but doesn't by itself surface
+// the LAN/Tailscale addresses other devices would need.
 type ConnectionInfo struct {
-	BaseURL string `json:"base_url"`
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	APIKey  string `json:"api_key"`
+	BaseURL          string `json:"base_url"`
+	Host             string `json:"host"`
+	Port             int    `json:"port"`
+	APIKey           string `json:"api_key"`
+	LANBaseURL       string `json:"lan_base_url,omitempty"`
+	TailscaleBaseURL string `json:"tailscale_base_url,omitempty"`
 }
 
 // CCProviderModel is a single model returned by the CC API /provider/v1/models

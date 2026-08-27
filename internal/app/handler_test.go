@@ -25,7 +25,8 @@ func TestChatCompletionsRequiresModel(t *testing.T) {
 }
 
 func TestChatCompletionsRequiresMessages(t *testing.T) {
-	handler := handleChatCompletions(singleAccountPool(&CCClient{}), &Config{}, &UsageTracker{})
+	cfg := &Config{ModelOverrides: map[string]bool{"deepseek/deepseek-v4-flash": true}}
+	handler := handleChatCompletions(singleAccountPool(&CCClient{}), cfg, &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek/deepseek-v4-flash"}`))
 	rec := httptest.NewRecorder()
 
@@ -39,8 +40,11 @@ func TestChatCompletionsRequiresMessages(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsBlocksExcludedModel(t *testing.T) {
-	handler := handleChatCompletions(singleAccountPool(&CCClient{Client: &http.Client{}}), &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
+// Every model is disabled unless explicitly enabled — cfg.ExcludeModels is a
+// legacy field no longer consulted, so a plain Config{} with no overrides
+// must 404 any model, gpt-4 included.
+func TestChatCompletionsBlocksModelWithNoOverride(t *testing.T) {
+	handler := handleChatCompletions(singleAccountPool(&CCClient{Client: &http.Client{}}), &Config{}, &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`))
 	rec := httptest.NewRecorder()
 
@@ -57,24 +61,32 @@ func TestChatCompletionsBlocksExcludedModel(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsAllowsNonExcludedModel(t *testing.T) {
-	handler := handleChatCompletions(singleAccountPool(&CCClient{Client: &http.Client{}}), &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
+func TestChatCompletionsAllowsModelWithExplicitOverride(t *testing.T) {
+	cfg := &Config{}
+	policy := NewModelPolicy(cfg)
+	store := testStore(t)
+	if err := policy.SetModelOverrides(store, []string{"deepseek/deepseek-chat"}, true); err != nil {
+		t.Fatalf("SetModelOverrides: %v", err)
+	}
+
+	handler := handleChatCompletionsWithPolicy(singleAccountPool(&CCClient{Client: &http.Client{}}), cfg, &UsageTracker{}, policy)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hello"}]}`))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
 
-	// Exclusion gate should pass. cc.Send will fail with empty client → 502, not 400.
+	// The enabled-model gate should pass. cc.Send will fail with an empty
+	// client → 502, not 400/404.
 	if rec.Code == http.StatusBadRequest {
-		t.Fatalf("status = %d: exclusion gate blocked non-excluded model", rec.Code)
+		t.Fatalf("status = %d: enabled-model gate blocked an explicitly enabled model", rec.Code)
 	}
 	if rec.Code == http.StatusNotFound {
-		t.Fatalf("status = %d: exclusion gate blocked non-excluded model", rec.Code)
+		t.Fatalf("status = %d: enabled-model gate blocked an explicitly enabled model", rec.Code)
 	}
 }
 
-func TestChatCompletionsBlocksProviderQualified(t *testing.T) {
-	handler := handleChatCompletions(singleAccountPool(&CCClient{Client: &http.Client{}}), &Config{ExcludeModels: []string{"gpt-"}}, &UsageTracker{})
+func TestChatCompletionsBlocksProviderQualifiedWithNoOverride(t *testing.T) {
+	handler := handleChatCompletions(singleAccountPool(&CCClient{Client: &http.Client{}}), &Config{}, &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"openai/gpt-4","messages":[{"role":"user","content":"hello"}]}`))
 	rec := httptest.NewRecorder()
 
@@ -91,6 +103,51 @@ func TestChatCompletionsBlocksProviderQualified(t *testing.T) {
 	}
 }
 
+// A model disabled purely through an explicit ModelPolicy override must 404
+// — proving dispatchToCCWithPolicy consults the policy directly, not just
+// the (default-disabled) fallback.
+func TestChatCompletionsBlocksModelDisabledViaPolicyOverrideOnly(t *testing.T) {
+	cfg := &Config{}
+	policy := NewModelPolicy(cfg)
+	store := testStore(t)
+	if err := policy.SetModelOverrides(store, []string{"deepseek/deepseek-chat"}, false); err != nil {
+		t.Fatalf("SetModelOverrides: %v", err)
+	}
+
+	handler := handleChatCompletionsWithPolicy(singleAccountPool(&CCClient{Client: &http.Client{}}), cfg, &UsageTracker{}, policy)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// An explicit ModelPolicy override enabling a model must be allowed through
+// even though every model is disabled by default.
+func TestChatCompletionsAllowsModelEnabledViaPolicyOverrideDespiteDefaultDisabled(t *testing.T) {
+	cfg := &Config{}
+	policy := NewModelPolicy(cfg)
+	store := testStore(t)
+	if err := policy.SetModelOverrides(store, []string{"openai/gpt-4"}, true); err != nil {
+		t.Fatalf("SetModelOverrides: %v", err)
+	}
+
+	handler := handleChatCompletionsWithPolicy(singleAccountPool(&CCClient{Client: &http.Client{}}), cfg, &UsageTracker{}, policy)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"openai/gpt-4","messages":[{"role":"user","content":"hi"}]}`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	// The enabled-model gate must pass — cc.Send then fails with an empty
+	// client, producing a 502, not the 400/404 a gate rejection would give.
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("status = %d: policy override did not beat the default-disabled fallback", rec.Code)
+	}
+}
+
 func TestChatCompletionsReturnsNormalizedUpstreamRateLimit(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "120")
@@ -100,7 +157,7 @@ func TestChatCompletionsReturnsNormalizedUpstreamRateLimit(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	handler := handleChatCompletions(singleAccountPool(NewCCClient("test-key", upstream.URL)), &Config{}, &UsageTracker{})
+	handler := handleChatCompletions(singleAccountPool(NewCCClient("test-key", upstream.URL)), testModelEnabledConfig(), &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hello"}]}`))
 	rec := httptest.NewRecorder()
 
@@ -148,7 +205,7 @@ func TestChatCompletionsFailsOverToNextAccountOnAuthError(t *testing.T) {
 		testAccountEntry{Name: "healthy-account", Client: NewCCClient("healthy-key", healthy.URL)},
 	)
 
-	handler := handleChatCompletions(pool, &Config{}, &UsageTracker{})
+	handler := handleChatCompletions(pool, testModelEnabledConfig(), &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
 
@@ -198,7 +255,7 @@ func TestChatCompletionsCreditsUsageToServingAccount(t *testing.T) {
 	)
 
 	usage := &UsageTracker{}
-	handler := handleChatCompletions(pool, &Config{}, usage)
+	handler := handleChatCompletions(pool, testModelEnabledConfig(), usage)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
 
@@ -247,7 +304,7 @@ func TestChatCompletionsFailsOverToNextAccountOnRateLimit(t *testing.T) {
 		testAccountEntry{Name: "healthy-account", Client: NewCCClient("healthy-key", healthy.URL)},
 	)
 
-	handler := handleChatCompletions(pool, &Config{}, &UsageTracker{})
+	handler := handleChatCompletions(pool, testModelEnabledConfig(), &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
 
@@ -279,7 +336,7 @@ func TestChatCompletionsReturns502WhenAllAccountsExhausted(t *testing.T) {
 	defer stale.Close()
 
 	pool := newTestAccountPool(testAccountEntry{Name: "only-account", Client: NewCCClient("stale-key", stale.URL)})
-	handler := handleChatCompletions(pool, &Config{}, &UsageTracker{})
+	handler := handleChatCompletions(pool, testModelEnabledConfig(), &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
 
@@ -302,7 +359,7 @@ func TestChatCompletionsReturns502WhenAllAccountsExhausted(t *testing.T) {
 // "all accounts exhausted" message.
 func TestChatCompletionsReturns503WhenNoAccountsConfigured(t *testing.T) {
 	pool := newTestAccountPool()
-	handler := handleChatCompletions(pool, &Config{}, &UsageTracker{})
+	handler := handleChatCompletions(pool, testModelEnabledConfig(), &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test/test-model","messages":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
 
@@ -320,7 +377,7 @@ func TestChatCompletionsReturns503WhenNoAccountsConfigured(t *testing.T) {
 }
 
 func TestChatCompletionsRejectsRemoteImageURL(t *testing.T) {
-	handler := handleChatCompletions(singleAccountPool(&CCClient{}), &Config{}, &UsageTracker{})
+	handler := handleChatCompletions(singleAccountPool(&CCClient{}), testModelEnabledConfig(), &UsageTracker{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
 		"model":"test/test-model",
 		"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]
@@ -568,7 +625,10 @@ func TestHandleStreamRejectsToolCallWhenUpstreamAborts(t *testing.T) {
 	}
 }
 
-func TestHandleModelsExcludesPrefixes(t *testing.T) {
+// With no overrides at all, every model in the catalog is disabled by
+// default and /v1/models must return none of them — cfg.ExcludeModels is a
+// legacy field no longer consulted.
+func TestHandleModelsAllDisabledByDefault(t *testing.T) {
 	oldCatalog := modelCatalog
 	t.Cleanup(func() { modelCatalog = oldCatalog })
 
@@ -578,7 +638,7 @@ func TestHandleModelsExcludesPrefixes(t *testing.T) {
 		{ID: "google/gemini-1.5-pro"},
 		{ID: "deepseek/deepseek-chat"},
 	}
-	cfg := &Config{ExcludeModels: []string{"gpt-", "claude-", "gemini-"}}
+	cfg := &Config{}
 	handler := handleModels(cfg)
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	rec := httptest.NewRecorder()
@@ -595,65 +655,41 @@ func TestHandleModelsExcludesPrefixes(t *testing.T) {
 	if resp.Object != "list" {
 		t.Fatalf("object = %q, want list", resp.Object)
 	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("len(data) = %d, want 0", len(resp.Data))
+	}
+}
+
+// Only models with an explicit true override in model_overrides show up in
+// /v1/models.
+func TestHandleModelsOnlyExplicitlyEnabled(t *testing.T) {
+	oldCatalog := modelCatalog
+	t.Cleanup(func() { modelCatalog = oldCatalog })
+
+	modelCatalog = []ModelInfo{
+		{ID: "openai/gpt-4"},
+		{ID: "anthropic/claude-3"},
+		{ID: "deepseek/deepseek-chat"},
+	}
+	cfg := &Config{ModelOverrides: map[string]bool{"deepseek/deepseek-chat": true}}
+	handler := handleModels(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp ModelList
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	if len(resp.Data) != 1 {
 		t.Fatalf("len(data) = %d, want 1", len(resp.Data))
 	}
 	if resp.Data[0].ID != "deepseek/deepseek-chat" {
 		t.Fatalf("data[0].ID = %q, want deepseek/deepseek-chat", resp.Data[0].ID)
-	}
-}
-
-func TestHandleModelsNoExclusions(t *testing.T) {
-	oldCatalog := modelCatalog
-	t.Cleanup(func() { modelCatalog = oldCatalog })
-
-	modelCatalog = []ModelInfo{
-		{ID: "openai/gpt-4"},
-		{ID: "anthropic/claude-3"},
-	}
-	cfg := &Config{}
-	handler := handleModels(cfg)
-	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-
-	var resp ModelList
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(resp.Data) != 2 {
-		t.Fatalf("len(data) = %d, want 2", len(resp.Data))
-	}
-}
-
-func TestHandleModelsAllExcluded(t *testing.T) {
-	oldCatalog := modelCatalog
-	t.Cleanup(func() { modelCatalog = oldCatalog })
-
-	modelCatalog = []ModelInfo{
-		{ID: "openai/gpt-4"},
-		{ID: "anthropic/claude-3"},
-	}
-	cfg := &Config{ExcludeModels: []string{"gpt-", "claude-"}}
-	handler := handleModels(cfg)
-	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-
-	var resp ModelList
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(resp.Data) != 0 {
-		t.Fatalf("len(data) = %d, want 0", len(resp.Data))
 	}
 }
 

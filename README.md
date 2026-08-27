@@ -163,7 +163,7 @@ model_overrides:
 Fields:
 
 - `api_key` — local bearer token required by clients calling this gateway.
-- `accounts` — list of Command Code accounts, each with a `name`, an `api_key` obtained via `--oauth --account <name>`, and a `base_url`. An optional `session_token` (the `__Secure-commandcode_prod_.session_token` cookie) enables billing/credit polling and the credit-window Discord alerts for that account; set it from the web UI's Alerts tab.
+- `accounts` — list of Command Code accounts, each with a `name`, an `api_key` obtained via `--oauth --account <name>`, and a `base_url`. An optional `session_token` enables billing/credit polling and the credit-window Discord alerts for that account — see [Billing session token](#billing-session-token).
 - `host` — HTTP listen host. Defaults to `localhost`. Use `0.0.0.0` to listen on all interfaces.
 - `port` — local listen port. Defaults to `11434`.
 - `allow_lan` — when `true`, other devices on your local network can reach this gateway. Detects your LAN IP automatically at startup and prints it in the log. Defaults to `false`. If `host` is still the default `localhost`, enabling this switches it to `0.0.0.0` for you.
@@ -197,6 +197,31 @@ choices to `model_overrides` in `config.yaml`. See
 [commandcode.ai/docs/plans/go#models](https://commandcode.ai/docs/plans/go#models)
 for what's included on the Go plan.
 
+### Billing session token
+
+Credit polling (the web UI credit bars, `GET /admin/billing`, and the
+usage-threshold Discord alerts) needs a `session_token` for the account —
+the `__Secure-commandcode_prod_.session_token` browser cookie from a
+logged-in commandcode.ai session. The gateway's `api_key` won't work here;
+Command Code's billing API authenticates with this cookie instead.
+
+To get it:
+
+1. Log in to <https://commandcode.ai> in a browser.
+2. Open DevTools (F12) → **Application** (Chrome) or **Storage** (Firefox)
+   → **Cookies** → `https://commandcode.ai`.
+3. Copy the **Value** of the `__Secure-commandcode_prod_.session_token`
+   cookie.
+4. Paste it into the **Session token** field for that account on the
+   Accounts tab and save, or set `session_token:` under the account in
+   `config.yaml`.
+
+The token expires — Command Code issues short-lived sessions, which is why
+the 24-hour session-expiry alert exists. When it lapses, repeat the steps
+with a fresh value. Treat it like a password: it grants read access to
+your billing data. The gateway keeps it only in `config.yaml`, which git
+ignores, and never logs or returns it.
+
 ### Discord alerts
 
 Set a `webhook_url` under `discord_alerts` (or the legacy top-level
@@ -206,9 +231,8 @@ Alerts tab writes these, and its webhook field is write-only — blank keeps
 the current URL, a new value replaces it, and there's an explicit clear.
 
 Threshold alerts need per-account credit data, which comes from a
-`session_token` on the account (Alerts tab, or `session_token` in
-`config.yaml`). Without one, only the config that has a webhook still
-sends subscription- and session-expiry warnings.
+[billing session token](#billing-session-token). Without one, a config
+that has a webhook still sends subscription- and session-expiry warnings.
 
 Caps default to `hourly_cap: 3`, `weekly_cap: 6`, `monthly_cap: 10`; the
 hourly cap tracks Command Code's rolling five-hour window. Subscription

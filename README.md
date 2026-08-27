@@ -43,8 +43,17 @@ internal/app/      gateway implementation
 The account-management UI served at `/ui` is a TypeScript + React app built
 with Vite, living in `internal/app/webui-src/`. Its build output is committed
 to `internal/app/webui/dist/` and embedded into the Go binary, so `go build`
-never needs Node installed. After editing the UI, rebuild and commit the
-output:
+never needs Node installed.
+
+| Accounts | Models |
+| --- | --- |
+| ![Accounts tab](docs/screenshots/accounts.png) | ![Models tab](docs/screenshots/models.png) |
+
+| Alerts | Setup |
+| --- | --- |
+| ![Alerts tab](docs/screenshots/alerts.png) | ![Setup tab](docs/screenshots/setup.png) |
+
+After editing the UI, rebuild and commit the output:
 
 ```bash
 cd internal/app/webui-src

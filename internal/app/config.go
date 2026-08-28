@@ -32,6 +32,11 @@ type Account struct {
 	// value used to authenticate billing API calls (see billing.go). It is a
 	// secret, exactly like APIKey: never included in AccountView or any other
 	// JSON-exposed struct.
+	//
+	// This and the two SessionEmail/SessionExpiresAt fields below are the
+	// "billing session" group that preserveSessionFields carries across an
+	// OAuth reauth (which otherwise rebuilds an Account with these blank). Add
+	// any future billing-session field to that helper's list too.
 	SessionToken string `yaml:"session_token,omitempty"`
 
 	// SessionEmail/SessionExpiresAt identify which commandcode.ai login the
@@ -119,15 +124,38 @@ func defaultConfig() (Config, error) {
 }
 
 // upsertAccount replaces the account with a matching name, or appends it if
-// no account with that name exists yet.
+// no account with that name exists yet. When it replaces, the incoming
+// account's blank billing-session fields are backfilled from the existing one
+// via preserveSessionFields first.
 func upsertAccount(cfg *Config, acct Account) {
 	for i := range cfg.Accounts {
 		if cfg.Accounts[i].Name == acct.Name {
+			preserveSessionFields(&acct, cfg.Accounts[i])
 			cfg.Accounts[i] = acct
 			return
 		}
 	}
 	cfg.Accounts = append(cfg.Accounts, acct)
+}
+
+// preserveSessionFields backfills incoming's billing-session fields
+// (SessionToken/SessionEmail/SessionExpiresAt) from existing wherever incoming
+// left them at their zero value. The OAuth reauth flows (app.go, both the CLI
+// --oauth path and the HTTP /accounts/reauth path) rebuild an Account from
+// just the OAuth callback, which carries none of these; without this backfill
+// every reauth would silently wipe the billing session token from config.yaml.
+// A non-blank incoming value always wins, so SetSessionToken-style updates are
+// unaffected.
+func preserveSessionFields(incoming *Account, existing Account) {
+	if incoming.SessionToken == "" {
+		incoming.SessionToken = existing.SessionToken
+	}
+	if incoming.SessionEmail == "" {
+		incoming.SessionEmail = existing.SessionEmail
+	}
+	if incoming.SessionExpiresAt == nil {
+		incoming.SessionExpiresAt = existing.SessionExpiresAt
+	}
 }
 
 // applyDefaultBaseURLs fills in defaultCommandCodeBaseURL for any account

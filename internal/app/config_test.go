@@ -4,9 +4,81 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// A reauth rebuilds an Account purely from the OAuth callback (no billing
+// session fields) and feeds it through upsertAccount. That must not wipe the
+// billing session token / identity a previous /auth/get-session fetch
+// persisted — otherwise every post-sleep reauth silently breaks billing calls
+// until the token is pasted back in by hand.
+func TestUpsertAccountPreservesBillingSessionOnReauth(t *testing.T) {
+	expires := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	cfg := &Config{Accounts: []Account{{
+		Name:             "work",
+		APIKey:           "old-key",
+		BaseURL:          "https://api.commandcode.ai",
+		SessionToken:     "sess-abc123",
+		SessionEmail:     "me@example.com",
+		SessionExpiresAt: &expires,
+	}}}
+
+	reauthed := buildAccountFromCallback("work", oauthCallback{
+		APIKey:   "new-key",
+		UserID:   "u1",
+		UserName: "me@example.com",
+		KeyName:  "k1",
+	}, "https://api.commandcode.ai")
+	upsertAccount(cfg, reauthed)
+
+	got := cfg.Accounts[0]
+	if got.APIKey != "new-key" {
+		t.Fatalf("APIKey = %q, want the reauthed key", got.APIKey)
+	}
+	if got.SessionToken != "sess-abc123" {
+		t.Fatalf("SessionToken = %q, want it preserved across reauth", got.SessionToken)
+	}
+	if got.SessionEmail != "me@example.com" {
+		t.Fatalf("SessionEmail = %q, want it preserved across reauth", got.SessionEmail)
+	}
+	if got.SessionExpiresAt == nil || !got.SessionExpiresAt.Equal(expires) {
+		t.Fatalf("SessionExpiresAt = %v, want it preserved across reauth", got.SessionExpiresAt)
+	}
+}
+
+// Explicit non-blank values in the incoming account always win over the
+// existing ones, so SetSessionToken/SetSessionIdentity-style overwrites are not
+// blocked by the reauth backfill.
+func TestUpsertAccountIncomingSessionFieldsWin(t *testing.T) {
+	oldExpires := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newExpires := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	cfg := &Config{Accounts: []Account{{
+		Name:             "work",
+		SessionToken:     "old-tok",
+		SessionEmail:     "old@example.com",
+		SessionExpiresAt: &oldExpires,
+	}}}
+
+	upsertAccount(cfg, Account{
+		Name:             "work",
+		SessionToken:     "new-tok",
+		SessionEmail:     "new@example.com",
+		SessionExpiresAt: &newExpires,
+	})
+
+	got := cfg.Accounts[0]
+	if got.SessionToken != "new-tok" {
+		t.Fatalf("SessionToken = %q, want %q", got.SessionToken, "new-tok")
+	}
+	if got.SessionEmail != "new@example.com" {
+		t.Fatalf("SessionEmail = %q, want %q", got.SessionEmail, "new@example.com")
+	}
+	if got.SessionExpiresAt == nil || !got.SessionExpiresAt.Equal(newExpires) {
+		t.Fatalf("SessionExpiresAt = %v, want %v", got.SessionExpiresAt, newExpires)
+	}
+}
 
 // defaultConfig no longer seeds ExcludeModels (a legacy field): every model
 // starts disabled and must be explicitly enabled via ModelOverrides instead.

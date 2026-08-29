@@ -73,6 +73,9 @@ jobs:
               "dist/cmdcode2api_${debver}_${arch}.deb"
           done
 
+      - name: Add installer script
+        run: install -m 0755 scripts/install.sh dist/install.sh
+
       - name: Checksums
         run: (cd dist && sha256sum * | tee SHA256SUMS.txt)
 

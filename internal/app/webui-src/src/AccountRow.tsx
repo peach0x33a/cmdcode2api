@@ -35,6 +35,15 @@ function windowAmount(window: BillingWindow): string {
   return `${rem.toFixed(2)} / ${window.cap}`;
 }
 
+// formatResetAt turns the credits API's resetAt Unix epoch into a local
+// timestamp. The field is documented only as "resetAt"; some windows report
+// seconds and some milliseconds, so anything below ~1e11 is read as seconds.
+function formatResetAt(epoch?: number): string {
+  if (!epoch || epoch <= 0) return "unknown";
+  const d = new Date(epoch < 1e11 ? epoch * 1000 : epoch);
+  return Number.isNaN(d.getTime()) ? "unknown" : d.toLocaleString();
+}
+
 function windowBar(window: BillingWindow) {
   const rem = Math.max(0, window.cap - window.used);
   return <CreditBar remaining={rem} total={window.cap} label={windowAmount(window)} />;
@@ -180,6 +189,10 @@ export default function AccountRow({
                     ) : (
                       <span className="billing-field-value">—</span>
                     )}
+                    <span className="billing-reset">
+                      Resets{" "}
+                      {expired ? "—" : formatTime(billing.subscription?.currentPeriodEnd)}
+                    </span>
                   </div>
                   <div className="billing-field">
                     <div className="billing-field-header">
@@ -195,6 +208,11 @@ export default function AccountRow({
                     ) : (
                       <span className="billing-field-value">—</span>
                     )}
+                    {billing.credits ? (
+                      <span className="billing-reset">
+                        Resets {formatResetAt(billing.credits.windowLimits.weekly.resetAt)}
+                      </span>
+                    ) : null}
                   </div>
                   <div className="billing-field">
                     <div className="billing-field-header">
@@ -210,6 +228,11 @@ export default function AccountRow({
                     ) : (
                       <span className="billing-field-value">—</span>
                     )}
+                    {billing.credits ? (
+                      <span className="billing-reset">
+                        Resets {formatResetAt(billing.credits.windowLimits.fiveHour.resetAt)}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               </div>

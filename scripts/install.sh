@@ -110,7 +110,12 @@ latest_tag() {
   local api="https://api.github.com/repos/${REPO}/releases/latest"
   local hdr=(-fsSL)
   [[ -n "${GITHUB_TOKEN:-}" ]] && hdr+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-  curl "${hdr[@]}" "$api" \
+  # Buffer the whole response first; piping curl straight into `grep -m1`
+  # makes grep close the pipe early and curl dies with "(23) Failure
+  # writing output to destination".
+  local body
+  body="$(curl "${hdr[@]}" "$api")" || return 1
+  printf '%s\n' "$body" \
     | grep -m1 '"tag_name"' \
     | sed -E 's/.*"tag_name" *: *"([^"]+)".*/\1/'
 }

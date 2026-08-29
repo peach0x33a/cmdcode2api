@@ -69,16 +69,22 @@ Run the binary once to generate `config.yaml`:
 ./cmdcode2api
 ```
 
-Then connect a Command Code account, giving it a name:
+Then connect a Command Code account, giving it a name. The easiest way is
+the web UI: start the gateway, open `http://localhost:11434/ui`, and use
+the **Add account** button — it runs the same OAuth flow and writes the
+key into `config.yaml`. No command line needed. **Reauthorize** on an
+existing account row does the same for a stale account.
+
+To do it from the command line instead:
 
 ```bash
 ./cmdcode2api --oauth --account personal
 ```
 
-`--account <name>` is required whenever you use `--oauth`. The OAuth flow
-writes the Command Code API key into `config.yaml` under that account name.
-Run the same command again with a different `--account` name to add more
-accounts. See [Accounts](#accounts) below for how the gateway uses them.
+`--account <name>` is required whenever you use `--oauth`. Either way, the
+OAuth flow writes the Command Code API key into `config.yaml` under that
+account name. Repeat with a different name to add more accounts. See
+[Accounts](#accounts) below for how the gateway uses them.
 
 ### Authorizing on a remote or headless server
 

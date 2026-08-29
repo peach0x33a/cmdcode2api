@@ -281,7 +281,13 @@ fi
 if [[ ! -f "${DIR}/config.yaml" ]]; then
   cat <<EOF
 
-Next step: no ${DIR}/config.yaml yet. Create one, then authorize an account:
+Next step: no ${DIR}/config.yaml yet — the service creates it on start.
+Authorize a Command Code account from the web UI:
+
+  open http://<this-host>:11434/ui  ->  "Add account"
+
+That runs the OAuth flow and writes the key into ${DIR}/config.yaml; no
+command line needed. To do it from the shell instead:
 
   sudo -u ${SVC_USER} ${TARGET} --oauth --account Default
   sudo systemctl restart ${SERVICE}

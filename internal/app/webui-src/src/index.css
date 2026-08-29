@@ -311,6 +311,11 @@ button.danger:hover {
   font-size: 0.85rem;
 }
 
+.billing-reset {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
 .billing-expired {
   color: var(--stale);
   font-weight: 600;

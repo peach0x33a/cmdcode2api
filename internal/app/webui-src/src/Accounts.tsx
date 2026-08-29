@@ -235,12 +235,16 @@ export default function Accounts() {
       <details className="card remote-auth-help">
         <summary>Authorizing an account on a remote / headless server</summary>
         <p>
-          Authorizing (&ldquo;Add account&rdquo; / &ldquo;Reauthorize&rdquo; here, or{" "}
-          <code>--oauth</code> on the server) waits for a callback on{" "}
-          <code>http://localhost:5959/callback</code>. Command Code only allows a{" "}
-          <code>localhost</code> callback, so when the gateway runs on a machine
-          without a browser, forward that port over SSH from the machine that has
-          one (Windows included).
+          Do it right here &mdash; the &ldquo;Add account&rdquo; and
+          &ldquo;Reauthorize&rdquo; buttons above run the whole OAuth flow. You
+          do not need the CLI or <code>--oauth</code>.
+        </p>
+        <p>
+          The one catch on a headless server: authorization waits for a callback
+          on <code>http://localhost:5959/callback</code>, and Command Code only
+          allows a <code>localhost</code> callback. If the gateway runs on a
+          machine without a browser, forward that port over SSH from the machine
+          you&rsquo;re browsing from (Windows included).
         </p>
         <ol>
           <li>
@@ -249,19 +253,16 @@ export default function Accounts() {
             <pre className="code-block">ssh -L 5959:localhost:5959 user@server</pre>
           </li>
           <li>
-            Start the authorization &mdash; either click &ldquo;Add account&rdquo; /
-            &ldquo;Reauthorize&rdquo; above, or run this on the server:
-            <pre className="code-block">./cmdcode2api --oauth --account NAME</pre>
+            Back in this UI, click &ldquo;Add account&rdquo; or
+            &ldquo;Reauthorize&rdquo; above.
           </li>
           <li>
             Approve in the Command Code tab that opens on your workstation. The
             callback travels back through the tunnel; the key lands in{" "}
-            <code>config.yaml</code>.
+            <code>config.yaml</code> and the account appears immediately &mdash;
+            no restart needed.
           </li>
-          <li>
-            Close the SSH session. Restart the gateway if you used the{" "}
-            <code>--oauth</code> path.
-          </li>
+          <li>Close the SSH session.</li>
         </ol>
         <p className="muted">
           Port 5959 is fixed &mdash; don&rsquo;t set <code>--oauth-callback</code>{" "}

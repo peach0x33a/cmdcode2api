@@ -1,4 +1,6 @@
 /cmdcode2api
+/cmdcode2api-linux-amd64
+/cmdcode2api-linux-arm64
 /cc-gateway
 config.yaml
 usage.json

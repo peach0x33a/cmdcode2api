@@ -231,6 +231,44 @@ export default function Accounts() {
           Add account
         </button>
       </form>
+
+      <details className="card remote-auth-help">
+        <summary>Authorizing an account on a remote / headless server</summary>
+        <p>
+          Authorizing (&ldquo;Add account&rdquo; / &ldquo;Reauthorize&rdquo; here, or{" "}
+          <code>--oauth</code> on the server) waits for a callback on{" "}
+          <code>http://localhost:5959/callback</code>. Command Code only allows a{" "}
+          <code>localhost</code> callback, so when the gateway runs on a machine
+          without a browser, forward that port over SSH from the machine that has
+          one (Windows included).
+        </p>
+        <ol>
+          <li>
+            From your workstation, open an SSH session that forwards the callback
+            port, and leave it open for the whole flow:
+            <pre className="code-block">ssh -L 5959:localhost:5959 user@server</pre>
+          </li>
+          <li>
+            Start the authorization &mdash; either click &ldquo;Add account&rdquo; /
+            &ldquo;Reauthorize&rdquo; above, or run this on the server:
+            <pre className="code-block">./cmdcode2api --oauth --account NAME</pre>
+          </li>
+          <li>
+            Approve in the Command Code tab that opens on your workstation. The
+            callback travels back through the tunnel; the key lands in{" "}
+            <code>config.yaml</code>.
+          </li>
+          <li>
+            Close the SSH session. Restart the gateway if you used the{" "}
+            <code>--oauth</code> path.
+          </li>
+        </ol>
+        <p className="muted">
+          Port 5959 is fixed &mdash; don&rsquo;t set <code>--oauth-callback</code>{" "}
+          for the tunnel case; the default <code>localhost</code> callback is what
+          makes it work.
+        </p>
+      </details>
     </div>
   );
 }

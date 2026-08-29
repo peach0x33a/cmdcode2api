@@ -80,19 +80,42 @@ writes the Command Code API key into `config.yaml` under that account name.
 Run the same command again with a different `--account` name to add more
 accounts. See [Accounts](#accounts) below for how the gateway uses them.
 
-On a remote server without a browser, keep the callback server bound to
-`127.0.0.1` and provide the callback URL that Command Code should call:
+### Authorizing on a remote or headless server
 
-```bash
-./cmdcode2api --oauth --account personal --oauth-callback http://localhost:5959/callback
-```
+The OAuth flow waits for a callback on `http://localhost:5959/callback`, and
+Command Code only allows a `localhost` callback. When the gateway runs on a
+server without a browser, forward port 5959 over SSH from the machine that
+has one (Windows included) so that `localhost` callback still reaches the
+server.
 
-If your browser is on a different machine, forward that callback URL to the
-server, for example:
+1. From your workstation, open an SSH session that forwards the callback
+   port, and leave it open for the whole flow:
 
-```bash
-ssh -L 5959:127.0.0.1:5959 user@server
-```
+   ```bash
+   ssh -L 5959:localhost:5959 user@server
+   ```
+
+2. In that session, on the server, start the flow for one account. It binds
+   `127.0.0.1:5959` and prints an authorization URL:
+
+   ```bash
+   ./cmdcode2api --oauth --account personal
+   ```
+
+   (The web UI's "Add account" / "Reauthorize" buttons do the same thing and
+   also work through the tunnel.)
+
+3. Open the printed URL in the browser on your workstation and approve. The
+   callback travels back through the tunnel; the key is written into
+   `config.yaml`.
+
+4. Close the SSH session (`exit`) and restart the gateway to load the new
+   account.
+
+Port 5959 is fixed — don't pass `--oauth-callback` for the tunnel
+case; the default `localhost` callback is what makes it work. Use
+`--oauth-callback` only when something other than `localhost:5959` must
+receive the callback (for example a public HTTPS reverse proxy).
 
 ## Accounts
 

@@ -80,19 +80,42 @@ writes the Command Code API key into `config.yaml` under that account name.
 Run the same command again with a different `--account` name to add more
 accounts. See [Accounts](#accounts) below for how the gateway uses them.
 
-On a remote server without a browser, keep the callback server bound to
-`127.0.0.1` and provide the callback URL that Command Code should call:
+### Authorizing on a remote or headless server
 
-```bash
-./cmdcode2api --oauth --account personal --oauth-callback http://localhost:5959/callback
-```
+The OAuth flow waits for a callback on `http://localhost:5959/callback`, and
+Command Code only allows a `localhost` callback. When the gateway runs on a
+server without a browser, forward port 5959 over SSH from the machine that
+has one (Windows included) so that `localhost` callback still reaches the
+server.
 
-If your browser is on a different machine, forward that callback URL to the
-server, for example:
+1. From your workstation, open an SSH session that forwards the callback
+   port, and leave it open for the whole flow:
 
-```bash
-ssh -L 5959:127.0.0.1:5959 user@server
-```
+   ```bash
+   ssh -L 5959:localhost:5959 user@server
+   ```
+
+2. In that session, on the server, start the flow for one account. It binds
+   `127.0.0.1:5959` and prints an authorization URL:
+
+   ```bash
+   ./cmdcode2api --oauth --account personal
+   ```
+
+   (The web UI's "Add account" / "Reauthorize" buttons do the same thing and
+   also work through the tunnel.)
+
+3. Open the printed URL in the browser on your workstation and approve. The
+   callback travels back through the tunnel; the key is written into
+   `config.yaml`.
+
+4. Close the SSH session (`exit`) and restart the gateway to load the new
+   account.
+
+Port 5959 is fixed — don't pass `--oauth-callback` for the tunnel
+case; the default `localhost` callback is what makes it work. Use
+`--oauth-callback` only when something other than `localhost:5959` must
+receive the callback (for example a public HTTPS reverse proxy).
 
 ## Accounts
 
@@ -168,6 +191,7 @@ Fields:
 - `port` — local listen port. Defaults to `11434`.
 - `allow_lan` — when `true`, other devices on your local network can reach this gateway. Detects your LAN IP automatically at startup and prints it in the log. Defaults to `false`. If `host` is still the default `localhost`, enabling this switches it to `0.0.0.0` for you.
 - `allow_tailscale` — same, but for a device reachable over [Tailscale](https://tailscale.com/), if it's installed and connected on this machine. Detects the Tailscale IP automatically at startup. Defaults to `false`.
+- `ui_no_auth` — when `true`, serves `/ui` and the account-management API (`/accounts*`, `/admin/*`) with no authentication; the LLM proxy at `/v1/*` still requires `api_key`. Trusted networks only: it exposes add/remove account, OAuth, model policy and billing to anyone who can reach the port. Defaults to `false`. Also settable per-run with `--ui-no-auth`.
 - `model_overrides` — per-model enabled/disabled overrides, keyed by exact model ID. This is the only way to enable a model — see below.
 - `discord_webhook_url` — optional Discord webhook URL for five-hour/weekly usage threshold and subscription-ending alerts. The URL is never logged.
 - `discord_alert_state_file` — optional durable deduplication state path; defaults to `discord-alerts.json`.
@@ -182,6 +206,14 @@ weaken authentication. The web UI's tokenless convenience login only
 applies to a genuine same-machine (loopback) request; from a LAN or
 Tailscale device (or anywhere else) you still need the `api_key`, which the
 web UI will prompt you for the first time you open it from that device.
+
+`--ui-no-auth` (or `ui_no_auth: true` in `config.yaml`) removes that
+requirement for the admin surface only, so the web UI loads from a remote
+browser without pasting in the key. It does not touch the `/v1/*` proxy
+routes, which still require `api_key`. Use it only on a trusted network:
+anyone who can reach the port can then add or remove accounts, run the
+OAuth flow, change model policy and read billing. The startup log prints a
+`WARNING: ui_no_auth is set` line while it is active.
 
 If you have a `config.yaml` from before multi-account support, its single
 `commandcode: {api_key, base_url}` block is migrated automatically into an

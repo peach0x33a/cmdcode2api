@@ -198,6 +198,44 @@ button.danger:hover {
   margin-top: 0.25rem;
 }
 
+.remote-auth-help {
+  margin: 1.25rem 0;
+  padding: 0.85rem 1rem;
+  font-size: 0.85rem;
+}
+
+.remote-auth-help summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.remote-auth-help p {
+  margin: 0.75rem 0 0;
+}
+
+.remote-auth-help ol {
+  margin: 0.75rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.remote-auth-help li {
+  margin-bottom: 0.6rem;
+}
+
+.remote-auth-help pre.code-block {
+  margin-top: 0.4rem;
+}
+
+.remote-auth-help code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+}
+
 .account-row td {
   border-bottom: none;
 }

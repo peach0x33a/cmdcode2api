@@ -23,12 +23,15 @@ func authMiddleware(cfg *Config) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			// The admin surface (/ui, /accounts*) can also be reached without
-			// a bearer token from a genuine loopback browser request — see
-			// isLocalAdminRequest in ui.go for the full loopback+Host+Origin
-			// gate that keeps this from being usable by a remote page via
-			// DNS rebinding.
-			if isAdminPath(r.URL.Path) && isLocalAdminRequest(r) {
+			// The admin surface (/ui, /accounts*, /admin/*) can also be reached
+			// without a bearer token from a genuine loopback browser request —
+			// see isLocalAdminRequest in ui.go for the full loopback+Host+Origin
+			// gate that keeps this from being usable by a remote page via DNS
+			// rebinding. cfg.UINoAuth (the --ui-no-auth flag / ui_no_auth config
+			// key) opts out of that gate entirely so the UI works from a remote
+			// browser on a trusted network. Neither path affects the LLM proxy
+			// routes below — those always require the bearer APIKey.
+			if isAdminPath(r.URL.Path) && (cfg.UINoAuth || isLocalAdminRequest(r)) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -406,6 +409,9 @@ func runServer(pool *AccountPool, cfg *Config, usage *UsageTracker, reauthMgr *R
 
 	log.Printf("cmdcode2api starting, listening on %s", addr)
 	log.Printf("reachable at http://localhost:%d (loopback, no API key needed for /ui)", cfg.Port)
+	if cfg.UINoAuth {
+		log.Printf("WARNING: ui_no_auth is set — /ui and the account-management API are served WITHOUT authentication")
+	}
 	if cfg.AllowLAN {
 		if cfg.DetectedLANIP != "" {
 			log.Printf("reachable at http://%s:%d (LAN — /ui requires the API key)", cfg.DetectedLANIP, cfg.Port)

@@ -75,6 +75,14 @@ type Config struct {
 	AllowLAN       bool `yaml:"allow_lan"`
 	AllowTailscale bool `yaml:"allow_tailscale"`
 
+	// UINoAuth drops the API-key / loopback requirement for the admin surface
+	// only (/ui, /accounts*, /admin/*) so the web UI works from a remote
+	// browser without copying the key out of config.yaml. The LLM proxy
+	// routes (/v1/*) still require the bearer APIKey. This exposes
+	// add/remove-account, OAuth, model policy and billing to anyone who can
+	// reach the port — opt in only on a trusted network. See authMiddleware.
+	UINoAuth bool `yaml:"ui_no_auth,omitempty"`
+
 	// DetectedLANIP and DetectedTailscaleIP are populated once at startup
 	// (see runServer) purely for the startup log message — not persisted.
 	DetectedLANIP       string `yaml:"-"`
@@ -250,6 +258,11 @@ func writeConfigTemplate(path string, cfg *Config) error {
 		"# serves from the Models tab at http://localhost:11434/ui#models — see\n" +
 		"# https://commandcode.ai/docs/plans/go#models for what's included on the\n" +
 		"# Go plan.\n" +
+		"\n" +
+		"# ui_no_auth: true serves /ui and the account-management API with no\n" +
+		"# authentication (the LLM proxy at /v1/* still needs api_key). Only set\n" +
+		"# this on a trusted network — it exposes account, OAuth, model and\n" +
+		"# billing management to anyone who can reach the port.\n" +
 		"\n" +
 		string(data)
 	return os.WriteFile(path, []byte(template), 0600)

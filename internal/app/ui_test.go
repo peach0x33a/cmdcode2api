@@ -286,3 +286,52 @@ func TestUIServesIndexHTML(t *testing.T) {
 		t.Fatalf("body does not look like the UI shell: %s", body)
 	}
 }
+
+// remoteAdminReq builds a GET for an admin path that looks nothing like a
+// loopback browser request: a public RemoteAddr, an arbitrary Host, and no
+// Authorization header. Without ui_no_auth this is exactly what
+// isLocalAdminRequest rejects.
+func remoteAdminReq(path string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.RemoteAddr = "203.0.113.5:54321"
+	req.Host = "gateway.example.net"
+	return req
+}
+
+func TestUINoAuthAllowsRemoteAdminSurfaceWithoutToken(t *testing.T) {
+	cfg := &Config{APIKey: "secret", UINoAuth: true}
+	pool := newTestAccountPool(testAccountEntry{Name: "a", Client: NewCCClient("key", "http://a.example")})
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
+
+	for _, path := range []string{"/ui", "/accounts"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, remoteAdminReq(path))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s with ui_no_auth: status = %d, want 200; body = %s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestUINoAuthDefaultStillRejectsRemoteAdminSurface(t *testing.T) {
+	cfg := &Config{APIKey: "secret"} // UINoAuth defaults false
+	pool := newTestAccountPool(testAccountEntry{Name: "a", Client: NewCCClient("key", "http://a.example")})
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, remoteAdminReq("/accounts"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /accounts without ui_no_auth: status = %d, want 401", rec.Code)
+	}
+}
+
+func TestUINoAuthStillRequiresTokenForProxyRoutes(t *testing.T) {
+	cfg := &Config{APIKey: "secret", UINoAuth: true}
+	pool := newTestAccountPool(testAccountEntry{Name: "a", Client: NewCCClient("key", "http://a.example")})
+	handler := newHandler(pool, cfg, &UsageTracker{}, noopReauthManager(), testStore(t), NewBillingTracker())
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, remoteAdminReq("/v1/models"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /v1/models with ui_no_auth but no key: status = %d, want 401 (proxy routes are never exempt)", rec.Code)
+	}
+}

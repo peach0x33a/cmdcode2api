@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g. v1.2.3)"
+        required: true
+      prerelease:
+        description: "Mark as pre-release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary archives
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.inputs.version }}"
+          mkdir -p build dist
+          for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os="${t%/*}"; arch="${t#*/}"
+            bin="cmdcode2api"; [ "$os" = "windows" ] && bin="cmdcode2api.exe"
+            label="$os"; [ "$os" = "darwin" ] && label="macos"
+            echo "==> $os/$arch"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
+              -o "build/$bin" ./cmd/cmdcode2api
+            name="cmdcode2api_${VERSION}_${label}_${arch}"
+            if [ "$os" = "windows" ]; then
+              (cd build && zip -q "../dist/${name}.zip" "$bin")
+            else
+              tar -C build -czf "dist/${name}.tar.gz" "$bin"
+            fi
+            rm -f "build/$bin"
+          done
+
+      - name: Build .deb packages
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.inputs.version }}"
+          debver="${VERSION#v}"
+          for arch in amd64 arm64; do
+            root="debpkg_${arch}"
+            rm -rf "$root"
+            mkdir -p "$root/DEBIAN" "$root/usr/bin"
+            GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
+              -o "$root/usr/bin/cmdcode2api" ./cmd/cmdcode2api
+            {
+              echo "Package: cmdcode2api"
+              echo "Version: ${debver}"
+              echo "Section: utils"
+              echo "Priority: optional"
+              echo "Architecture: ${arch}"
+              echo "Maintainer: FlightlessWeasel <jasonb.194@gmail.com>"
+              echo "Description: cmdcode2api server"
+            } > "$root/DEBIAN/control"
+            dpkg-deb --build --root-owner-group "$root" \
+              "dist/cmdcode2api_${debver}_${arch}.deb"
+          done
+
+      - name: Checksums
+        run: (cd dist && sha256sum * | tee SHA256SUMS.txt)
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.inputs.version }}"
+          args=(--title "$VERSION" --generate-notes --target "$GITHUB_SHA")
+          [ "${{ github.event.inputs.prerelease }}" = "true" ] && args+=(--prerelease)
+          gh release create "$VERSION" dist/* "${args[@]}"

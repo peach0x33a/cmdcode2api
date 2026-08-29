@@ -1,4 +1,5 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { fetchVersion } from "./api";
 import Accounts from "./Accounts";
 import Models from "./Models";
 import Setup from "./Setup";
@@ -13,6 +14,11 @@ function tabFromHash(hash: string): TabId {
 
 export default function App() {
   const [active, setActive] = useState<TabId>(() => tabFromHash(window.location.hash));
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    fetchVersion().then(setVersion);
+  }, []);
 
   const handleSelect = useCallback((id: TabId) => {
     setActive(id);
@@ -35,6 +41,7 @@ export default function App() {
         Served from the gateway itself. Opened from this machine
         (127.0.0.1/localhost), it just works; from another device on your
         network or Tailscale, it needs the gateway's API key to unlock.
+        {version ? <span className="footer-version"> · {version}</span> : null}
       </footer>
     </div>
   );

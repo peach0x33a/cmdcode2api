@@ -99,7 +99,7 @@ func newHandlerWithPolicy(pool *AccountPool, cfg *Config, usage *UsageTracker, r
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"status":"ok"}`)
+		fmt.Fprintf(w, `{"status":"ok","version":%q}`, Version)
 	})
 	mux.HandleFunc("/v1/chat/completions", handleChatCompletionsWithPolicy(pool, cfg, usage, policy))
 	// /v1/responses inherits bearer auth + CORS from the global middleware

@@ -4,14 +4,27 @@ import {
   deleteAccount,
   fetchAccounts,
   fetchBilling,
+  fetchConnection,
   pollReauth,
   probeAccounts,
   saveBillingToken,
   startReauth,
 } from "./api";
+import CopyField from "./CopyField";
 import ListPanel from "./ListPanel";
 import { errorMessage, errorSession, TERMINAL_REAUTH_STATUSES } from "./reauth";
-import type { AccountBilling, AccountView, ReauthSession } from "./types";
+import type { AccountBilling, AccountView, ConnectionInfo, ReauthSession } from "./types";
+
+// hostOf pulls just the hostname out of a base URL like
+// "http://192.168.1.50:11434/v1", for splicing into the ssh example below.
+function hostOf(url: string | undefined): string {
+  if (!url) return "";
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
 
 const POLL_INTERVAL_MS = 15000;
 const REAUTH_POLL_MS = 2000;
@@ -24,6 +37,7 @@ export default function Accounts() {
   const [error, setError] = useState("");
   const [newName, setNewName] = useState("");
   const [reauthSessions, setReauthSessions] = useState<Record<string, ReauthSession>>({});
+  const [conn, setConn] = useState<ConnectionInfo | null>(null);
   const pollTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const loadAccounts = useCallback(async () => {
@@ -63,6 +77,14 @@ export default function Accounts() {
     const id = setInterval(loadBilling, POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [loadBilling]);
+
+  useEffect(() => {
+    // Best-effort: the headless-auth help renders fine without it, so a
+    // failure here is swallowed rather than surfaced in the error banner.
+    fetchConnection()
+      .then(setConn)
+      .catch(() => {});
+  }, []);
 
   const handleSaveToken = useCallback(async (name: string, sessionToken: string) => {
     const row = await saveBillingToken(name, sessionToken);
@@ -174,6 +196,13 @@ export default function Accounts() {
     [newName, handleReauth]
   );
 
+  // Prefer a Tailscale or LAN address for the ssh example; a loopback host is
+  // useless as an ssh target, so fall back to the "server" placeholder.
+  const sshHost =
+    [conn?.tailscale_base_url, conn?.lan_base_url, conn?.base_url]
+      .map(hostOf)
+      .find((h) => h && h !== "localhost" && h !== "127.0.0.1") || "server";
+
   return (
     <div>
       <p className="subtitle">Command Code accounts configured for this gateway.</p>
@@ -246,11 +275,26 @@ export default function Accounts() {
           machine without a browser, forward that port over SSH from the machine
           you&rsquo;re browsing from (Windows included).
         </p>
+        {conn ? (
+          <div className="snippet">
+            <div className="snippet-label">
+              This gateway is reachable at &mdash; pick the address you can SSH to
+              and browse:
+            </div>
+            <CopyField label="Base URL" value={conn.base_url} />
+            {conn.lan_base_url ? (
+              <CopyField label="LAN URL" value={conn.lan_base_url} />
+            ) : null}
+            {conn.tailscale_base_url ? (
+              <CopyField label="Tailscale URL" value={conn.tailscale_base_url} />
+            ) : null}
+          </div>
+        ) : null}
         <ol>
           <li>
             From your workstation, open an SSH session that forwards the callback
             port, and leave it open for the whole flow:
-            <pre className="code-block">ssh -L 5959:localhost:5959 user@server</pre>
+            <pre className="code-block">ssh -L 5959:localhost:5959 user@{sshHost}</pre>
           </li>
           <li>
             Back in this UI, click &ldquo;Add account&rdquo; or

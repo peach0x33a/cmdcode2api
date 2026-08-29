@@ -31,6 +31,7 @@ func Run() {
 	debug := flag.Bool("debug", false, "print request body and all CC SSE events to stderr")
 	allowLAN := flag.Bool("allow-lan", false, "allow devices on the local network to reach this gateway (requires the API key; see README)")
 	allowTailscale := flag.Bool("allow-tailscale", false, "allow devices reachable via Tailscale to reach this gateway (requires the API key; see README)")
+	uiNoAuth := flag.Bool("ui-no-auth", false, "serve the web UI and account-management API (/ui, /accounts*, /admin/*) with no authentication — only use on a trusted network")
 	flag.Parse()
 
 	cfgPath := findConfig()
@@ -175,6 +176,9 @@ Use the local client key above as the Bearer token for your OpenAI client.
 	}
 	if *allowTailscale {
 		cfg.AllowTailscale = true
+	}
+	if *uiNoAuth {
+		cfg.UINoAuth = true
 	}
 	if (cfg.AllowLAN || cfg.AllowTailscale) && cfg.Host == "localhost" {
 		log.Printf("allow_lan/allow_tailscale enabled: switching host from localhost to 0.0.0.0 so the network can actually reach it")

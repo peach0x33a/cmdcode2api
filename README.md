@@ -168,6 +168,7 @@ Fields:
 - `port` — local listen port. Defaults to `11434`.
 - `allow_lan` — when `true`, other devices on your local network can reach this gateway. Detects your LAN IP automatically at startup and prints it in the log. Defaults to `false`. If `host` is still the default `localhost`, enabling this switches it to `0.0.0.0` for you.
 - `allow_tailscale` — same, but for a device reachable over [Tailscale](https://tailscale.com/), if it's installed and connected on this machine. Detects the Tailscale IP automatically at startup. Defaults to `false`.
+- `ui_no_auth` — when `true`, serves `/ui` and the account-management API (`/accounts*`, `/admin/*`) with no authentication; the LLM proxy at `/v1/*` still requires `api_key`. Trusted networks only: it exposes add/remove account, OAuth, model policy and billing to anyone who can reach the port. Defaults to `false`. Also settable per-run with `--ui-no-auth`.
 - `model_overrides` — per-model enabled/disabled overrides, keyed by exact model ID. This is the only way to enable a model — see below.
 - `discord_webhook_url` — optional Discord webhook URL for five-hour/weekly usage threshold and subscription-ending alerts. The URL is never logged.
 - `discord_alert_state_file` — optional durable deduplication state path; defaults to `discord-alerts.json`.
@@ -182,6 +183,14 @@ weaken authentication. The web UI's tokenless convenience login only
 applies to a genuine same-machine (loopback) request; from a LAN or
 Tailscale device (or anywhere else) you still need the `api_key`, which the
 web UI will prompt you for the first time you open it from that device.
+
+`--ui-no-auth` (or `ui_no_auth: true` in `config.yaml`) removes that
+requirement for the admin surface only, so the web UI loads from a remote
+browser without pasting in the key. It does not touch the `/v1/*` proxy
+routes, which still require `api_key`. Use it only on a trusted network:
+anyone who can reach the port can then add or remove accounts, run the
+OAuth flow, change model policy and read billing. The startup log prints a
+`WARNING: ui_no_auth is set` line while it is active.
 
 If you have a `config.yaml` from before multi-account support, its single
 `commandcode: {api_key, base_url}` block is migrated automatically into an

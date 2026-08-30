@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 )
+
+// Version is the program version, formatted as vX.Y.Z.
+const Version = "v0.1.0"
 
 const configFile = "config.yaml"
 
@@ -15,7 +19,13 @@ func Run() {
 	host := flag.String("host", "", "HTTP listen host，例如 localhost 或 0.0.0.0")
 	port := flag.Int("port", 0, "HTTP listen port")
 	debug := flag.Bool("debug", false, "print request body and all CC SSE events to stderr")
+	version := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *version {
+		fmt.Printf("cmdcode2api %s (go %s)\n", Version, runtime.Version())
+		os.Exit(0)
+	}
 
 	cfgPath := findConfig()
 

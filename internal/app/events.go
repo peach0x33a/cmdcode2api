@@ -222,7 +222,7 @@ func (n *ccEventNormalizer) drainToolInputs() ([]normalizedCCEvent, error) {
 			n.forgetToolInput(id)
 			continue
 		}
-		log.Printf("%s stream ended with tool input %q (tool %q) still buffered; recovering it",
+		log.Printf("%s stream ended with buffered tool input %q (tool %q); recovering",
 			colorize("[WARN]", ansiYellow), id, n.toolInputToolName[id])
 		call, ok, err := n.finishToolInput(CCStreamEvent{Type: "tool-input-end", ID: id})
 		if err != nil {
@@ -614,11 +614,11 @@ func toolCallFromEvent(ev CCStreamEvent) (ToolCall, bool, error) {
 	if strings.TrimSpace(id) == "" {
 		synthesized, ok := newSyntheticCallID("call_recovered_")
 		if !ok {
-			log.Printf("%s tool-call event for tool %q has no id and none could be generated; skipping",
+			log.Printf("%s tool-call event for tool %q missing id; no synthetic id available, skipping",
 				colorize("[WARN]", ansiYellow), ev.ToolName)
 			return ToolCall{}, false, nil
 		}
-		log.Printf("%s tool-call event for tool %q arrived without an id; synthesized %s",
+		log.Printf("%s tool-call event for tool %q missing id; synthesized %s",
 			colorize("[WARN]", ansiYellow), ev.ToolName, synthesized)
 		id = synthesized
 	}

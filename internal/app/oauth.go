@@ -184,7 +184,7 @@ Waiting for authorization, timeout: %s
 		if cb.State != state {
 			return "", fmt.Errorf("state token 不匹配，可能被篡改")
 		}
-		log.Printf("✓ 授权成功 — 用户: %s, Key: %s", cb.UserName, cb.KeyName)
+		log.Printf("✓ OAuth success: user %s, key %s", cb.UserName, cb.KeyName)
 		return cb.APIKey, nil
 	case err := <-errCh:
 		server.Close()

@@ -33,49 +33,49 @@ func Run() {
 	if *oauthMode {
 		cfg, err := loadConfig(cfgPath)
 		if err != nil {
-			log.Fatalf("load config: %v", err)
+			log.Fatalf("load config failed: %v", err)
 		}
 		if cfg == nil {
 			// 没有配置，先生成一份
 			cfg2, err := defaultConfig()
 			if err != nil {
-				log.Fatalf("create config: %v", err)
+				log.Fatalf("create config failed: %v", err)
 			}
 			if err := writeConfigTemplate(cfgPath, &cfg2); err != nil {
-				log.Fatalf("create config: %v", err)
+				log.Fatalf("create config failed: %v", err)
 			}
 			cfg = &cfg2
 		}
 
 		apiKey, err := runOAuth(OAuthOptions{CallbackURL: *oauthCallback})
 		if err != nil {
-			log.Fatalf("OAuth 失败: %v", err)
+			log.Fatalf("OAuth failed: %v", err)
 		}
 
 		cfg.CommandCode.APIKey = apiKey
 		if err := saveConfig(cfgPath, cfg); err != nil {
-			log.Fatalf("保存配置失败: %v", err)
+			log.Fatalf("save config failed: %v", err)
 		}
 
-		fmt.Printf("\n✅ API Key 已写入 %s\n", cfgPath)
-		fmt.Println("   现在可以直接运行 cmdcode2api 启动服务了。")
+		fmt.Printf("\n✅ API key written to %s\n", cfgPath)
+		fmt.Println("   You can now run cmdcode2api to start the server.")
 		return
 	}
 
 	// 正常模式
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Fatalf("load config failed: %v", err)
 	}
 
 	// 首次运行 — 生成配置
 	if cfg == nil {
 		cfg2, err := defaultConfig()
 		if err != nil {
-			log.Fatalf("create config: %v", err)
+			log.Fatalf("create config failed: %v", err)
 		}
 		if err := writeConfigTemplate(cfgPath, &cfg2); err != nil {
-			log.Fatalf("create config: %v", err)
+			log.Fatalf("create config failed: %v", err)
 		}
 		fmt.Printf(`cmdcode2api initialized.
 
@@ -93,7 +93,7 @@ Use the local client key above as the Bearer token for your OpenAI client.
 
 	// 检查是否填了 CC API Key
 	if cfg.CommandCode.APIKey == "" {
-		fmt.Println("Command Code API key is not configured.")
+		fmt.Println("Command Code API key not configured.")
 		fmt.Println("Run ./cmdcode2api --oauth, then start cmdcode2api again.")
 		os.Exit(1)
 	}
@@ -124,10 +124,10 @@ Use the local client key above as the Bearer token for your OpenAI client.
 	FetchProviderModels(cfg.CommandCode.BaseURL, cfg.CommandCode.APIKey)
 
 	if err := runServer(cc, cfg, usage); err != nil {
-		log.Fatalf("server: %v", err)
+		log.Fatalf("server failed: %v", err)
 	}
 	if err := usage.save(); err != nil {
-		log.Printf("save usage: %v", err)
+		log.Printf("save usage failed: %v", err)
 	}
 }
 

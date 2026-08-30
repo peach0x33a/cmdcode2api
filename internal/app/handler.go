@@ -57,7 +57,7 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 			}
 			var upstreamErr *upstreamAPIError
 			if errors.As(err, &upstreamErr) {
-				log.Printf("%s cc send: %v", colorize("[ERROR]", ansiRed), upstreamErr)
+				log.Printf("%s cc request failed: %v", colorize("[ERROR]", ansiRed), upstreamErr)
 				if upstreamErr.RetryAfter != "" {
 					w.Header().Set("Retry-After", upstreamErr.RetryAfter)
 				}
@@ -67,7 +67,7 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 				writeErrorWithCode(w, upstreamErr.Status, upstreamErr.Type, upstreamErr.Code, upstreamErr.Message)
 				return
 			}
-			log.Printf("%s cc send: %v", colorize("[ERROR]", ansiRed), err)
+			log.Printf("%s cc request failed: %v", colorize("[ERROR]", ansiRed), err)
 			writeError(w, http.StatusBadGateway, "server_error", "upstream error: "+err.Error())
 			return
 		}
@@ -79,7 +79,7 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 			handleNonStream(w, resp, req.Model, usage, cfg)
 		}
 		if err := usage.save(); err != nil {
-			log.Printf("%s save usage: %v", colorize("[ERROR]", ansiRed), err)
+			log.Printf("%s save usage failed: %v", colorize("[ERROR]", ansiRed), err)
 		}
 	}
 }
@@ -296,7 +296,7 @@ func handleStreamWithOptions(w http.ResponseWriter, resp *http.Response, model s
 	})
 
 	if err != nil {
-		log.Printf("%s stream parse: %v", colorize("[ERROR]", ansiRed), err)
+		log.Printf("%s stream parse failed: %v", colorize("[ERROR]", ansiRed), err)
 		failStream("upstream_stream_error", "upstream stream error: "+err.Error())
 	} else if !done {
 		message := "upstream connection closed before a finish event"
@@ -357,7 +357,7 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 	})
 
 	if err != nil {
-		log.Printf("%s non-stream parse: %v", colorize("[ERROR]", ansiRed), err)
+		log.Printf("%s non-stream parse failed: %v", colorize("[ERROR]", ansiRed), err)
 		writeErrorWithCode(w, http.StatusBadGateway, "server_error", "upstream_stream_error", "upstream stream error: "+err.Error())
 		return
 	}

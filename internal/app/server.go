@@ -99,12 +99,12 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
-			log.Printf("shutdown: %v", err)
+			log.Printf("shutdown failed: %v", err)
 		}
 		close(idleConnsClosed)
 	}()
 
-	log.Printf("cmdcode2api starting on http://%s", addr)
+	log.Printf("cmdcode2api listening on http://%s", addr)
 	loadedModels := len(availableModels())
 	availableCount := 0
 	for _, model := range modelCatalog {

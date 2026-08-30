@@ -17,26 +17,26 @@ func FetchProviderModels(baseURL, apiKey string) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		log.Printf("[WARN] fetch models: create request: %v", err)
+		log.Printf("[WARN] fetch models: build request failed: %v (using empty catalog)", err)
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[WARN] fetch models: %v (using empty catalog)", err)
+		log.Printf("[WARN] fetch models: request failed: %v (using empty catalog)", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		log.Printf("[WARN] fetch models: http %d (using empty catalog)", resp.StatusCode)
+		log.Printf("[WARN] fetch models: unexpected status %d (using empty catalog)", resp.StatusCode)
 		return
 	}
 
 	var list CCProviderModelList
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		log.Printf("[WARN] fetch models: decode: %v (using empty catalog)", err)
+		log.Printf("[WARN] fetch models: decode response failed: %v (using empty catalog)", err)
 		return
 	}
 

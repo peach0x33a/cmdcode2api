@@ -105,6 +105,12 @@ exclude_models: []
 ./cmdcode2api
 ```
 
+Print the version and Go runtime version, then exit:
+
+```bash
+./cmdcode2api --version
+```
+
 To listen on all interfaces, useful for systemd or a remote server:
 
 ```bash

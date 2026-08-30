@@ -265,7 +265,7 @@ func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, e
 		raw = encoded
 		repairKind = kind
 		if kind != toolInputRepairNone {
-			log.Printf("%s normalized inline tool input %q for tool %q with repair kind %d",
+			log.Printf("%s normalized inline tool input %q for tool %q with repair kind %s",
 				colorize("[WARN]", ansiYellow), id, name, kind)
 		}
 	} else {
@@ -274,7 +274,7 @@ func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, e
 			return ToolCall{}, false, fmt.Errorf("normalize tool input %q: %w", id, err)
 		}
 		if kind != toolInputRepairNone {
-			log.Printf("%s normalized tool input %q for tool %q with repair kind %d",
+			log.Printf("%s normalized tool input %q for tool %q with repair kind %s",
 				colorize("[WARN]", ansiYellow), id, name, kind)
 		}
 		raw = encoded
@@ -628,7 +628,7 @@ func toolCallFromEvent(ev CCStreamEvent) (ToolCall, bool, error) {
 		return ToolCall{}, false, fmt.Errorf("marshal tool call %q: %w", id, err)
 	}
 	if repairKind != toolInputRepairNone {
-		log.Printf("%s normalized tool-call input for tool %q with repair kind %d",
+		log.Printf("%s normalized tool-call input for tool %q with repair kind %s",
 			colorize("[WARN]", ansiYellow), ev.ToolName, repairKind)
 	}
 	call := ToolCall{

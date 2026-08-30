@@ -166,6 +166,23 @@ const (
 	toolInputRepairFallback
 )
 
+// String returns a human-readable name for ops logs; a numeric fallback is
+// returned for unknown values so the method never panics.
+func (k toolInputRepairKind) String() string {
+	switch k {
+	case toolInputRepairNone:
+		return "none"
+	case toolInputRepairSyntax:
+		return "syntax"
+	case toolInputRepairTruncated:
+		return "truncated"
+	case toolInputRepairFallback:
+		return "fallback"
+	default:
+		return fmt.Sprintf("unknown(%d)", uint8(k))
+	}
+}
+
 type ToolCall struct {
 	ID       string   `json:"id"`
 	Type     string   `json:"type"` // "function"

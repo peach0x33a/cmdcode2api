@@ -36,7 +36,8 @@ jobs:
             bin="cmdcode2api"; [ "$os" = "windows" ] && bin="cmdcode2api.exe"
             label="$os"; [ "$os" = "darwin" ] && label="macos"
             echo "==> $os/$arch"
-            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
+            GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X cmdcode2api/internal/app.Version=${VERSION}" \
               -o "build/$bin" ./cmd/cmdcode2api
             name="cmdcode2api_${VERSION}_${label}_${arch}"
             if [ "$os" = "windows" ]; then
@@ -58,7 +59,8 @@ jobs:
             root="debpkg_${arch}"
             rm -rf "$root"
             mkdir -p "$root/DEBIAN" "$root/usr/bin"
-            GOOS=linux GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
+            GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X cmdcode2api/internal/app.Version=${VERSION}" \
               -o "$root/usr/bin/cmdcode2api" ./cmd/cmdcode2api
             {
               echo "Package: cmdcode2api"

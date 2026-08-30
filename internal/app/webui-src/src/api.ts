@@ -247,6 +247,18 @@ export async function fetchConnection(): Promise<ConnectionInfo> {
   return assertConnectionInfo(await jsonFetch("/admin/connection"));
 }
 
+// fetchVersion reads the build tag from the unauthenticated /health endpoint
+// (see internal/app/server.go). Returns "" when the field is missing or the
+// request fails, so the footer can just fall back to showing nothing.
+export async function fetchVersion(): Promise<string> {
+  try {
+    const body = await jsonFetch("/health");
+    return isRecord(body) && typeof body.version === "string" ? body.version : "";
+  } catch {
+    return "";
+  }
+}
+
 export async function fetchUsage(): Promise<UsageReport> {
   return assertUsageReport(await jsonFetch("/admin/usage"));
 }

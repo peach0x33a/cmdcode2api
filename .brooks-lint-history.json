@@ -1,0 +1,13 @@
+[
+  {
+    "date": "2026-08-14",
+    "mode": "PR Review",
+    "score": 54,
+    "findings": {
+      "critical": 2,
+      "warning": 3,
+      "suggestion": 1
+    },
+    "scope": "merge c0d1c7c^1..c0d1c7c (13 internal/app files; sampled +1571/-165)"
+  }
+]

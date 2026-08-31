@@ -193,6 +193,12 @@ button.danger:hover {
   max-width: 260px;
 }
 
+.add-account-hint {
+  margin: -0.5rem 0 1.25rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
 .reauth-status {
   font-size: 0.78rem;
   margin-top: 0.25rem;

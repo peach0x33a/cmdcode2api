@@ -1100,10 +1100,14 @@ func handleResponsesWithPolicy(pool *AccountPool, cfg *Config, usage *UsageTrack
 			return
 		}
 
+		setMonitorModel(r.Context(), chatReq.Model, chatReq.Stream)
+
 		disp, ok := dispatchToCCWithPolicy(w, r.Context(), pool, cfg, policy, chatReq)
 		if !ok {
 			return
 		}
+		setMonitorAccount(r.Context(), disp.account)
+		wrapUpstreamBody(r.Context(), disp.resp)
 
 		if chatReq.Stream {
 			handleResponsesStream(w, disp.resp, chatReq.Model, usage, cfg, true, disp.account)

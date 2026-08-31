@@ -99,7 +99,7 @@ func newHandlerWithPolicy(pool *AccountPool, cfg *Config, usage *UsageTracker, r
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"status":"ok"}`)
+		fmt.Fprintf(w, `{"status":"ok","version":%q}`, Version)
 	})
 	mux.HandleFunc("/v1/chat/completions", handleChatCompletionsWithPolicy(pool, cfg, usage, policy))
 	// /v1/responses inherits bearer auth + CORS from the global middleware
@@ -151,6 +151,10 @@ func newHandlerWithPolicy(pool *AccountPool, cfg *Config, usage *UsageTracker, r
 	// most recently fetched subscription/credits/session snapshot).
 	mux.HandleFunc("/admin/billing", handleAdminBilling(billing))
 	mux.HandleFunc("/admin/alerts", handleAdminDiscordAlerts(cfg, store, billing))
+	// /admin/monitor streams live model-API call metadata to the web UI's
+	// Monitoring tab as SSE — see monitor.go. monitorMiddleware below feeds it.
+	monitorHub := newMonitorHub()
+	mux.HandleFunc("/admin/monitor", handleAdminMonitor(monitorHub))
 	// /accounts/billing-token sets (or updates) an account's billing session
 	// token and immediately triggers a fetch for it, so the web UI gets
 	// fresh billing data without waiting for the next background refresh.
@@ -163,6 +167,7 @@ func newHandlerWithPolicy(pool *AccountPool, cfg *Config, usage *UsageTracker, r
 	mux.Handle("/favicon.ico", faviconHandler())
 
 	var handler http.Handler = mux
+	handler = monitorMiddleware(monitorHub)(handler)
 	handler = authMiddleware(cfg)(handler)
 	handler = loggingMiddleware(handler)
 	handler = corsMiddleware(handler)

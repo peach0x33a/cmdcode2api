@@ -155,7 +155,17 @@ export default function AccountRow({
                       {expired ? (
                         <span className="billing-expired">Expired</span>
                       ) : (
-                        billing.subscription?.planId || "—"
+                        <>
+                          {billing.subscription?.planId || "—"}
+                          {billing.subscription?.cancelAtPeriodEnd ? (
+                            <span className="muted"> · Cancels at period end</span>
+                          ) : (
+                            <span className="billing-warning" title="This subscription is not set to cancel and will renew at the end of the period.">
+                              {" "}
+                              ⚠ Auto-renews
+                            </span>
+                          )}
+                        </>
                       )}
                     </span>
                   </div>

@@ -49,7 +49,9 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-go build -o "$BUILD_DIR/cmdcode2api" ./cmd/cmdcode2api
+VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+go build -ldflags "-X cmdcode2api/internal/app.Version=${VERSION}" \
+  -o "$BUILD_DIR/cmdcode2api" ./cmd/cmdcode2api
 
 if $FORCE && systemctl is-enabled "$SERVICE" &>/dev/null; then
   echo "==> stop ${SERVICE} (--force)"

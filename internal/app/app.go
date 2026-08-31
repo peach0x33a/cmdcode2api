@@ -16,9 +16,12 @@ const configFile = "config.yaml"
 // configured account once the server is running.
 const healthCheckInterval = 10 * time.Minute
 
-// billingFetchInterval is how often each account's billing/session data is
-// refetched once the server is running.
-const billingFetchInterval = 10 * time.Minute
+// billingFetchInterval is how often each account's billing/session data
+// (subscription, credits, and the rolling usage windows) is refetched once
+// the server is running. Kept short so the Accounts tab's usage bars track
+// real consumption closely; the cost is three upstream calls per account
+// per tick.
+const billingFetchInterval = 1 * time.Minute
 
 func Run() {
 	oauthMode := flag.Bool("oauth", false, "authorize via browser OAuth to obtain a Command Code API Key")

@@ -316,7 +316,8 @@ button.danger:hover {
   color: var(--muted);
 }
 
-.billing-expired {
+.billing-expired,
+.billing-warning {
   color: var(--stale);
   font-weight: 600;
 }

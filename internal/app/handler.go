@@ -49,11 +49,14 @@ func handleChatCompletionsWithPolicy(pool *AccountPool, cfg *Config, usage *Usag
 			writeError(w, 400, "invalid_request_error", "bad request body: "+err.Error())
 			return
 		}
+		setMonitorModel(r.Context(), req.Model, req.Stream)
 
 		disp, ok := dispatchToCCWithPolicy(w, r.Context(), pool, cfg, policy, &req)
 		if !ok {
 			return
 		}
+		setMonitorAccount(r.Context(), disp.account)
+		wrapUpstreamBody(r.Context(), disp.resp)
 
 		if req.Stream {
 			includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
@@ -213,7 +216,9 @@ func sendWithFailover(ctx context.Context, pool *AccountPool, req *ChatRequest) 
 		client := acct.client
 		acct.mu.Unlock()
 
+		sendStart := time.Now()
 		resp, err := client.Send(ctx, req)
+		monitorFromContext(ctx).addUpstream(time.Since(sendStart))
 		if err == nil {
 			pool.MarkHealthy(acct.Name)
 			return ccDispatch{resp: resp, account: acct.Name}, nil

@@ -6,6 +6,7 @@ import type {
   AdminModel,
   ApiErrorBody,
   ConnectionInfo,
+  MonitorEvent,
   ReauthSession,
   UsageReport,
   DiscordAlertsConfig,
@@ -275,4 +276,100 @@ export async function saveBillingToken(name: string, sessionToken: string): Prom
       body: JSON.stringify({ name, session_token: sessionToken }),
     })
   );
+}
+
+function isMonitorEvent(value: unknown): value is MonitorEvent {
+  return (
+    isRecord(value) &&
+    typeof value.time === "string" &&
+    typeof value.method === "string" &&
+    typeof value.path === "string" &&
+    typeof value.status === "number" &&
+    typeof value.stream === "boolean" &&
+    typeof value.total_us === "number" &&
+    typeof value.proxy_us === "number" &&
+    typeof value.upstream_us === "number"
+  );
+}
+
+export type MonitorStreamStatus = "connecting" | "live" | "reconnecting" | "error";
+
+export interface MonitorStreamHandle {
+  close: () => void;
+}
+
+// openMonitorStream connects to /admin/monitor and calls onEvent for each
+// model-API call the gateway handles from now on — it never replays past
+// calls. onStatus reports connection transitions. The server's 600s write
+// timeout (see runServer) ends the response every ~10 min regardless of the
+// SSE heartbeat, so a periodic reconnect is expected, not an error — this
+// reconnects on its own until close() is called. Uses fetch + a stream
+// reader rather than EventSource so the stored API key can travel in the
+// Authorization header (needed when the UI is opened from another device).
+export function openMonitorStream(
+  onEvent: (ev: MonitorEvent) => void,
+  onStatus: (status: MonitorStreamStatus) => void
+): MonitorStreamHandle {
+  let closed = false;
+  let active: AbortController | null = null;
+
+  async function connect(): Promise<void> {
+    if (closed) return;
+    const ac = new AbortController();
+    active = ac;
+    try {
+      const headers = new Headers();
+      const key = getStoredKey();
+      if (key) headers.set("Authorization", `Bearer ${key}`);
+      const res = await fetch("/admin/monitor", { headers, signal: ac.signal });
+      if (res.status === 401) {
+        onStatus("error");
+        return;
+      }
+      if (!res.ok || !res.body) throw new Error(`monitor stream failed: ${res.status}`);
+
+      onStatus("live");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        // A well-formed frame is tiny; if we've buffered this much without a
+        // separator the stream is junk — drop it rather than grow forever.
+        if (buf.length > 1_000_000) buf = "";
+        let sep: number;
+        while ((sep = buf.indexOf("\n\n")) !== -1) {
+          const frame = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          for (const line of frame.split("\n")) {
+            if (!line.startsWith("data:")) continue;
+            const payload = line.slice(5).trim();
+            if (!payload) continue;
+            try {
+              const parsed: unknown = JSON.parse(payload);
+              if (isMonitorEvent(parsed)) onEvent(parsed);
+            } catch {
+              // skip a malformed frame
+            }
+          }
+        }
+      }
+    } catch {
+      // fetch aborted or the connection dropped — fall through to reconnect
+    }
+    if (closed) return;
+    onStatus("reconnecting");
+    setTimeout(connect, 1500);
+  }
+
+  void connect();
+
+  return {
+    close() {
+      closed = true;
+      active?.abort();
+    },
+  };
 }

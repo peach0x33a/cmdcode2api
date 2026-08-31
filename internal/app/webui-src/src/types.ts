@@ -99,6 +99,29 @@ export interface UsageReport {
   accounts?: AccountUsage[];
 }
 
+// Mirrors internal/app/monitor.go's MonitorEvent JSON shape exactly — keep
+// in sync if its `json:` tags ever change. One model-API call observed live
+// by the Monitoring tab. Timings are microseconds:
+//   - upstream_us: time talking to Command Code (outbound call + reading its
+//     response stream)
+//   - proxy_us: the gateway's own work (decode, translate, normalize, write);
+//     total_us - upstream_us
+//   - total_us: whole request, wall clock
+
+export interface MonitorEvent {
+  time: string; // RFC 3339
+  method: string;
+  path: string;
+  model?: string;
+  account?: string;
+  status: number;
+  stream: boolean;
+  total_us: number;
+  proxy_us: number;
+  upstream_us: number;
+  client_ip?: string;
+}
+
 // Mirrors internal/app/billing.go's BillingSubscription, BillingWindow,
 // BillingCreditsResponse, and AccountBilling JSON shapes exactly — keep
 // these in sync if their `json:` tags ever change.

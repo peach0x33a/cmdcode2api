@@ -5,6 +5,7 @@ import Models from "./Models";
 import Setup from "./Setup";
 import Tabs, { TAB_ORDER, type TabId } from "./Tabs";
 import Usage from "./Usage";
+import Monitoring from "./Monitoring";
 import Alerts from "./Alerts";
 
 function tabFromHash(hash: string): TabId {
@@ -34,6 +35,7 @@ export default function App() {
       {active === "accounts" ? <Accounts /> : null}
       {active === "models" ? <Models /> : null}
       {active === "usage" ? <Usage /> : null}
+      {active === "monitor" ? <Monitoring /> : null}
       {active === "alerts" ? <Alerts /> : null}
       {active === "setup" ? <Setup /> : null}
 

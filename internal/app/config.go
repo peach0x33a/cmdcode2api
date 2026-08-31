@@ -46,6 +46,13 @@ type Account struct {
 	// for tokens about to expire.
 	SessionEmail     string     `yaml:"session_email,omitempty"`
 	SessionExpiresAt *time.Time `yaml:"session_expires_at,omitempty"`
+
+	// PlanExpiresAt is the subscription's currentPeriodEnd (the plan
+	// expiration / renewal date) from the billing subscriptions endpoint,
+	// cached here so it stays available after the session token expires and
+	// the billing API can no longer be queried. It is refreshed on every
+	// successful billing fetch and otherwise falls back to this stored value.
+	PlanExpiresAt *time.Time `yaml:"plan_expires_at,omitempty"`
 }
 
 type Config struct {
@@ -147,13 +154,13 @@ func upsertAccount(cfg *Config, acct Account) {
 }
 
 // preserveSessionFields backfills incoming's billing-session fields
-// (SessionToken/SessionEmail/SessionExpiresAt) from existing wherever incoming
-// left them at their zero value. The OAuth reauth flows (app.go, both the CLI
-// --oauth path and the HTTP /accounts/reauth path) rebuild an Account from
-// just the OAuth callback, which carries none of these; without this backfill
-// every reauth would silently wipe the billing session token from config.yaml.
-// A non-blank incoming value always wins, so SetSessionToken-style updates are
-// unaffected.
+// (SessionToken/SessionEmail/SessionExpiresAt/PlanExpiresAt) from existing
+// wherever incoming left them at their zero value. The OAuth reauth flows
+// (app.go, both the CLI --oauth path and the HTTP /accounts/reauth path)
+// rebuild an Account from just the OAuth callback, which carries none of these;
+// without this backfill every reauth would silently wipe the billing session
+// token from config.yaml. A non-blank incoming value always wins, so
+// SetSessionToken-style updates are unaffected.
 func preserveSessionFields(incoming *Account, existing Account) {
 	if incoming.SessionToken == "" {
 		incoming.SessionToken = existing.SessionToken
@@ -163,6 +170,9 @@ func preserveSessionFields(incoming *Account, existing Account) {
 	}
 	if incoming.SessionExpiresAt == nil {
 		incoming.SessionExpiresAt = existing.SessionExpiresAt
+	}
+	if incoming.PlanExpiresAt == nil {
+		incoming.PlanExpiresAt = existing.PlanExpiresAt
 	}
 }
 

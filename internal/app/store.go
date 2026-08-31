@@ -71,11 +71,14 @@ func (s *ConfigStore) SetSessionToken(name, token string) (bool, error) {
 	return false, nil
 }
 
-// SetSessionIdentity updates the billing session's identity metadata
-// (SessionEmail/SessionExpiresAt, from a successful /auth/get-session fetch)
-// for the account named name and persists it. It reports whether an account
-// with that name exists.
-func (s *ConfigStore) SetSessionIdentity(name, email string, expiresAt *time.Time) (bool, error) {
+// SetSessionIdentity updates the billing session's durable metadata for the
+// account named name and persists it in a single write: SessionEmail and
+// SessionExpiresAt from a successful /auth/get-session fetch, plus planExpiresAt
+// (the subscription's currentPeriodEnd) so the plan expiration date outlives
+// the session token. A nil planExpiresAt leaves the stored value untouched, so
+// a refresh that could not reach the subscriptions endpoint does not wipe a
+// date learned earlier. It reports whether an account with that name exists.
+func (s *ConfigStore) SetSessionIdentity(name, email string, expiresAt, planExpiresAt *time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -83,6 +86,9 @@ func (s *ConfigStore) SetSessionIdentity(name, email string, expiresAt *time.Tim
 		if s.cfg.Accounts[i].Name == name {
 			s.cfg.Accounts[i].SessionEmail = email
 			s.cfg.Accounts[i].SessionExpiresAt = expiresAt
+			if planExpiresAt != nil {
+				s.cfg.Accounts[i].PlanExpiresAt = planExpiresAt
+			}
 			return true, saveConfig(s.path, s.cfg)
 		}
 	}

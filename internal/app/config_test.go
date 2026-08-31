@@ -16,6 +16,7 @@ import (
 // until the token is pasted back in by hand.
 func TestUpsertAccountPreservesBillingSessionOnReauth(t *testing.T) {
 	expires := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	planExpires := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
 	cfg := &Config{Accounts: []Account{{
 		Name:             "work",
 		APIKey:           "old-key",
@@ -23,6 +24,7 @@ func TestUpsertAccountPreservesBillingSessionOnReauth(t *testing.T) {
 		SessionToken:     "sess-abc123",
 		SessionEmail:     "me@example.com",
 		SessionExpiresAt: &expires,
+		PlanExpiresAt:    &planExpires,
 	}}}
 
 	reauthed := buildAccountFromCallback("work", oauthCallback{
@@ -46,6 +48,9 @@ func TestUpsertAccountPreservesBillingSessionOnReauth(t *testing.T) {
 	if got.SessionExpiresAt == nil || !got.SessionExpiresAt.Equal(expires) {
 		t.Fatalf("SessionExpiresAt = %v, want it preserved across reauth", got.SessionExpiresAt)
 	}
+	if got.PlanExpiresAt == nil || !got.PlanExpiresAt.Equal(planExpires) {
+		t.Fatalf("PlanExpiresAt = %v, want it preserved across reauth", got.PlanExpiresAt)
+	}
 }
 
 // Explicit non-blank values in the incoming account always win over the
@@ -54,11 +59,14 @@ func TestUpsertAccountPreservesBillingSessionOnReauth(t *testing.T) {
 func TestUpsertAccountIncomingSessionFieldsWin(t *testing.T) {
 	oldExpires := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	newExpires := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	oldPlan := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	newPlan := time.Date(2027, 2, 1, 0, 0, 0, 0, time.UTC)
 	cfg := &Config{Accounts: []Account{{
 		Name:             "work",
 		SessionToken:     "old-tok",
 		SessionEmail:     "old@example.com",
 		SessionExpiresAt: &oldExpires,
+		PlanExpiresAt:    &oldPlan,
 	}}}
 
 	upsertAccount(cfg, Account{
@@ -66,6 +74,7 @@ func TestUpsertAccountIncomingSessionFieldsWin(t *testing.T) {
 		SessionToken:     "new-tok",
 		SessionEmail:     "new@example.com",
 		SessionExpiresAt: &newExpires,
+		PlanExpiresAt:    &newPlan,
 	})
 
 	got := cfg.Accounts[0]
@@ -77,6 +86,9 @@ func TestUpsertAccountIncomingSessionFieldsWin(t *testing.T) {
 	}
 	if got.SessionExpiresAt == nil || !got.SessionExpiresAt.Equal(newExpires) {
 		t.Fatalf("SessionExpiresAt = %v, want %v", got.SessionExpiresAt, newExpires)
+	}
+	if got.PlanExpiresAt == nil || !got.PlanExpiresAt.Equal(newPlan) {
+		t.Fatalf("PlanExpiresAt = %v, want %v", got.PlanExpiresAt, newPlan)
 	}
 }
 

@@ -168,6 +168,10 @@ export interface AccountBilling {
   credits?: BillingCreditsResponse | null;
   session_email?: string;
   session_expires_at?: string | null;
+  // plan_expires_at is the subscription's currentPeriodEnd, cached server-side
+  // so it stays populated after the session token expires and `subscription`
+  // comes back null.
+  plan_expires_at?: string | null;
   fetched_at?: string | null;
   last_error?: string;
 }

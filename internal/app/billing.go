@@ -107,8 +107,14 @@ type BillingInfo struct {
 	Credits          *BillingCreditsResponse `json:"credits,omitempty"`
 	SessionEmail     string                  `json:"session_email,omitempty"`
 	SessionExpiresAt *time.Time              `json:"session_expires_at,omitempty"`
-	FetchedAt        *time.Time              `json:"fetched_at,omitempty"`
-	LastError        string                  `json:"last_error,omitempty"`
+	// PlanExpiresAt is the subscription's currentPeriodEnd, parsed. It is
+	// refreshed from a successful subscriptions fetch and otherwise carried
+	// over from the durable copy in config.yaml, so the plan expiration date
+	// remains reportable even after the session token expires and Subscription
+	// comes back nil.
+	PlanExpiresAt *time.Time `json:"plan_expires_at,omitempty"`
+	FetchedAt     *time.Time `json:"fetched_at,omitempty"`
+	LastError     string     `json:"last_error,omitempty"`
 }
 
 // AccountBilling is one account's row in a billing report.
@@ -226,9 +232,13 @@ func (t *BillingTracker) refreshOne(ctx context.Context, store *ConfigStore, acc
 	token := acct.SessionToken
 	info := &BillingInfo{}
 	// Start with the durable identity so a partial or malformed session
-	// response cannot erase fields learned by an earlier refresh.
+	// response cannot erase fields learned by an earlier refresh. PlanExpiresAt
+	// in particular has to survive a fully failed refresh: once the session
+	// token expires every billing call 401s, and this cached date is then the
+	// only plan expiration left to report.
 	info.SessionEmail = acct.SessionEmail
 	info.SessionExpiresAt = acct.SessionExpiresAt
+	info.PlanExpiresAt = acct.PlanExpiresAt
 	var errs []string
 	var latestToken string
 
@@ -244,6 +254,11 @@ func (t *BillingTracker) refreshOne(ctx context.Context, store *ConfigStore, acc
 		if refreshed != "" {
 			latestToken = refreshed
 			token = refreshed
+		}
+		if subsResp.Data != nil {
+			if end, err := time.Parse(time.RFC3339, subsResp.Data.CurrentPeriodEnd); err == nil {
+				info.PlanExpiresAt = &end
+			}
 		}
 	}
 
@@ -274,12 +289,14 @@ func (t *BillingTracker) refreshOne(ctx context.Context, store *ConfigStore, acc
 			latestToken = refreshed
 			token = refreshed
 		}
-		info.SessionEmail = sessionResp.User.Email
+		// Only overwrite the seeded fallback identity with values the response
+		// actually carried; a decoded-but-blank get-session must not erase what
+		// an earlier refresh learned.
+		if sessionResp.User.Email != "" {
+			info.SessionEmail = sessionResp.User.Email
+		}
 		if expiresAt, err := time.Parse(time.RFC3339, sessionResp.Session.ExpiresAt); err == nil {
 			info.SessionExpiresAt = &expiresAt
-		}
-		if err := storeSessionIdentity(store, acct.Name, info); err != nil {
-			log.Printf("[WARN] account %q: failed to persist session identity: %v", acct.Name, err)
 		}
 	}
 
@@ -288,6 +305,13 @@ func (t *BillingTracker) refreshOne(ctx context.Context, store *ConfigStore, acc
 	info.LastError = strings.Join(errs, "; ")
 	t.set(acct.Name, info)
 
+	// One config write covers every durable field (session identity + plan
+	// expiry) this refresh learned, and is skipped entirely when nothing
+	// changed — see persistDurableIdentity.
+	if err := persistDurableIdentity(store, acct, info); err != nil {
+		log.Printf("[WARN] account %q: failed to persist session identity: %v", acct.Name, err)
+	}
+
 	if latestToken != "" && latestToken != acct.SessionToken {
 		if _, err := store.SetSessionToken(acct.Name, latestToken); err != nil {
 			log.Printf("[WARN] account %q: failed to persist refreshed billing session token: %v", acct.Name, err)
@@ -295,17 +319,29 @@ func (t *BillingTracker) refreshOne(ctx context.Context, store *ConfigStore, acc
 	}
 }
 
-// storeSessionIdentity persists info's session email/expiry through store,
-// but only when at least one of them was actually populated by the
-// get-session response — an empty/zero SessionEmail+SessionExpiresAt would
-// otherwise silently clear previously known values on a response that
-// somehow decoded but left both fields blank.
-func storeSessionIdentity(store *ConfigStore, name string, info *BillingInfo) error {
-	if info.SessionEmail == "" && info.SessionExpiresAt == nil {
+// persistDurableIdentity writes info's session email/expiry and plan expiry
+// back through store, but only when at least one of those durable fields
+// differs from what acct (and therefore config.yaml) already holds. That guard
+// keeps a refresh where every endpoint failed — the expired-token case — from
+// rewriting config.yaml on every tick, and keeps a blank get-session response
+// from clearing values a previous refresh established.
+func persistDurableIdentity(store *ConfigStore, acct Account, info *BillingInfo) error {
+	if info.SessionEmail == acct.SessionEmail &&
+		timePtrEqual(info.SessionExpiresAt, acct.SessionExpiresAt) &&
+		timePtrEqual(info.PlanExpiresAt, acct.PlanExpiresAt) {
 		return nil
 	}
-	_, err := store.SetSessionIdentity(name, info.SessionEmail, info.SessionExpiresAt)
+	_, err := store.SetSessionIdentity(acct.Name, info.SessionEmail, info.SessionExpiresAt, info.PlanExpiresAt)
 	return err
+}
+
+// timePtrEqual reports whether two optional timestamps denote the same instant,
+// treating two nils as equal and a nil/non-nil pair as unequal.
+func timePtrEqual(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
 }
 
 // fetchBillingJSON makes a cookie-authenticated GET request to url using

@@ -96,6 +96,11 @@ export default function AccountRow({
 
   const expired = isSubscriptionExpired(billing?.subscription);
   const sessionWorking = !!billing && !billing.last_error;
+  // Prefer the live subscription's period end; fall back to the server-cached
+  // plan_expires_at so the date still shows once the session token expires and
+  // `subscription` comes back null.
+  const planExpiration =
+    billing?.subscription?.currentPeriodEnd || billing?.plan_expires_at || null;
 
   return (
     <>
@@ -167,7 +172,7 @@ export default function AccountRow({
                   <div className="billing-field">
                     <span className="billing-field-label">Plan expiration</span>
                     <span className="billing-field-value">
-                      {expired ? "—" : formatTime(billing.subscription?.currentPeriodEnd)}
+                      {planExpiration ? formatTime(planExpiration) : "—"}
                     </span>
                   </div>
                   <div className="billing-field">
@@ -200,8 +205,7 @@ export default function AccountRow({
                       <span className="billing-field-value">—</span>
                     )}
                     <span className="billing-reset">
-                      Resets{" "}
-                      {expired ? "—" : formatTime(billing.subscription?.currentPeriodEnd)}
+                      Resets {planExpiration ? formatTime(planExpiration) : "—"}
                     </span>
                   </div>
                   <div className="billing-field">

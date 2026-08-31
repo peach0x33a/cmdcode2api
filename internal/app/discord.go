@@ -117,8 +117,8 @@ func (a *DiscordAlerter) Evaluate(rows []AccountBilling) {
 		if !fresh(row) {
 			continue
 		}
-		if row.Subscription != nil && row.Subscription.CurrentPeriodEnd != "" {
-			if end, err := time.Parse(time.RFC3339, row.Subscription.CurrentPeriodEnd); err == nil && !end.Before(time.Now()) && !end.After(time.Now().Add(7*24*time.Hour)) {
+		if row.PlanExpiresAt != nil {
+			if end := *row.PlanExpiresAt; !end.Before(time.Now()) && !end.After(time.Now().Add(7*24*time.Hour)) {
 				key := fmt.Sprintf("expiration|%s|%s", row.Account, end.UTC().Format(time.RFC3339))
 				a.deliver(key, fmt.Sprintf("⚠️ Subscription for account %q ends on %s.", row.Account, end.UTC().Format(time.RFC3339)))
 			}

@@ -169,8 +169,8 @@ func TestDiscordAlerterSubscriptionExpiryDedupesAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "alerts.json")
 	end := time.Now().Add(6 * 24 * time.Hour).UTC()
 	row := AccountBilling{Account: "one", BillingInfo: BillingInfo{
-		FetchedAt:    ptrTime(time.Now()),
-		Subscription: &BillingSubscription{CurrentPeriodEnd: end.Format(time.RFC3339)},
+		FetchedAt:     ptrTime(time.Now()),
+		PlanExpiresAt: &end,
 	}}
 	a := NewDiscordAlerter(server.URL, path)
 	a.Evaluate([]AccountBilling{row})

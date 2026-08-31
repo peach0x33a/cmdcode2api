@@ -150,7 +150,12 @@ export default function AccountRow({
                       {expired ? (
                         <span className="billing-expired">Expired</span>
                       ) : (
-                        billing.subscription?.planId || "—"
+                        <>
+                          {billing.subscription?.planId || "—"}
+                          {billing.subscription?.cancelAtPeriodEnd ? (
+                            <span className="billing-expired"> · Cancels at period end</span>
+                          ) : null}
+                        </>
                       )}
                     </span>
                   </div>

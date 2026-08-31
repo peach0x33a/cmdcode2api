@@ -153,8 +153,13 @@ export default function AccountRow({
                         <>
                           {billing.subscription?.planId || "—"}
                           {billing.subscription?.cancelAtPeriodEnd ? (
-                            <span className="billing-expired"> · Cancels at period end</span>
-                          ) : null}
+                            <span className="muted"> · Cancels at period end</span>
+                          ) : (
+                            <span className="billing-warning" title="This subscription is not set to cancel and will renew at the end of the period.">
+                              {" "}
+                              ⚠ Auto-renews
+                            </span>
+                          )}
                         </>
                       )}
                     </span>

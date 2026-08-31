@@ -40,9 +40,14 @@ internal/app/      gateway implementation
 
 ## Web UI
 
-The account-management UI served at `/ui` is a TypeScript + React app built
-with Vite, living in `internal/app/webui-src/`. Its build output is committed
-to `internal/app/webui/dist/` and embedded into the Go binary, so `go build`
+The UI served at `/ui` is how you run the gateway: add and reauthorize
+accounts, enable models, configure Discord alerts, and copy per-client
+connection config from the Setup tab. The `./cmdcode2api` flags in this
+README are a fallback for scripting and headless machines.
+
+It's a TypeScript + React app built with Vite, living in
+`internal/app/webui-src/`. Its build output is committed to
+`internal/app/webui/dist/` and embedded into the Go binary, so `go build`
 never needs Node installed.
 
 | Accounts | Models |
@@ -69,21 +74,32 @@ Run the binary once to generate `config.yaml`:
 ./cmdcode2api
 ```
 
-Then connect a Command Code account, giving it a name. The easiest way is
-the web UI: start the gateway, open `http://localhost:11434/ui`, and use
-the **Add account** button — it runs the same OAuth flow and writes the
-key into `config.yaml`. No command line needed. **Reauthorize** on an
-existing account row does the same for a stale account.
+Then start the gateway and open `http://localhost:11434/ui`. Everything is
+managed from there:
 
-To do it from the command line instead:
+- **Accounts** — **Add account** runs the Command Code OAuth flow and
+  writes the key into `config.yaml`; **Reauthorize** does the same for an
+  account that has gone stale.
+- **Models** — enable the models your plan serves.
+- **Alerts** — configure Discord alerts.
+- **Setup** — copy the base URL and API key, with per-client config
+  snippets.
+
+Opened from the same machine it just works; from another device it prompts
+for the gateway's `api_key`.
+
+### CLI fallback
+
+Every account operation has a command-line equivalent, for scripting or a
+box you can't point a browser at:
 
 ```bash
 ./cmdcode2api --oauth --account personal
 ```
 
-`--account <name>` is required whenever you use `--oauth`. Either way, the
-OAuth flow writes the Command Code API key into `config.yaml` under that
-account name. Repeat with a different name to add more accounts. See
+`--account <name>` is required whenever you use `--oauth`. The OAuth flow
+writes the Command Code API key into `config.yaml` under that account name.
+Repeat with a different name to add more accounts. See
 [Accounts](#accounts) below for how the gateway uses them.
 
 ### Authorizing on a remote or headless server
@@ -101,22 +117,20 @@ server.
    ssh -L 5959:localhost:5959 user@server
    ```
 
-2. In that session, on the server, start the flow for one account. It binds
-   `127.0.0.1:5959` and prints an authorization URL:
+2. With the gateway running on the server, open its `/ui` in your
+   workstation browser (through the tunnel or over LAN/Tailscale) and click
+   **Add account** or **Reauthorize**. It binds `127.0.0.1:5959` on the
+   server and opens an authorization URL.
 
-   ```bash
-   ./cmdcode2api --oauth --account personal
-   ```
+   From the command line instead: `./cmdcode2api --oauth --account personal`,
+   which prints the URL rather than opening it.
 
-   (The web UI's "Add account" / "Reauthorize" buttons do the same thing and
-   also work through the tunnel.)
+3. Approve in the browser on your workstation. The callback travels back
+   through the tunnel; the key is written into `config.yaml`.
 
-3. Open the printed URL in the browser on your workstation and approve. The
-   callback travels back through the tunnel; the key is written into
-   `config.yaml`.
-
-4. Close the SSH session (`exit`) and restart the gateway to load the new
-   account.
+4. Close the SSH session (`exit`). An account added through the UI is live
+   immediately; one added with the `--oauth` command needs a gateway
+   restart to load.
 
 Port 5959 is fixed — don't pass `--oauth-callback` for the tunnel
 case; the default `localhost` callback is what makes it work. Use
@@ -126,28 +140,21 @@ receive the callback (for example a public HTTPS reverse proxy).
 ## Accounts
 
 Command Code accounts are stored by name in `config.yaml`. Add as many as
-you like:
+you like. The **Accounts** tab in the web UI does all of it: **Add
+account** and **Reauthorize** run the OAuth flow, each row shows live
+status, and **Delete** removes one.
+
+The same operations from the command line:
 
 ```bash
-./cmdcode2api --oauth --account personal
-./cmdcode2api --oauth --account work
+./cmdcode2api --oauth --account personal    # add, or reauthorize an existing name
+./cmdcode2api --list-accounts               # names and live status
+./cmdcode2api --remove-account work         # remove
 ```
 
 Running `--oauth --account <name>` again for a name that already exists
-overwrites that account's key. That's also how you reauthorize an account
-that has gone stale.
-
-List configured accounts and their live status without starting the server:
-
-```bash
-./cmdcode2api --list-accounts
-```
-
-Remove an account:
-
-```bash
-./cmdcode2api --remove-account work
-```
+overwrites that account's key — the same as **Reauthorize** in the UI.
+Accounts added by CLI load on the next gateway start.
 
 ### Rotation and failover
 
@@ -161,13 +168,11 @@ response clears a stale flag; transient failures such as timeouts or 5xx
 responses are recorded but leave the account's status untouched.
 
 Command Code API keys have no refresh mechanism, so a stale account needs a
-fresh login, not a restart:
+fresh login, not a restart: click **Reauthorize** on the account's row in
+the web UI, or run `./cmdcode2api --oauth --account <name>`.
 
-```bash
-./cmdcode2api --oauth --account <name>
-```
-
-Check current status anytime with `--list-accounts` or `GET /accounts`.
+Check current status anytime on the Accounts tab, with `--list-accounts`,
+or via `GET /accounts`.
 
 ## Configuration
 

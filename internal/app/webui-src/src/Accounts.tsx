@@ -260,6 +260,13 @@ export default function Accounts() {
           Add account
         </button>
       </form>
+      <p className="muted add-account-hint">
+        &ldquo;Add account&rdquo; and &ldquo;Reauthorize&rdquo; run the whole
+        Command Code OAuth flow in a new tab and write the key to{" "}
+        <code>config.yaml</code> &mdash; no CLI needed. The{" "}
+        <code>--oauth</code> flag is a fallback for headless machines (see
+        below).
+      </p>
 
       <details className="card remote-auth-help">
         <summary>Authorizing an account on a remote / headless server</summary>

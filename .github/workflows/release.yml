@@ -24,6 +24,19 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: internal/app/webui-src/package-lock.json
+
+      - name: Build web UI
+        working-directory: internal/app/webui-src
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
       - name: Build binary archives
         env:
           CGO_ENABLED: "0"

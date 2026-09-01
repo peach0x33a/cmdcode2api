@@ -168,6 +168,15 @@ func (n *ccEventNormalizer) setUsage(usage *CCUsage) {
 	if usage.InputTokenDetails != nil {
 		n.cacheRead = usage.InputTokenDetails.CacheReadTokens
 		n.cacheWrite = usage.InputTokenDetails.CacheWriteTokens
+		n.usage.PromptTokensDetails = &PromptTokensDetails{
+			CachedTokens: usage.InputTokenDetails.CacheReadTokens,
+		}
+	} else {
+		// Usage is authoritative for each event. Do not expose cache details
+		// from an earlier finish-step when the final usage omits them.
+		n.cacheRead = 0
+		n.cacheWrite = 0
+		n.usage.PromptTokensDetails = nil
 	}
 }
 

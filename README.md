@@ -189,6 +189,8 @@ No authentication required. Returns locally accumulated usage counters:
 
 Usage is persisted to `usage.json`, which is ignored by git.
 
+For `/v1/chat/completions`, upstream `inputTokenDetails.cacheReadTokens` is exposed using the OpenAI-compatible response field `usage.prompt_tokens_details.cached_tokens`. `cacheWriteTokens` remains available in `/usage` and is not emitted in the Chat Completions response because OpenAI's standard usage schema has no cache-write field.
+
 ### `GET /v1/models`
 
 Returns the model list after applying `exclude_models` filtering.

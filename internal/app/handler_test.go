@@ -150,7 +150,7 @@ func TestHandleNonStreamAppendsTextDeltas(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
 			`data: {"type":"text-delta","text":"hello"}`,
 			`data: {"type":"text-delta","text":" world"}`,
-			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2,"inputTokenDetails":{"cacheReadTokens":12345,"cacheWriteTokens":0}}}`,
 			`data: [DONE]`,
 		}, "\n\n"))),
 	}
@@ -163,6 +163,9 @@ func TestHandleNonStreamAppendsTextDeltas(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"content":"hello world"`) {
 		t.Fatalf("body = %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"prompt_tokens_details":{"cached_tokens":12345}`) {
+		t.Fatalf("body should expose cache reads using the OpenAI usage format: %s", rec.Body.String())
 	}
 }
 

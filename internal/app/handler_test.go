@@ -290,7 +290,7 @@ func TestHandleStreamUsesTotalUsageTotalTokens(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
 			`data: {"type":"reasoning-delta","text":"think"}`,
 			`data: {"type":"text-delta","text":"ok"}`,
-			`data: {"type":"finish","finishReason":"max_tokens","totalUsage":{"inputTokens":10,"outputTokens":5,"reasoningTokens":4,"totalTokens":15}}`,
+			`data: {"type":"finish","finishReason":"max_tokens","totalUsage":{"inputTokens":10,"outputTokens":5,"reasoningTokens":4,"totalTokens":15,"inputTokenDetails":{"cacheReadTokens":12345,"cacheWriteTokens":0}}}`,
 			`data: [DONE]`,
 		}, "\n\n"))),
 	}
@@ -304,6 +304,9 @@ func TestHandleStreamUsesTotalUsageTotalTokens(t *testing.T) {
 	}
 	if !strings.Contains(body, `"total_tokens":15`) {
 		t.Fatalf("body should use totalUsage.totalTokens without adding local reasoning count: %s", body)
+	}
+	if !strings.Contains(body, `"prompt_tokens_details":{"cached_tokens":12345}`) {
+		t.Fatalf("body should expose cache reads using the OpenAI usage format: %s", body)
 	}
 }
 

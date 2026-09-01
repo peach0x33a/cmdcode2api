@@ -360,11 +360,7 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 			Message:      msg,
 			FinishReason: finishReason,
 		}},
-		Usage: Usage{
-			PromptTokens:     promptTokens,
-			CompletionTokens: completionTokens,
-			TotalTokens:      normalizer.FinalUsageInfo().TotalTokens,
-		},
+		Usage: normalizer.FinalUsageInfo(),
 	}
 
 	if cfg.Debug {

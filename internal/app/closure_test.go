@@ -8,31 +8,6 @@ import (
 	"testing"
 )
 
-// A non-final scannable segment's incomplete tail must not be discarded when a
-// later segment overwrites the carried-forward remainder.
-func TestNonFinalSegmentTailPreserved(t *testing.T) {
-	rejected := "<｜｜DSML｜｜tool_calls><invoke name=\"read\">" +
-		"<parameter name=\"path\" string=\"TRUE\">x</parameter></invoke></｜｜DSML｜｜tool_calls>"
-	p := NewToolCallParser()
-	content, calls := p.Feed(
-		`Assistant requested tool bash (id1) with arguments: {"command":"ls"} `+
-			`Assistant requested tool bash (id2) with arguments: {"comm`+rejected, true)
-
-	var ids []string
-	for _, c := range calls {
-		ids = append(ids, c.ID)
-		if c.Function.Name == "read" {
-			t.Errorf("rejected envelope became executable: %+v", c)
-		}
-	}
-	if !containsID(ids, "id1") {
-		t.Fatalf("complete call id1 was lost; calls=%+v", calls)
-	}
-	if !strings.Contains(content, "id2") && !strings.Contains(content, `{"comm`) {
-		t.Errorf("incomplete tail of a non-final segment was dropped; content=%q", content)
-	}
-}
-
 // No event may be written after [DONE]: an OpenAI client stops reading there.
 func TestNoEmissionAfterDone(t *testing.T) {
 	body := strings.Join([]string{
@@ -56,12 +31,13 @@ func TestNoEmissionAfterDone(t *testing.T) {
 	}
 }
 
-// The normal finish flush still delivers a call buffered right up to finish —
-// the done guard must not suppress the final drain.
-func TestFinishFlushStillEmits(t *testing.T) {
+// A complete provisional sequence still has no execution authority without a
+// final tool-call event.
+func TestFinishRejectsCompletedProvisionalInput(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"type":"tool-input-start","id":"c1","toolName":"bash"}`,
 		`data: {"type":"tool-input-delta","id":"c1","delta":"{\"command\":\"ls\"}"}`,
+		`data: {"type":"tool-input-end","id":"c1"}`,
 		`data: {"type":"finish","finishReason":"tool-calls","totalUsage":{"inputTokens":1,"outputTokens":2}}`,
 		`data: [DONE]`,
 	}, "\n\n")
@@ -70,8 +46,9 @@ func TestFinishFlushStillEmits(t *testing.T) {
 		"m", &UsageTracker{}, &Config{})
 
 	out := rec.Body.String()
-	if !strings.Contains(out, `"name":"bash"`) {
-		t.Fatalf("finish flush dropped the buffered call: %s", out)
+	payloads := decodeStreamPayloads(t, out)
+	if calls := streamToolCalls(t, payloads); len(calls) != 0 || !hasStreamError(payloads) {
+		t.Fatalf("completed provisional input became executable: %s", out)
 	}
 	if n := strings.Count(out, "data: [DONE]"); n != 1 {
 		t.Fatalf("got %d [DONE] markers, want 1", n)
@@ -99,22 +76,4 @@ func TestSSEFieldLinesSkipped(t *testing.T) {
 	if strings.Join(kinds, ",") != "text-delta,tool-call,finish" {
 		t.Fatalf("events lost around field lines: %v", kinds)
 	}
-}
-
-// The write fallback must never fabricate content:"" — executing that would
-// truncate the target file to zero bytes.
-func TestWriteFallbackNeverFabricatesEmptyContent(t *testing.T) {
-	got := repairOrFallbackToolInput(`totally not json`, "write")
-	if strings.Contains(got, `"content"`) {
-		t.Fatalf("write fallback fabricated a content field: %s", got)
-	}
-}
-
-func containsID(ids []string, want string) bool {
-	for _, id := range ids {
-		if id == want {
-			return true
-		}
-	}
-	return false
 }

@@ -106,8 +106,6 @@ func handleStreamWithOptions(w http.ResponseWriter, resp *http.Response, model s
 	var finishing bool // finishStream is running its final flush
 
 	normalizer := newCCEventNormalizer()
-	textParser := NewToolCallParser()
-	reasoningParser := NewToolCallParser()
 	var collectedToolCalls toolCallDeduper
 
 	emitContent := func(content string, reasoning bool) {
@@ -147,17 +145,6 @@ func handleStreamWithOptions(w http.ResponseWriter, resp *http.Response, model s
 		return nil
 	}
 
-	flushParser := func(parser *ToolCallParser, reasoning bool) error {
-		content, calls := parser.Feed("", true)
-		emitContent(content, reasoning)
-		for _, tc := range calls {
-			if err := collectToolCall(tc); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
 	emitCollectedToolCalls := func() {
 		for index := range collectedToolCalls.kept {
 			tc := &collectedToolCalls.kept[index]
@@ -181,25 +168,18 @@ func handleStreamWithOptions(w http.ResponseWriter, resp *http.Response, model s
 		}
 	}
 
-	// finishStream is the commit point: provisional calls have now had a chance
-	// to be replaced by authoritative events and can be emitted exactly once.
+	// finishStream is the commit point: validated authoritative calls can now be
+	// emitted exactly once. Provisional tool-input events never reach this set.
 	finishStream := func(reason string, usageInfo Usage, truncated bool) error {
 		if done || finishing {
 			return nil
 		}
 		finishing = true
-		if err := flushParser(reasoningParser, true); err != nil {
-			return err
-		}
-		if err := flushParser(textParser, false); err != nil {
-			return err
-		}
 
 		hasToolCalls := len(collectedToolCalls.kept) > 0
 		if reason == "tool_calls" && !hasToolCalls {
 			return fmt.Errorf("finish reason tool_calls contained no valid tool calls")
 		}
-		truncated = truncated || collectedToolCalls.hasUnsafeArguments()
 		emitCollectedToolCalls()
 		finish := resolveFinishReason(reason, hasToolCalls, truncated)
 		writeSSE(w, flusher, ChatStreamChunk{
@@ -257,35 +237,18 @@ func handleStreamWithOptions(w http.ResponseWriter, resp *http.Response, model s
 		for _, event := range events {
 			switch event.kind {
 			case normalizedText:
-				content, calls := textParser.Feed(event.text, false)
-				emitContent(content, false)
-				for _, call := range calls {
-					if err := collectToolCall(call); err != nil {
-						return err
-					}
-				}
+				emitContent(event.text, false)
 			case normalizedReasoning:
-				content, calls := reasoningParser.Feed(event.text, false)
-				emitContent(content, true)
-				for _, call := range calls {
-					if err := collectToolCall(call); err != nil {
-						return err
-					}
-				}
+				emitContent(event.text, true)
 			case normalizedToolCall:
 				if event.toolCall != nil {
 					if err := collectToolCall(*event.toolCall); err != nil {
 						return err
 					}
 				}
-			case normalizedReasoningEnd:
-				if err := flushParser(reasoningParser, true); err != nil {
-					return err
-				}
-			case normalizedTextEnd:
-				if err := flushParser(textParser, false); err != nil {
-					return err
-				}
+			case normalizedReasoningEnd, normalizedTextEnd:
+				// End markers carry no content; text and reasoning deltas are
+				// forwarded immediately and are never interpreted as tool syntax.
 			case normalizedFinish:
 				if err := finishStream(event.finishReason, event.usage, event.truncated); err != nil {
 					return err
@@ -371,37 +334,8 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		return
 	}
 
-	// Extract embedded tool calls only after the upstream turn completed.
 	visibleText := textContent.String()
-	if visibleText != "" {
-		tcp := NewToolCallParser()
-		strippedContent, parsedCalls := tcp.Feed(visibleText, true)
-		if len(parsedCalls) > 0 {
-			for _, call := range parsedCalls {
-				if err := addToolCall(call); err != nil {
-					writeErrorWithCode(w, http.StatusBadGateway, "server_error", "invalid_tool_call", err.Error())
-					return
-				}
-			}
-			visibleText = strippedContent
-		}
-	}
-
-	// Also parse reasoning text for embedded tool calls
 	reasoningText := reasoningContent.String()
-	if reasoningText != "" {
-		tcp := NewToolCallParser()
-		strippedReasoning, parsedCalls := tcp.Feed(reasoningText, true)
-		if len(parsedCalls) > 0 {
-			for _, call := range parsedCalls {
-				if err := addToolCall(call); err != nil {
-					writeErrorWithCode(w, http.StatusBadGateway, "server_error", "invalid_tool_call", err.Error())
-					return
-				}
-			}
-			reasoningText = strippedReasoning
-		}
-	}
 
 	msg.Content = TextContent(visibleText)
 	msg.ToolCalls = toolCalls.kept
@@ -409,7 +343,6 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 		writeErrorWithCode(w, http.StatusBadGateway, "server_error", "invalid_tool_call", "finish reason tool_calls contained no valid tool calls")
 		return
 	}
-	truncated = truncated || toolCalls.hasUnsafeArguments()
 	finishReason = resolveFinishReason(finishReason, len(msg.ToolCalls) > 0, truncated)
 	if reasoningText != "" {
 		msg.ReasoningContent = reasoningText
@@ -512,12 +445,9 @@ func streamEventText(ev CCStreamEvent) string {
 
 // resolveFinishReason picks the OpenAI finish_reason for a completed turn.
 //
-// "tool_calls" tells the client the assistant produced a complete set of calls
-// it may now execute. That claim is false when the upstream hit its output cap:
-// the last tool's arguments were cut off mid-JSON and only survive because
-// repairOrFallbackToolInput patched them into valid syntax. Reporting "length"
-// keeps the truncation visible so the client can retry or refuse instead of
-// executing a silently truncated write.
+// "tool_calls" tells the client the assistant produced a complete set of
+// validated structured calls. A length finish always wins because an upstream
+// output cap means the turn is incomplete.
 func resolveFinishReason(upstream string, hasToolCalls, truncated bool) string {
 	if truncated {
 		return "length"

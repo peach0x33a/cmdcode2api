@@ -87,12 +87,20 @@ func TestOpenAIToCCPreservesAndCapsExplicitMaxTokens(t *testing.T) {
 	}
 }
 
-func TestMessagesToCCMapsToolRoleToUser(t *testing.T) {
+func TestMessagesToCCUsesStructuredToolHistory(t *testing.T) {
 	got, err := messagesToCC([]Message{
+		{
+			Role:             "assistant",
+			Content:          TextContent("checking"),
+			ReasoningContent: "need lookup",
+			ToolCalls: []ToolCall{{
+				ID: "call-1", Type: "function",
+				Function: CallFunc{Name: "lookup", Arguments: `{"query":"kimi"}`},
+			}},
+		},
 		{
 			Role:       "tool",
 			ToolCallID: "call-1",
-			Name:       "lookup",
 			Content:    TextContent("tool output"),
 		},
 	})
@@ -100,21 +108,60 @@ func TestMessagesToCCMapsToolRoleToUser(t *testing.T) {
 		t.Fatalf("convert: %v", err)
 	}
 
-	if len(got) != 1 {
-		t.Fatalf("messages len = %d", len(got))
+	if len(got) != 2 || got[0].Role != "assistant" || got[1].Role != "tool" {
+		t.Fatalf("messages = %#v", got)
 	}
-	if got[0].Role != "user" {
-		t.Fatalf("role = %q", got[0].Role)
+	assistant := got[0].Content
+	if len(assistant) != 3 || assistant[0].Type != "reasoning" || assistant[1].Type != "text" || assistant[2].Type != "tool-call" {
+		t.Fatalf("assistant content = %#v", assistant)
 	}
-	if len(got[0].Content) != 1 || got[0].Content[0].Type != "text" {
-		t.Fatalf("content = %#v", got[0].Content)
+	if assistant[2].ToolCallID != "call-1" || assistant[2].ToolName != "lookup" || string(assistant[2].Input) != `{"query":"kimi"}` {
+		t.Fatalf("tool call = %#v", assistant[2])
 	}
-	if !strings.Contains(got[0].Content[0].Text, "tool output") {
-		t.Fatalf("tool output = %#v", got[0].Content[0].Text)
+	result := got[1].Content
+	if len(result) != 1 || result[0].Type != "tool-result" || result[0].ToolName != "lookup" || result[0].Output == nil || result[0].Output.Value != "tool output" {
+		t.Fatalf("tool result = %#v", result)
 	}
 }
 
-func TestAssistantToolCallIsFlattenedAsHistoryText(t *testing.T) {
+func TestMarshaledCCRequestUsesExactStructuredHistory(t *testing.T) {
+	converted, err := openAIToCC(&ChatRequest{
+		Model: "m",
+		Messages: []Message{
+			{Role: "system", Content: TextContent("system")},
+			{
+				Role:             "assistant",
+				Content:          TextContent("calling"),
+				ReasoningContent: "think",
+				ToolCalls: []ToolCall{{
+					ID: "call-1", Type: "function",
+					Function: CallFunc{Name: "lookup", Arguments: `{"id":12345678901234567890}`},
+				}},
+			},
+			{Role: "tool", ToolCallID: "call-1", Content: TextContent("ok")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	converted.Config = CCConfig{
+		WorkingDir:    "/",
+		Date:          "2026-01-02",
+		Environment:   "test",
+		Structure:     []string{},
+		RecentCommits: []any{},
+	}
+	encoded, err := json.Marshal(converted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"config":{"workingDir":"/","date":"2026-01-02","environment":"test","structure":[],"isGitRepo":false,"currentBranch":"","mainBranch":"","gitStatus":"","recentCommits":[]},"memory":"","taste":"","skills":null,"permissionMode":"standard","params":{"model":"m","messages":[{"role":"assistant","content":[{"type":"reasoning","text":"think"},{"type":"text","text":"calling"},{"type":"tool-call","toolCallId":"call-1","toolName":"lookup","input":{"id":12345678901234567890}}]},{"role":"tool","content":[{"type":"tool-result","toolCallId":"call-1","toolName":"lookup","output":{"type":"text","value":"ok"}}]}],"tools":[],"system":"system","max_tokens":64000,"stream":true}}`
+	if string(encoded) != want {
+		t.Fatalf("CCRequest wire JSON changed:\n got: %s\nwant: %s", encoded, want)
+	}
+}
+
+func TestAssistantToolCallUsesStructuredHistoryPart(t *testing.T) {
 	got, err := contentToCC(Message{
 		Role: "assistant",
 		ToolCalls: []ToolCall{{
@@ -130,14 +177,11 @@ func TestAssistantToolCallIsFlattenedAsHistoryText(t *testing.T) {
 		t.Fatalf("convert: %v", err)
 	}
 
-	if len(got) != 1 {
-		t.Fatalf("parts len = %d", len(got))
+	if len(got) != 1 || got[0].Type != "tool-call" {
+		t.Fatalf("parts = %#v", got)
 	}
-	if got[0].Type != "text" {
-		t.Fatalf("type = %q", got[0].Type)
-	}
-	if !strings.Contains(got[0].Text, "lookup") || !strings.Contains(got[0].Text, "kimi") {
-		t.Fatalf("text = %q", got[0].Text)
+	if got[0].ToolName != "lookup" || string(got[0].Input) != `{"query":"kimi"}` {
+		t.Fatalf("tool call = %#v", got[0])
 	}
 }
 
@@ -155,8 +199,8 @@ func TestParseDataURL(t *testing.T) {
 	}
 }
 
-func TestContentToCCDoesNotDropInvalidToolArguments(t *testing.T) {
-	parts, err := contentToCC(Message{
+func TestContentToCCRejectsInvalidToolArguments(t *testing.T) {
+	_, err := contentToCC(Message{
 		Role: "assistant",
 		ToolCalls: []ToolCall{{
 			ID:   "call-1",
@@ -167,15 +211,20 @@ func TestContentToCCDoesNotDropInvalidToolArguments(t *testing.T) {
 			},
 		}},
 	})
-	if err != nil {
-		t.Fatalf("convert: %v", err)
+	var invalid *invalidRequestError
+	if !errors.As(err, &invalid) || !strings.Contains(err.Error(), "invalid arguments") {
+		t.Fatalf("error = %v, want invalidRequestError", err)
 	}
+}
 
-	if len(parts) != 1 {
-		t.Fatalf("parts len = %d", len(parts))
-	}
-	if parts[0].Type != "text" || !strings.Contains(parts[0].Text, "invalid arguments") {
-		t.Fatalf("unexpected part: %#v", parts[0])
+func TestContentToCCRejectsNonObjectToolArguments(t *testing.T) {
+	for _, arguments := range []string{`[]`, `null`, `"text"`, `42`, `{"ok":true} trailing`} {
+		_, err := contentToCC(Message{Role: "assistant", ToolCalls: []ToolCall{{
+			ID: "call-1", Function: CallFunc{Name: "bad_tool", Arguments: arguments},
+		}}})
+		if err == nil {
+			t.Fatalf("arguments %q unexpectedly accepted", arguments)
+		}
 	}
 }
 
@@ -208,7 +257,7 @@ func TestToolResultPreservesAllTextParts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
-	if len(parts) != 1 || !strings.Contains(parts[0].Text, "first second") {
+	if len(parts) != 1 || parts[0].Type != "tool-result" || parts[0].Output == nil || parts[0].Output.Value != "first second" {
 		t.Fatalf("parts = %#v", parts)
 	}
 }

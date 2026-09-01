@@ -152,57 +152,16 @@ type toolCallSource uint8
 
 const (
 	toolCallSourceUnknown toolCallSource = iota
-	toolCallSourceRecoveredText
-	toolCallSourceToolInput
 	toolCallSourceAuthoritative
 )
-
-type toolInputRepairKind uint8
-
-const (
-	toolInputRepairNone toolInputRepairKind = iota
-	toolInputRepairSyntax
-	toolInputRepairTruncated
-	toolInputRepairFallback
-)
-
-// String returns a human-readable name for ops logs; a numeric fallback is
-// returned for unknown values so the method never panics.
-func (k toolInputRepairKind) String() string {
-	switch k {
-	case toolInputRepairNone:
-		return "none"
-	case toolInputRepairSyntax:
-		return "syntax"
-	case toolInputRepairTruncated:
-		return "truncated"
-	case toolInputRepairFallback:
-		return "fallback"
-	default:
-		return fmt.Sprintf("unknown(%d)", uint8(k))
-	}
-}
 
 type ToolCall struct {
 	ID       string   `json:"id"`
 	Type     string   `json:"type"` // "function"
 	Function CallFunc `json:"function"`
 
-	// Internal provenance lets a later authoritative event replace a provisional
-	// reconstruction before anything is emitted on the OpenAI stream.
-	source     toolCallSource
-	repairKind toolInputRepairKind
-
-	// Retained for the raw-DSML one-to-one semantic deduplication rule.
-	recoveredRawDSML bool
-
-	// repaired remains a coarse compatibility signal for parser tests. Safety
-	// decisions use repairKind so syntax normalization is not called truncation.
-	repaired bool
-}
-
-func (c ToolCall) unsafeArguments() bool {
-	return c.repairKind == toolInputRepairTruncated || c.repairKind == toolInputRepairFallback
+	// Internal provenance supports stable authoritative-event deduplication.
+	source toolCallSource
 }
 
 type CallFunc struct {
@@ -332,12 +291,18 @@ type CCMsg struct {
 }
 
 type CCPart struct {
-	Type       string         `json:"type"`
-	Text       string         `json:"text,omitempty"`
-	Source     map[string]any `json:"source,omitempty"`
-	ToolCallID string         `json:"toolCallId,omitempty"`
-	ToolName   string         `json:"toolName,omitempty"`
-	Input      map[string]any `json:"input,omitempty"`
+	Type       string          `json:"type"`
+	Text       string          `json:"text,omitempty"`
+	Source     map[string]any  `json:"source,omitempty"`
+	ToolCallID string          `json:"toolCallId,omitempty"`
+	ToolName   string          `json:"toolName,omitempty"`
+	Input      json.RawMessage `json:"input,omitempty"`
+	Output     *CCOutput       `json:"output,omitempty"`
+}
+
+type CCOutput struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
 }
 
 type CCTool struct {
@@ -364,6 +329,32 @@ type CCStreamEvent struct {
 	Usage           *CCUsage `json:"usage,omitempty"`
 	TotalUsage      *CCUsage `json:"totalUsage,omitempty"`
 	Error           any      `json:"error,omitempty"`
+
+	// Presence is tracked separately because omitted and explicit null both
+	// decode to nil, but neither may be fabricated into executable {} input.
+	inputPresent     bool
+	argsPresent      bool
+	argumentsPresent bool
+}
+
+func (e *CCStreamEvent) UnmarshalJSON(data []byte) error {
+	type wireEvent CCStreamEvent
+	var decoded wireEvent
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*e = CCStreamEvent(decoded)
+	_, e.inputPresent = fields["input"]
+	_, e.argsPresent = fields["args"]
+	_, e.argumentsPresent = fields["arguments"]
+	return nil
 }
 
 type CCUsage struct {

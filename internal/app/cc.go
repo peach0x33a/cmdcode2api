@@ -443,9 +443,20 @@ func extractSystem(msgs []Message) string {
 
 func messagesToCC(msgs []Message) ([]CCMsg, error) {
 	var out []CCMsg
+	toolNames := make(map[string]string)
 	for _, m := range msgs {
 		if m.Role == "system" || m.Role == "developer" {
 			continue // 已提取到 top-level system
+		}
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.ID != "" && tc.Function.Name != "" {
+					toolNames[tc.ID] = tc.Function.Name
+				}
+			}
+		}
+		if m.Role == "tool" && m.Name == "" {
+			m.Name = toolNames[m.ToolCallID]
 		}
 		content, err := contentToCC(m)
 		if err != nil {
@@ -459,8 +470,8 @@ func messagesToCC(msgs []Message) ([]CCMsg, error) {
 
 func roleToCC(role string) string {
 	switch role {
-	case "assistant":
-		return "assistant"
+	case "assistant", "tool":
+		return role
 	default:
 		return "user"
 	}
@@ -468,13 +479,32 @@ func roleToCC(role string) string {
 
 func contentToCC(m Message) ([]CCPart, error) {
 	if m.Role == "tool" {
+		if m.ToolCallID == "" {
+			return nil, &invalidRequestError{message: "tool message requires tool_call_id"}
+		}
+		if m.Name == "" {
+			return nil, &invalidRequestError{message: fmt.Sprintf("cannot resolve tool name for tool_call_id %q", m.ToolCallID)}
+		}
+		for _, part := range m.Content.PartsValue() {
+			if part.Type != "text" {
+				return nil, &invalidRequestError{message: fmt.Sprintf("unsupported tool result content type %q", part.Type)}
+			}
+		}
 		return []CCPart{{
-			Type: "text",
-			Text: fmt.Sprintf("Tool result from %s (%s):\n%s", m.Name, m.ToolCallID, m.Content.PlainText()),
+			Type:       "tool-result",
+			ToolCallID: m.ToolCallID,
+			ToolName:   m.Name,
+			Output: &CCOutput{
+				Type:  "text",
+				Value: m.Content.PlainText(),
+			},
 		}}, nil
 	}
 
 	var parts []CCPart
+	if m.Role == "assistant" && m.ReasoningContent != "" {
+		parts = append(parts, CCPart{Type: "reasoning", Text: m.ReasoningContent})
+	}
 	if text, ok := m.Content.TextValue(); ok && text != "" {
 		parts = append(parts, CCPart{Type: "text", Text: text})
 	}
@@ -505,30 +535,50 @@ func contentToCC(m Message) ([]CCPart, error) {
 		}
 	}
 
-	// 工具调用
 	for _, tc := range m.ToolCalls {
-		// Pass the arguments through verbatim rather than unmarshalling into a map
-		// and re-marshalling. That round-trip turned every JSON number into a
-		// float64 (corrupting large ids the model must echo back) and HTML-escaped
-		// < and & inside the very history the model reads. Only validate.
-		args := strings.TrimSpace(tc.Function.Arguments)
-		if args == "" {
-			args = "{}"
+		if tc.ID == "" {
+			return nil, &invalidRequestError{message: "assistant tool call requires a non-empty id"}
 		}
-		if !json.Valid([]byte(args)) {
-			parts = append(parts, CCPart{
-				Type: "text",
-				Text: fmt.Sprintf("Assistant requested tool %s (%s) with invalid arguments: %s", tc.Function.Name, tc.ID, args),
-			})
-			continue
+		if tc.Function.Name == "" {
+			return nil, &invalidRequestError{message: fmt.Sprintf("assistant tool call %q requires a non-empty function name", tc.ID)}
+		}
+		input, err := validateToolInputObject(tc.Function.Arguments)
+		if err != nil {
+			return nil, &invalidRequestError{message: fmt.Sprintf("assistant tool call %q has invalid arguments: %v", tc.ID, err)}
 		}
 		parts = append(parts, CCPart{
-			Type: "text",
-			Text: fmt.Sprintf("Assistant requested tool %s (%s) with arguments: %s", tc.Function.Name, tc.ID, args),
+			Type:       "tool-call",
+			ToolCallID: tc.ID,
+			ToolName:   tc.Function.Name,
+			Input:      input,
 		})
 	}
 
 	return parts, nil
+}
+
+func validateToolInputObject(arguments string) (json.RawMessage, error) {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		arguments = "{}"
+	}
+	decoder := json.NewDecoder(strings.NewReader(arguments))
+	decoder.UseNumber()
+	var object map[string]any
+	if err := decoder.Decode(&object); err != nil {
+		return nil, err
+	}
+	if object == nil {
+		return nil, fmt.Errorf("arguments must be a JSON object")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple JSON values")
+		}
+		return nil, fmt.Errorf("trailing content: %w", err)
+	}
+	return json.RawMessage(arguments), nil
 }
 
 func toolsToCC(tools []Tool) []CCTool {

@@ -121,7 +121,7 @@ func TestHandleStreamPrefersAuthoritativeToolCall(t *testing.T) {
 	}
 }
 
-func TestHandleStreamPreservesToolCallOrderAcrossRepairs(t *testing.T) {
+func TestProvisionalInputsNeverBecomeExecutableCalls(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"type":"tool-input-start","id":"a","toolName":"bash"}`,
 		`data: {"type":"tool-input-delta","id":"a","delta":"{\"command\":\"first"}`,
@@ -136,13 +136,13 @@ func TestHandleStreamPreservesToolCallOrderAcrossRepairs(t *testing.T) {
 
 	handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
 
-	calls := streamToolCalls(t, decodeStreamPayloads(t, rec.Body.String()))
-	if len(calls) != 2 || calls[0]["id"] != "a" || calls[1]["id"] != "b" {
-		t.Fatalf("tool call order = %#v", calls)
+	payloads := decodeStreamPayloads(t, rec.Body.String())
+	if calls := streamToolCalls(t, payloads); len(calls) != 0 || !hasStreamError(payloads) {
+		t.Fatalf("provisional calls crossed execution boundary: %#v body=%s", calls, rec.Body.String())
 	}
 }
 
-func TestSyntaxRepairDoesNotReportLength(t *testing.T) {
+func TestBareControlCharacterInputFailsClosed(t *testing.T) {
 	delta, err := json.Marshal(CCStreamEvent{
 		Type: "tool-input-delta", ID: "c1", ToolName: "bash",
 		Delta: "{\"command\":\"line1\nline2\"}",
@@ -162,88 +162,41 @@ func TestSyntaxRepairDoesNotReportLength(t *testing.T) {
 	handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
 
 	payloads := decodeStreamPayloads(t, rec.Body.String())
-	if !hasFinishReason(payloads, "tool_calls") || hasFinishReason(payloads, "length") {
-		t.Fatalf("syntax-only repair was marked truncated: %s", rec.Body.String())
+	if !hasStreamError(payloads) || len(streamToolCalls(t, payloads)) != 0 {
+		t.Fatalf("malformed input was repaired into an executable call: %s", rec.Body.String())
 	}
 }
 
 func TestStructuredToolCallValidation(t *testing.T) {
-	// A tool-call event missing its function name cannot be repaired into
-	// anything the client could execute, so it still aborts the stream.
-	t.Run("missing name", func(t *testing.T) {
-		body := strings.Join([]string{
-			`data: {"type":"tool-call","toolCallId":"c1","input":{"command":"ls"}}`,
-			`data: {"type":"finish","finishReason":"tool-calls"}`,
-			`data: [DONE]`,
-		}, "\n\n")
-		rec := httptest.NewRecorder()
-		handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
-		payloads := decodeStreamPayloads(t, rec.Body.String())
-		if !hasStreamError(payloads) || hasAnyFinishReason(payloads) {
-			t.Fatalf("unrecoverable call was accepted: %s", rec.Body.String())
-		}
-	})
-
-	// Recoverable malformations must degrade to a repaired call instead of
-	// aborting a stream the client may have already read text from.
-	t.Run("scalar input recovers with fallback arguments", func(t *testing.T) {
-		body := strings.Join([]string{
-			`data: {"type":"tool-call","toolCallId":"c1","toolName":"bash","input":"ls"}`,
-			`data: {"type":"finish","finishReason":"tool-calls"}`,
-			`data: [DONE]`,
-		}, "\n\n")
-		rec := httptest.NewRecorder()
-		handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
-		if hasStreamError(decodeStreamPayloads(t, rec.Body.String())) {
-			t.Fatalf("recoverable call aborted the stream: %s", rec.Body.String())
-		}
-		if !strings.Contains(rec.Body.String(), `"finish_reason":"length"`) {
-			t.Fatalf("fallback arguments must surface as finish_reason length: %s", rec.Body.String())
-		}
-		if !strings.Contains(rec.Body.String(), `{\"command\":\"ls\"}`) {
-			t.Fatalf("expected bash fallback arguments: %s", rec.Body.String())
-		}
-	})
-
-	t.Run("array input recovers with fallback arguments", func(t *testing.T) {
-		body := strings.Join([]string{
-			`data: {"type":"tool-call","toolCallId":"c1","toolName":"bash","input":["ls"]}`,
-			`data: {"type":"finish","finishReason":"tool-calls"}`,
-			`data: [DONE]`,
-		}, "\n\n")
-		rec := httptest.NewRecorder()
-		handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
-		if hasStreamError(decodeStreamPayloads(t, rec.Body.String())) {
-			t.Fatalf("recoverable call aborted the stream: %s", rec.Body.String())
-		}
-		if !strings.Contains(rec.Body.String(), `"finish_reason":"length"`) {
-			t.Fatalf("fallback arguments must surface as finish_reason length: %s", rec.Body.String())
-		}
-	})
-
-	t.Run("missing id is synthesized", func(t *testing.T) {
-		body := strings.Join([]string{
-			`data: {"type":"tool-call","toolName":"bash","input":{"command":"ls"}}`,
-			`data: {"type":"finish","finishReason":"tool-calls"}`,
-			`data: [DONE]`,
-		}, "\n\n")
-		rec := httptest.NewRecorder()
-		handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
-		if hasStreamError(decodeStreamPayloads(t, rec.Body.String())) {
-			t.Fatalf("missing id aborted the stream: %s", rec.Body.String())
-		}
-		if !strings.Contains(rec.Body.String(), `"id":"call_recovered_`) {
-			t.Fatalf("expected a synthesized tool call id: %s", rec.Body.String())
-		}
-		if !strings.Contains(rec.Body.String(), `"finish_reason":"tool_calls"`) {
-			t.Fatalf("expected clean call to keep finish_reason tool_calls: %s", rec.Body.String())
-		}
-	})
+	fixtures := []struct {
+		name  string
+		event string
+	}{
+		{"missing name", `data: {"type":"tool-call","toolCallId":"c1","input":{"command":"ls"}}`},
+		{"scalar input", `data: {"type":"tool-call","toolCallId":"c1","toolName":"bash","input":"ls"}`},
+		{"array input", `data: {"type":"tool-call","toolCallId":"c1","toolName":"bash","input":["ls"]}`},
+		{"missing id", `data: {"type":"tool-call","toolName":"bash","input":{"command":"ls"}}`},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			body := strings.Join([]string{
+				fixture.event,
+				`data: {"type":"finish","finishReason":"tool-calls"}`,
+				`data: [DONE]`,
+			}, "\n\n")
+			rec := httptest.NewRecorder()
+			handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
+			payloads := decodeStreamPayloads(t, rec.Body.String())
+			if !hasStreamError(payloads) || hasAnyFinishReason(payloads) || len(streamToolCalls(t, payloads)) != 0 {
+				t.Fatalf("invalid structured call was accepted: %s", rec.Body.String())
+			}
+		})
+	}
 }
 
-func TestNoArgumentToolCallUsesEmptyObject(t *testing.T) {
+func TestExplicitEmptyObjectToolCallIsValid(t *testing.T) {
 	body := strings.Join([]string{
-		`data: {"type":"tool-call","toolCallId":"c1","toolName":"status"}`,
+		`data: {"type":"tool-call","toolCallId":"c1","toolName":"status","input":{}}`,
 		`data: {"type":"finish","finishReason":"tool-calls"}`,
 		`data: [DONE]`,
 	}, "\n\n")
@@ -300,7 +253,7 @@ func TestContentFilterFinishReasonWinsOverToolCalls(t *testing.T) {
 	}
 }
 
-func TestCompleteToolCallOverridesLengthFinish(t *testing.T) {
+func TestLengthFinishWinsEvenWithCompleteToolCall(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"type":"tool-call","toolCallId":"c1","toolName":"bash","input":{"command":"ls"}}`,
 		`data: {"type":"finish","finishReason":"length"}`,
@@ -311,8 +264,8 @@ func TestCompleteToolCallOverridesLengthFinish(t *testing.T) {
 	handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
 
 	payloads := decodeStreamPayloads(t, rec.Body.String())
-	if !hasFinishReason(payloads, "tool_calls") || hasFinishReason(payloads, "length") {
-		t.Fatalf("complete authoritative call was treated as truncated: %s", rec.Body.String())
+	if !hasFinishReason(payloads, "length") || hasFinishReason(payloads, "tool_calls") {
+		t.Fatalf("length finish was hidden by a tool call: %s", rec.Body.String())
 	}
 }
 

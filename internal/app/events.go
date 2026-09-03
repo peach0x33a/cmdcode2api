@@ -60,11 +60,13 @@ func (n *ccEventNormalizer) Consume(ev CCStreamEvent) ([]normalizedCCEvent, erro
 	case "reasoning-delta":
 		return []normalizedCCEvent{{kind: normalizedReasoning, text: streamEventText(ev)}}, nil
 	case "tool-call":
-		call, err := toolCallFromEvent(ev)
+		call, ok, err := toolCallFromEvent(ev)
 		if err != nil {
 			return nil, err
 		}
-		n.toolCalls.Add(call)
+		if ok {
+			n.toolCalls.Add(call)
+		}
 		return nil, nil
 	case "tool-input-start":
 		id := eventToolCallID(ev)
@@ -275,11 +277,16 @@ func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, e
 		if input == nil {
 			return ToolCall{}, false, nil
 		}
-		encoded, err := marshalToolInput(input)
+		encoded, kind, err := encodeToolCallArguments(input, name)
 		if err != nil {
 			return ToolCall{}, false, fmt.Errorf("marshal tool input %q: %w", id, err)
 		}
 		raw = encoded
+		repairKind = kind
+		if kind != toolInputRepairNone {
+			log.Printf("%s normalized inline tool input %q for tool %q with repair kind %s",
+				colorize("[WARN]", ansiYellow), id, name, kind)
+		}
 	} else {
 		encoded, kind, err := normalizeToolInput(raw, name)
 		if err != nil {
@@ -616,25 +623,70 @@ func validateToolCall(call ToolCall) error {
 	return nil
 }
 
-func toolCallFromEvent(ev CCStreamEvent) (ToolCall, error) {
+// toolCallFromEvent converts an authoritative "tool-call" SSE event. It never
+// rejects recoverable payloads: the upstream emits the same truncated or
+// non-object inputs here that the buffered tool-input path repairs, and a hard
+// error would abort the whole stream after the client already received text.
+// The bool result is false only when the event cannot yield a call at all.
+func toolCallFromEvent(ev CCStreamEvent) (ToolCall, bool, error) {
 	id := eventToolCallID(ev)
-	encoded, err := marshalToolInput(eventToolInput(ev))
+	if strings.TrimSpace(id) == "" {
+		synthesized, ok := newSyntheticCallID("call_recovered_")
+		if !ok {
+			log.Printf("%s tool-call event for tool %q has no id and none could be generated; skipping",
+				colorize("[WARN]", ansiYellow), ev.ToolName)
+			return ToolCall{}, false, nil
+		}
+		log.Printf("%s tool-call event for tool %q arrived without an id; synthesized %s",
+			colorize("[WARN]", ansiYellow), ev.ToolName, synthesized)
+		id = synthesized
+	}
+
+	encoded, repairKind, err := encodeToolCallArguments(eventToolInput(ev), ev.ToolName)
 	if err != nil {
-		return ToolCall{}, fmt.Errorf("marshal tool call %q: %w", id, err)
+		return ToolCall{}, false, fmt.Errorf("marshal tool call %q: %w", id, err)
+	}
+	if repairKind != toolInputRepairNone {
+		log.Printf("%s normalized tool-call input for tool %q with repair kind %s",
+			colorize("[WARN]", ansiYellow), ev.ToolName, repairKind)
 	}
 	call := ToolCall{
-		ID:     id,
-		Type:   "function",
-		source: toolCallSourceAuthoritative,
+		ID:         id,
+		Type:       "function",
+		source:     toolCallSourceAuthoritative,
+		repairKind: repairKind,
+		repaired:   repairKind != toolInputRepairNone,
 		Function: CallFunc{
 			Name:      ev.ToolName,
 			Arguments: encoded,
 		},
 	}
 	if err := validateToolCall(call); err != nil {
-		return ToolCall{}, err
+		return ToolCall{}, false, err
 	}
-	return call, nil
+	return call, true, nil
+}
+
+// encodeToolCallArguments renders an upstream tool input as an OpenAI
+// function.arguments string. Clean objects pass through untouched; anything
+// else — escaped strings, string-wrapped arrays, truncated JSON, plain text —
+// runs through the same repair ladder as buffered tool inputs instead of
+// failing the stream.
+func encodeToolCallArguments(input any, toolName string) (string, toolInputRepairKind, error) {
+	if text, ok := input.(string); ok {
+		return normalizeToolInput(text, toolName)
+	}
+	encoded, err := marshalToolInput(input)
+	if err == nil {
+		return encoded, toolInputRepairNone, nil
+	}
+	// Scalar and multi-element JSON values still become text for the repair
+	// ladder, which ends in a tool-shaped fallback object.
+	asText, marshalErr := json.Marshal(input)
+	if marshalErr != nil {
+		return "", toolInputRepairNone, marshalErr
+	}
+	return normalizeToolInput(string(asText), toolName)
 }
 
 func eventToolCallID(ev CCStreamEvent) string {

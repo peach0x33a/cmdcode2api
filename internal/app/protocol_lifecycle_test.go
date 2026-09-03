@@ -168,23 +168,77 @@ func TestSyntaxRepairDoesNotReportLength(t *testing.T) {
 }
 
 func TestStructuredToolCallValidation(t *testing.T) {
-	tests := map[string]string{
-		"missing id":   `data: {"type":"tool-call","toolName":"bash","input":{"command":"ls"}}`,
-		"missing name": `data: {"type":"tool-call","toolCallId":"c1","input":{"command":"ls"}}`,
-		"scalar input": `data: {"type":"tool-call","toolCallId":"c1","toolName":"bash","input":"ls"}`,
-		"array input":  `data: {"type":"tool-call","toolCallId":"c1","toolName":"bash","input":["ls"]}`,
-	}
-	for name, event := range tests {
-		t.Run(name, func(t *testing.T) {
-			body := strings.Join([]string{event, `data: {"type":"finish","finishReason":"tool-calls"}`, `data: [DONE]`}, "\n\n")
-			rec := httptest.NewRecorder()
-			handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
-			payloads := decodeStreamPayloads(t, rec.Body.String())
-			if !hasStreamError(payloads) || hasAnyFinishReason(payloads) {
-				t.Fatalf("invalid call was accepted: %s", rec.Body.String())
-			}
-		})
-	}
+	// A tool-call event missing its function name cannot be repaired into
+	// anything the client could execute, so it still aborts the stream.
+	t.Run("missing name", func(t *testing.T) {
+		body := strings.Join([]string{
+			`data: {"type":"tool-call","toolCallId":"c1","input":{"command":"ls"}}`,
+			`data: {"type":"finish","finishReason":"tool-calls"}`,
+			`data: [DONE]`,
+		}, "\n\n")
+		rec := httptest.NewRecorder()
+		handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
+		payloads := decodeStreamPayloads(t, rec.Body.String())
+		if !hasStreamError(payloads) || hasAnyFinishReason(payloads) {
+			t.Fatalf("unrecoverable call was accepted: %s", rec.Body.String())
+		}
+	})
+
+	// Recoverable malformations must degrade to a repaired call instead of
+	// aborting a stream the client may have already read text from.
+	t.Run("scalar input recovers with fallback arguments", func(t *testing.T) {
+		body := strings.Join([]string{
+			`data: {"type":"tool-call","toolCallId":"c1","toolName":"bash","input":"ls"}`,
+			`data: {"type":"finish","finishReason":"tool-calls"}`,
+			`data: [DONE]`,
+		}, "\n\n")
+		rec := httptest.NewRecorder()
+		handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
+		if hasStreamError(decodeStreamPayloads(t, rec.Body.String())) {
+			t.Fatalf("recoverable call aborted the stream: %s", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"finish_reason":"length"`) {
+			t.Fatalf("fallback arguments must surface as finish_reason length: %s", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `{\"command\":\"ls\"}`) {
+			t.Fatalf("expected bash fallback arguments: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("array input recovers with fallback arguments", func(t *testing.T) {
+		body := strings.Join([]string{
+			`data: {"type":"tool-call","toolCallId":"c1","toolName":"bash","input":["ls"]}`,
+			`data: {"type":"finish","finishReason":"tool-calls"}`,
+			`data: [DONE]`,
+		}, "\n\n")
+		rec := httptest.NewRecorder()
+		handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
+		if hasStreamError(decodeStreamPayloads(t, rec.Body.String())) {
+			t.Fatalf("recoverable call aborted the stream: %s", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"finish_reason":"length"`) {
+			t.Fatalf("fallback arguments must surface as finish_reason length: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("missing id is synthesized", func(t *testing.T) {
+		body := strings.Join([]string{
+			`data: {"type":"tool-call","toolName":"bash","input":{"command":"ls"}}`,
+			`data: {"type":"finish","finishReason":"tool-calls"}`,
+			`data: [DONE]`,
+		}, "\n\n")
+		rec := httptest.NewRecorder()
+		handleStream(rec, streamResponse(body), "test-model", &UsageTracker{}, &Config{})
+		if hasStreamError(decodeStreamPayloads(t, rec.Body.String())) {
+			t.Fatalf("missing id aborted the stream: %s", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"id":"call_recovered_`) {
+			t.Fatalf("expected a synthesized tool call id: %s", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"finish_reason":"tool_calls"`) {
+			t.Fatalf("expected clean call to keep finish_reason tool_calls: %s", rec.Body.String())
+		}
+	})
 }
 
 func TestNoArgumentToolCallUsesEmptyObject(t *testing.T) {

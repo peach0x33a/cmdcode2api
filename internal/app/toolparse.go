@@ -604,12 +604,19 @@ func parseRawDSMLInvokes(body string) ([]ToolCall, bool) {
 	return calls, true
 }
 
-func newRawDSMLCallID() (string, bool) {
+// newSyntheticCallID mints an id for a call the upstream identified only
+// structurally: raw DSML invokes, and tool-call events that arrived without an
+// id. The client needs a stable id to answer the call with a tool result.
+func newSyntheticCallID(prefix string) (string, bool) {
 	id, err := randomHex(18)
 	if err != nil {
 		return "", false
 	}
-	return "call_dsml_" + id, true
+	return prefix + id, true
+}
+
+func newRawDSMLCallID() (string, bool) {
+	return newSyntheticCallID("call_dsml_")
 }
 
 // partialRawDSMLOpenerStart finds an unfinished tag at the end of a chunk.

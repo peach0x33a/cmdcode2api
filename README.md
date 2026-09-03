@@ -290,6 +290,12 @@ Dedup state is written to `discord-alerts.json` (override with
 ./cmdcode2api
 ```
 
+Print the version and Go runtime version, then exit:
+
+```bash
+./cmdcode2api --version
+```
+
 To listen on all interfaces, useful for systemd or a remote server:
 
 ```bash
@@ -456,7 +462,8 @@ Requires the same bearer token as `/v1/chat/completions`, unlike `/health` and `
 
 Returns only the models enabled via `model_overrides` (see
 [Enabling models](#enabling-models)) — an empty list until you've enabled at
-least one.
+least one. Each entry includes `context_window` (the model's context length)
+when Command Code reports one.
 
 ### `POST /v1/chat/completions`
 
@@ -469,6 +476,11 @@ Supported request styles:
 - Multimodal content arrays with base64 `data:` URLs in `image_url`
 - `stream: true` server-sent events
 - `stream: false` JSON response
+
+When Command Code reports `inputTokenDetails.cacheReadTokens`, it is surfaced
+in the response as `usage.prompt_tokens_details.cached_tokens` (OpenAI's usage
+schema has no cache-write field, so `cacheWriteTokens` stays in `/usage` and
+`/admin/usage` only).
 
 Remote HTTP(S) image URLs are rejected with `400 invalid_request_error`; image
 content must be supplied as a base64 `data:image/...;base64,...` URL.

@@ -53,10 +53,11 @@ func FetchProviderModels(baseURL, apiKey string) {
 	detail := make([]CCProviderModel, 0, len(list.Data))
 	for _, m := range list.Data {
 		catalog = append(catalog, ModelInfo{
-			ID:      m.ID,
-			Object:  "model",
-			Created: 1700000000,
-			OwnedBy: "commandcode",
+			ID:            m.ID,
+			Object:        "model",
+			Created:       1700000000,
+			OwnedBy:       "commandcode",
+			ContextWindow: m.ContextLength,
 		})
 		detail = append(detail, m)
 	}

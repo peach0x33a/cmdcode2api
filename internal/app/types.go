@@ -166,6 +166,23 @@ const (
 	toolInputRepairFallback
 )
 
+// String returns a human-readable name for ops logs; a numeric fallback is
+// returned for unknown values so the method never panics.
+func (k toolInputRepairKind) String() string {
+	switch k {
+	case toolInputRepairNone:
+		return "none"
+	case toolInputRepairSyntax:
+		return "syntax"
+	case toolInputRepairTruncated:
+		return "truncated"
+	case toolInputRepairFallback:
+		return "fallback"
+	default:
+		return fmt.Sprintf("unknown(%d)", uint8(k))
+	}
+}
+
 type ToolCall struct {
 	ID       string   `json:"id"`
 	Type     string   `json:"type"` // "function"
@@ -210,9 +227,19 @@ type Choice struct {
 }
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                  `json:"prompt_tokens"`
+	CompletionTokens    int                  `json:"completion_tokens"`
+	TotalTokens         int                  `json:"total_tokens"`
+	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// PromptTokensDetails is the standard OpenAI-compatible breakdown of prompt
+// tokens. CachedTokens maps Command Code's inputTokenDetails.cacheReadTokens
+// onto prompt_tokens_details.cached_tokens. cacheWriteTokens has no field in
+// OpenAI's usage schema, so it is not emitted here (it remains available via
+// /usage and /admin/usage).
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 // Streaming response chunk
@@ -251,10 +278,11 @@ type StreamDelta struct {
 
 // MODELS list
 type ModelInfo struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID            string `json:"id"`
+	Object        string `json:"object"`
+	Created       int64  `json:"created"`
+	OwnedBy       string `json:"owned_by"`
+	ContextWindow int    `json:"context_window,omitempty"`
 }
 
 type ModelList struct {

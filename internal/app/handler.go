@@ -598,11 +598,7 @@ func handleNonStreamForAccount(w http.ResponseWriter, resp *http.Response, model
 			Message:      msg,
 			FinishReason: finishReason,
 		}},
-		Usage: Usage{
-			PromptTokens:     promptTokens,
-			CompletionTokens: completionTokens,
-			TotalTokens:      normalizer.FinalUsageInfo().TotalTokens,
-		},
+		Usage: normalizer.FinalUsageInfo(),
 	}
 
 	if cfg.Debug {

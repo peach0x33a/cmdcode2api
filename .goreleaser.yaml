@@ -1,0 +1,73 @@
+# goreleaser config for cmdcode2api.
+#
+# The web UI is embedded (//go:embed webui/dist in internal/app/ui.go), so the
+# before-hooks rebuild it fresh from webui-src before every build. Locally:
+#   goreleaser release --snapshot --clean
+version: 2
+project_name: cmdcode2api
+
+before:
+  hooks:
+    - go mod tidy
+    - npm --prefix internal/app/webui-src ci
+    - npm --prefix internal/app/webui-src run build
+
+builds:
+  - id: cmdcode2api
+    main: ./cmd/cmdcode2api
+    binary: cmdcode2api
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X cmdcode2api/internal/app.Version={{ .Tag }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      # Current release matrix has no windows/arm64 build.
+      - { goos: windows, goarch: arm64 }
+
+archives:
+  - id: default
+    # Preserve the asset names scripts/install.sh downloads, e.g.
+    #   cmdcode2api_v1.2.3_linux_amd64.tar.gz
+    #   cmdcode2api_v1.2.3_macos_arm64.tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Tag }}_
+      {{- if eq .Os "darwin" }}macos{{ else }}{{ .Os }}{{ end }}_
+      {{- .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: []  # binary only, matching the current archives
+
+nfpms:
+  - id: deb
+    package_name: cmdcode2api
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
+    formats: [deb]
+    maintainer: "FlightlessWeasel <jasonb.194@gmail.com>"
+    description: cmdcode2api server
+    section: utils
+    priority: optional
+    bindir: /usr/bin
+
+checksum:
+  name_template: SHA256SUMS.txt
+
+release:
+  prerelease: auto
+  name_template: "{{ .Tag }}"
+  # Ship the headless installer alongside the archives.
+  extra_files:
+    - glob: ./scripts/install.sh
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:", "^ci:"]

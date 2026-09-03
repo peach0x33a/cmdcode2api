@@ -195,6 +195,14 @@ func (n *ccEventNormalizer) setUsage(usage *CCUsage) {
 	if usage.InputTokenDetails != nil {
 		n.cacheRead = usage.InputTokenDetails.CacheReadTokens
 		n.cacheWrite = usage.InputTokenDetails.CacheWriteTokens
+		n.usage.PromptTokensDetails = &PromptTokensDetails{CachedTokens: n.cacheRead}
+	} else {
+		// Each usage event is authoritative for its own step. Don't let cache
+		// details from an earlier finish-step leak into a final usage that
+		// omits them.
+		n.cacheRead = 0
+		n.cacheWrite = 0
+		n.usage.PromptTokensDetails = nil
 	}
 }
 
@@ -278,7 +286,7 @@ func (n *ccEventNormalizer) finishToolInput(ev CCStreamEvent) (ToolCall, bool, e
 			return ToolCall{}, false, fmt.Errorf("normalize tool input %q: %w", id, err)
 		}
 		if kind != toolInputRepairNone {
-			log.Printf("%s normalized tool input %q for tool %q with repair kind %d",
+			log.Printf("%s normalized tool input %q for tool %q with repair kind %s",
 				colorize("[WARN]", ansiYellow), id, name, kind)
 		}
 		raw = encoded

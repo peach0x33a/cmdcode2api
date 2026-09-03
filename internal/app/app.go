@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -35,7 +36,13 @@ func Run() {
 	allowLAN := flag.Bool("allow-lan", false, "allow devices on the local network to reach this gateway (requires the API key; see README)")
 	allowTailscale := flag.Bool("allow-tailscale", false, "allow devices reachable via Tailscale to reach this gateway (requires the API key; see README)")
 	uiNoAuth := flag.Bool("ui-no-auth", false, "serve the web UI and account-management API (/ui, /accounts*, /admin/*) with no authentication — only use on a trusted network")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("cmdcode2api %s (%s)\n", Version, runtime.Version())
+		os.Exit(0)
+	}
 
 	cfgPath := findConfig()
 

@@ -415,6 +415,26 @@ func TestHandleNonStreamAppendsTextDeltas(t *testing.T) {
 	}
 }
 
+func TestHandleNonStreamExposesCachedTokens(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"hello"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":1,"outputTokens":2,"inputTokenDetails":{"cacheReadTokens":12345,"cacheWriteTokens":0}}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+
+	handleNonStream(rec, resp, "test-model", &UsageTracker{}, &Config{})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"prompt_tokens_details":{"cached_tokens":12345}`) {
+		t.Fatalf("body should expose cache reads using the OpenAI usage format: %s", rec.Body.String())
+	}
+}
+
 func TestHandleNonStreamAppendsDeltaFieldFallback(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
@@ -553,6 +573,24 @@ func TestHandleStreamUsesTotalUsageTotalTokens(t *testing.T) {
 	}
 	if !strings.Contains(body, `"total_tokens":15`) {
 		t.Fatalf("body should use totalUsage.totalTokens without adding local reasoning count: %s", body)
+	}
+}
+
+func TestHandleStreamExposesCachedTokens(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"text-delta","text":"ok"}`,
+			`data: {"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":10,"outputTokens":5,"totalTokens":15,"inputTokenDetails":{"cacheReadTokens":12345,"cacheWriteTokens":0}}}`,
+			`data: [DONE]`,
+		}, "\n\n"))),
+	}
+	rec := httptest.NewRecorder()
+
+	handleStreamWithOptions(rec, resp, "test-model", &UsageTracker{}, &Config{}, true)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"prompt_tokens_details":{"cached_tokens":12345}`) {
+		t.Fatalf("body should expose cache reads using the OpenAI usage format: %s", body)
 	}
 }
 

@@ -99,8 +99,11 @@ func TestWriteConfigTemplateIncludesDefaultExclusionComment(t *testing.T) {
 	if !strings.Contains(content, "exclude_models:\n    - gpt-") {
 		t.Fatalf("missing active default exclude_models in:\n%s", content)
 	}
-	if !strings.Contains(content, cfg.APIKey) {
-		t.Fatalf("missing actual config content in:\n%s", content)
+	if !strings.Contains(content, cfg.APIKeys[0].Key) {
+		t.Fatalf("missing client key in:\n%s", content)
+	}
+	if strings.Contains(content, "api_key:") {
+		t.Fatalf("fresh template must not contain the legacy api_key field:\n%s", content)
 	}
 }
 

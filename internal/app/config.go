@@ -32,7 +32,7 @@ func (k ClientKeyConfig) IsEnabled() bool {
 }
 
 type Config struct {
-	APIKey string `yaml:"api_key"`
+	APIKey string `yaml:"api_key,omitempty"`
 	// APIKeys is the list of local client keys. The legacy single api_key
 	// field above is migrated into it on load and cleared on save once the
 	// list is non-empty.
@@ -111,8 +111,9 @@ func defaultConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 生成的客户端密钥只写入 api_keys 列表；旧字段 api_key 仅用于兼容
+	// 已有的手工配置，不再出现在新生成的文件里。
 	c := &Config{
-		APIKey:        apiKey,
 		AdminPassword: adminPassword,
 		Host:          "localhost",
 		Port:          11434,

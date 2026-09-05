@@ -106,7 +106,7 @@ Alternatively, just start the server — it comes up without an account, and
 you can add one in the WebUI at /webui with the admin password above.
 
 Use the local client key above as the Bearer token for your OpenAI client.
-`, cfgPath, cfg2.APIKey, cfg2.AdminPassword)
+`, cfgPath, cfg2.APIKeys[0].Key, cfg2.AdminPassword)
 		os.Exit(0)
 	}
 

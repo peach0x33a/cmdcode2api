@@ -191,6 +191,10 @@ exclude_models: []
 ./cmdcode2api
 ```
 
+没有配置任何上游账号时服务也会照常启动：WebUI、客户端密钥、设置均可用，
+chat 请求返回 `503 no_accounts`，直到在 WebUI「账号」页添加账号或执行
+`--oauth`；从 WebUI 添加首个账号时会立即拉取模型目录。
+
 远程服务器需要对外提供服务时：
 
 ```bash

@@ -145,6 +145,11 @@ func handleAdminAccountAdd(pool *AccountPool, cfg *Config, usage *UsageTracker) 
 			writeAdminError(w, 500, "account added but saving config failed: "+err.Error())
 			return
 		}
+		// Started without accounts? The model catalog is empty then; fetch it
+		// now so /v1/models and the Models tab fill in immediately.
+		if len(modelCatalog) == 0 && acct.Enabled {
+			FetchProviderModels(cfg.UpstreamBaseURL(), acct.APIKey)
+		}
 		log.Printf("account %q added via webui", acct.Name)
 		writeAdminJSON(w, 201, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(acct.ID)})
 	}
@@ -600,6 +605,9 @@ func handleAdminOAuthStart(pool *AccountPool, cfg *Config) http.HandlerFunc {
 			if err := persistPool(pool, cfg); err != nil {
 				log.Printf("[WARN] webui oauth: save config failed: %v", err)
 				return
+			}
+			if len(modelCatalog) == 0 && acct.Enabled {
+				FetchProviderModels(cfg.UpstreamBaseURL(), acct.APIKey)
 			}
 			log.Printf("✓ OAuth account %q added via webui (user %s)", acct.Name, cb.UserName)
 		}()

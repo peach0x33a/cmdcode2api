@@ -1,9 +1,12 @@
 # 复制为 docker-compose.yml 后使用：cp docker-compose.example.yml docker-compose.yml
 #
-# 首次启动：数据目录为空时容器会生成 config.yaml 并退出，
-# 用 `docker compose logs` 查看 api_key 和 admin_password，然后 `docker compose up -d` 再次启动。
+# 首次启动：数据目录为空时会生成 config.yaml 并打印一次 api_key 和 admin_password
+# （`docker compose logs` 查看），随后自动重启进入服务状态。
 #
-# 接入 Command Code 账号（OAuth 回调监听在容器内 127.0.0.1，需要 host 网络）：
+# 没有上游账号也会正常启动：登录 WebUI（http://<host>:11434/webui，密码见日志），
+# 在「账号」页粘贴 Key 或用 OAuth 添加账号后即可调用；此前 chat 请求返回 503。
+#
+# OAuth 回调监听在容器内 127.0.0.1，需要 host 网络：
 #   docker compose run --rm --network host cmdcode2api --oauth
 # 或者在宿主机配好 accounts 后把 config.yaml 放进 ./data/。
 

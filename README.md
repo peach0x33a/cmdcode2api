@@ -175,6 +175,11 @@ The server listens on:
 http://localhost:11434
 ```
 
+The server starts even with zero Command Code accounts configured — the WebUI,
+client keys, and settings all work, and chat requests return `503 no_accounts`
+until you add an account (WebUI → Accounts, or `--oauth`). Adding the first
+account from the WebUI fetches the model catalog immediately.
+
 ## Use with OpenAI-compatible clients
 
 Set the base URL to your local gateway:

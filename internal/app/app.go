@@ -102,17 +102,18 @@ Next:
   1. Run ./cmdcode2api --oauth to connect Command Code.
   2. Run ./cmdcode2api again to start the local OpenAI-compatible API.
 
+Alternatively, just start the server — it comes up without an account, and
+you can add one in the WebUI at /webui with the admin password above.
+
 Use the local client key above as the Bearer token for your OpenAI client.
-The admin password above logs you into the WebUI at http://%s:%d/webui.
-`, cfgPath, cfg2.APIKey, cfg2.AdminPassword, cfg2.Host, cfg2.Port)
+`, cfgPath, cfg2.APIKey, cfg2.AdminPassword)
 		os.Exit(0)
 	}
 
-	// 检查是否配置了 CC 账号
+	// 没有上游账号也照常启动：WebUI/客户端密钥/设置均可用，
+	// chat 请求会返回 503 no_accounts，直到在 WebUI 添加账号。
 	if len(cfg.CommandCode.Accounts) == 0 {
-		fmt.Println("Command Code API key not configured.")
-		fmt.Println("Run ./cmdcode2api --oauth, then start cmdcode2api again.")
-		os.Exit(1)
+		log.Printf("[WARN] no Command Code accounts configured; chat requests will return 503 until an account is added via the WebUI (/webui) or --oauth")
 	}
 
 	// WebUI 管理密码为空时生成一个，只打印一次

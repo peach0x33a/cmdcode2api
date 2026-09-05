@@ -8,7 +8,53 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"cmdcode2api/internal/web"
 )
+
+func TestWebUIServedUnderWebuiPathOnly(t *testing.T) {
+	cfg := &Config{APIKey: "secret"}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", handleModels(cfg))
+	mux.HandleFunc("/webui", web.Handler())
+	mux.HandleFunc("/webui/", web.Handler())
+	handler := corsMiddleware(authMiddleware(cfg)(mux))
+
+	// /webui is public and serves the embedded HTML.
+	req := httptest.NewRequest(http.MethodGet, "/webui", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/webui status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("/webui content-type = %q", ct)
+	}
+
+	// Unknown UI sub-paths keep their 404.
+	req = httptest.NewRequest(http.MethodGet, "/webui/nope.js", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("/webui/nope.js status = %d, want 404", rec.Code)
+	}
+
+	// The root path stays API territory and still requires the bearer token.
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/ status = %d, want 401", rec.Code)
+	}
+
+	// /v1/models keeps requiring the bearer token.
+	req = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/v1/models status = %d, want 401", rec.Code)
+	}
+}
 
 func TestAuthMiddlewareRejectsMissingTokenWithCorsHeaders(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}

@@ -44,10 +44,16 @@ func authMiddleware(cfg *Config) func(http.Handler) http.Handler {
 
 func isPublicPath(path string) bool {
 	switch path {
-	case "/health", "/usage", "/", "/index.html":
+	case "/health", "/usage", "/webui", "/webui/":
 		return true
 	}
-	return strings.HasPrefix(path, "/admin/")
+	switch {
+	case strings.HasPrefix(path, "/webui/"):
+		return true
+	case strings.HasPrefix(path, "/admin/"):
+		return true
+	}
+	return false
 }
 
 // adminAuth guards the admin API with the separate admin_password.
@@ -114,12 +120,13 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 		json.NewEncoder(w).Encode(usage.Snapshot())
 	})
 
-	// WebUI：管理 API 与内嵌的单文件界面
+	// WebUI：管理 API 与内嵌的单文件界面，挂在 /webui 下，根路径留给 API。
 	adminMux := http.NewServeMux()
 	registerAdminRoutes(adminMux, cc, pool, cfg, usage, ring)
-	mux.Handle("/admin/", adminAuth(cfg)(adminMux))
 	if cfg.WebUIEnabled() {
-		mux.HandleFunc("/", web.Handler())
+		mux.Handle("/admin/", adminAuth(cfg)(adminMux))
+		mux.HandleFunc("/webui", web.Handler())
+		mux.HandleFunc("/webui/", web.Handler())
 	}
 
 	var handler http.Handler = mux
@@ -161,7 +168,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 	}
 	log.Printf("models: %d loaded, %d available", loadedModels, availableCount)
 	if cfg.WebUIEnabled() {
-		log.Printf("webui available at http://%s/", addr)
+		log.Printf("webui available at http://%s/webui", addr)
 	}
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err

@@ -11,11 +11,14 @@ import (
 //go:embed index.html
 var indexHTML []byte
 
-// Handler serves the UI. Only the exact index paths return HTML so stray API
-// typos keep their JSON 404s.
+// Handler serves the UI under /webui. Only exact index paths return HTML so
+// stray API typos keep their JSON 404s.
 func Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" && r.URL.Path != "/index.html" {
+		switch r.URL.Path {
+		case "/webui", "/webui/", "/webui/index.html":
+			// ok
+		default:
 			http.NotFound(w, r)
 			return
 		}

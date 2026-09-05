@@ -100,7 +100,7 @@ Next:
   2. Run ./cmdcode2api again to start the local OpenAI-compatible API.
 
 Use the local client key above as the Bearer token for your OpenAI client.
-The admin password above logs you into the WebUI at http://%s:%d/.
+The admin password above logs you into the WebUI at http://%s:%d/webui.
 `, cfgPath, cfg2.APIKey, cfg2.AdminPassword, cfg2.Host, cfg2.Port)
 		os.Exit(0)
 	}

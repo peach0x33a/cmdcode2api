@@ -62,10 +62,11 @@ ssh -L 5959:127.0.0.1:5959 root@your-server
 
 ## WebUI 管理台
 
-`webui` 启用（默认）时，二进制会在根路径托管内嵌的单文件管理界面：
+`webui` 启用（默认）时，二进制会在 `/webui` 路径托管内嵌的单文件管理界面
+（根路径留给 API，不提供页面）：
 
 ```text
-http://localhost:11434/
+http://localhost:11434/webui
 ```
 
 使用服务器地址 + `admin_password` 登录。`internal/web/index.html` 也可以

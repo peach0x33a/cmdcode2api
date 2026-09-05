@@ -250,10 +250,11 @@ content must be supplied as a base64 `data:image/...;base64,...` URL.
 ## WebUI
 
 With `webui` enabled (the default), the binary serves an embedded
-single-file admin interface at the root:
+single-file admin interface under `/webui` (the root path stays free for
+the API):
 
 ```text
-http://localhost:11434/
+http://localhost:11434/webui
 ```
 
 Log in with the server address and `admin_password`. The same

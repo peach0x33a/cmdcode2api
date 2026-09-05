@@ -27,6 +27,7 @@ func registerAdminRoutes(mux *http.ServeMux, cc *CCClient, pool *AccountPool, ke
 	mux.HandleFunc("POST /admin/api/keys", handleAdminKeyAdd(keys, cfg, usage))
 	mux.HandleFunc("PATCH /admin/api/keys/{id}", handleAdminKeyPatch(keys, cfg, usage))
 	mux.HandleFunc("DELETE /admin/api/keys/{id}", handleAdminKeyDelete(keys, cfg, usage))
+	mux.HandleFunc("GET /admin/api/keys/{id}/reveal", handleAdminKeyReveal(keys))
 	mux.HandleFunc("GET /admin/api/settings", handleAdminSettingsGet(cfg))
 	mux.HandleFunc("PUT /admin/api/settings", handleAdminSettingsPut(cfg, cc, pool))
 	mux.HandleFunc("GET /admin/api/logs", handleAdminLogs(ring))
@@ -286,9 +287,9 @@ func handleAdminModelsPut(cfg *Config) http.HandlerFunc {
 
 // ====== client keys ======
 
-// adminKey merges the client key view with its durable usage counters. The
-// full key value is included: the admin password already grants full config
-// access, and users need to copy keys into their clients.
+// adminKey merges the masked client key view with its durable usage
+// counters. The full value is only available at creation and via the
+// reveal endpoint.
 type adminKey struct {
 	ClientKeyView
 	UsageSnapshotEntry
@@ -333,7 +334,26 @@ func handleAdminKeyAdd(keys *ClientKeyPool, cfg *Config, usage *UsageTracker) ht
 			return
 		}
 		log.Printf("client key %q added via webui", key.Name)
-		writeAdminJSON(w, 201, adminKey{ClientKeyView: key.View(), UsageSnapshotEntry: usage.ClientKeyUsage(key.ID)})
+		// The full key value is returned exactly once, at creation.
+		writeAdminJSON(w, 201, map[string]any{
+			"id":         key.ID,
+			"name":       key.Name,
+			"key":        key.Key,
+			"enabled":    key.Enabled,
+			"key_masked": key.MaskedKey(),
+		})
+	}
+}
+
+// handleAdminKeyReveal returns the full key value for one key, on demand.
+func handleAdminKeyReveal(keys *ClientKeyPool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		key := keys.Get(r.PathValue("id"))
+		if key == nil {
+			writeAdminError(w, 404, "key not found")
+			return
+		}
+		writeAdminJSON(w, 200, map[string]any{"id": key.ID, "key": key.Key})
 	}
 }
 
@@ -370,10 +390,6 @@ func handleAdminKeyPatch(keys *ClientKeyPool, cfg *Config, usage *UsageTracker) 
 func handleAdminKeyDelete(keys *ClientKeyPool, cfg *Config, usage *UsageTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if keys.Len() <= 1 {
-			writeAdminError(w, 400, "cannot delete the last API key")
-			return
-		}
 		if !keys.Remove(id) {
 			writeAdminError(w, 404, "key not found")
 			return

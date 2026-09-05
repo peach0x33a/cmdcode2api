@@ -32,6 +32,14 @@ func clientKeyID(key string) string {
 	return "k" + hex.EncodeToString(sum[:4])
 }
 
+// MaskedKey hides most of the key: prefix plus the last four characters.
+func (k *ClientKey) MaskedKey() string {
+	if len(k.Key) > 12 {
+		return k.Key[:6] + "…" + k.Key[len(k.Key)-4:]
+	}
+	return strings.Repeat("*", len(k.Key))
+}
+
 func (k *ClientKey) RecordUsed() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -41,7 +49,7 @@ func (k *ClientKey) RecordUsed() {
 func (k *ClientKey) View() ClientKeyView {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	view := ClientKeyView{ID: k.ID, Name: k.Name, Key: k.Key, Enabled: k.Enabled}
+	view := ClientKeyView{ID: k.ID, Name: k.Name, KeyMasked: k.MaskedKey(), Enabled: k.Enabled}
 	if !k.lastUsedAt.IsZero() {
 		lastUsedAt := k.lastUsedAt
 		view.LastUsedAt = &lastUsedAt
@@ -52,7 +60,7 @@ func (k *ClientKey) View() ClientKeyView {
 type ClientKeyView struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
-	Key        string     `json:"key"`
+	KeyMasked  string     `json:"key_masked"`
 	Enabled    bool       `json:"enabled"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 }

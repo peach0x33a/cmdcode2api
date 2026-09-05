@@ -254,9 +254,31 @@ func TestAdminClientKeyLifecycle(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("keys list = %v", list)
 	}
-	first := list[0].(map[string]any)
+	var first map[string]any
+	for _, entry := range list {
+		if entry.(map[string]any)["id"] == id {
+			first = entry.(map[string]any)
+		}
+	}
+	if first == nil {
+		t.Fatalf("created key missing from list: %v", list)
+	}
 	if first["requests"] != float64(1) || first["prompt_tokens"] != float64(2) {
 		t.Fatalf("key usage not merged: %v", first)
+	}
+	// List responses must carry the masked key only — no raw key anywhere.
+	raw, _ := json.Marshal(payload)
+	if strings.Contains(string(raw), created["key"].(string)) {
+		t.Fatalf("raw key leaked in list response: %s", raw)
+	}
+	if masked, _ := first["key_masked"].(string); masked == "" || !strings.Contains(masked, "…") {
+		t.Fatalf("key_masked missing or wrong: %v", first["key_masked"])
+	}
+
+	// Reveal returns the full value.
+	_, payload = adminRequest(t, srv, "GET", "/admin/api/keys/"+id+"/reveal", "admin-pass-123", nil)
+	if payload["key"] != created["key"].(string) {
+		t.Fatalf("reveal = %v, want the created key", payload)
 	}
 
 	// Persisted to config.yaml.
@@ -285,22 +307,13 @@ func TestAdminClientKeyLifecycle(t *testing.T) {
 		t.Fatalf("delete other status = %d", resp.StatusCode)
 	}
 
-	// Deleting the final remaining key is rejected.
-	resp, _ = adminRequest(t, srv, "DELETE", "/admin/api/keys/"+id, "admin-pass-123", nil)
-	if resp.StatusCode != 400 {
-		t.Fatalf("last-key delete status = %d, want 400", resp.StatusCode)
-	}
-	if keys.Len() != 1 {
-		t.Fatalf("pool len = %d, want 1 after guarded delete", keys.Len())
-	}
-
-	// Creating a second key unlocks deletion again.
-	if _, err := keys.Add("temp", "ccgw-temp", true); err != nil {
-		t.Fatal(err)
-	}
+	// Deleting every key (down to zero) is allowed.
 	resp, _ = adminRequest(t, srv, "DELETE", "/admin/api/keys/"+id, "admin-pass-123", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("final delete status = %d", resp.StatusCode)
+	}
+	if keys.Len() != 0 {
+		t.Fatalf("pool len = %d, want 0", keys.Len())
 	}
 	if usage.ClientKeyUsage(id).Requests != 0 {
 		t.Fatal("usage counters not dropped")

@@ -284,7 +284,6 @@
         <span class="cap">Base URL（即时生效）</span>
         <input type="text" id="set-baseurl" class="mono">
       </label>
-      <p class="hint" style="margin:0 0 0">exclude_models 已移至「模型」页维护。</p>
     </div>
     <div class="panel">
       <h3>服务</h3>
@@ -735,7 +734,10 @@ async function saveModelsState(exposedIds) {
 
 /* ---------- client keys ---------- */
 
+const revealedKeys = new Set();
+
 function renderKeys(keys) {
+  revealedKeys.clear();
   if (!keys || !keys.length) {
     $("#ck-table").innerHTML = `<div class="empty">还没有密钥 —— 新建一把给客户端使用</div>`;
     return;
@@ -754,13 +756,14 @@ function renderKeys(keys) {
       const tokens = (k.prompt_tokens || 0) + (k.completion_tokens || 0);
       return `<tr>
         <td><strong>${esc(k.name)}</strong></td>
-        <td class="mono">${esc(k.key)}</td>
+        <td class="mono" id="ckval-${k.id}" data-masked="${esc(k.key_masked)}">${esc(k.key_masked)}</td>
         <td>${k.enabled ? `<span class="badge ok">启用</span>` : `<span class="badge off">已禁用</span>`}</td>
         <td class="num" style="text-align:right">${fmtInt(k.requests)}</td>
         <td class="num" style="text-align:right">${fmtTokens(tokens)}</td>
         <td class="nowrap dim">${esc(relTime(k.last_used_at))}</td>
         <td><div class="row-actions">
-          <button class="btn small" onclick="copyKey('${esc(k.key)}')">复制</button>
+          <button class="btn small" id="ckeye-${k.id}" onclick="revealKey('${k.id}')">显示</button>
+          <button class="btn small" onclick="copyKey('${k.id}')">复制</button>
           <button class="btn small" onclick="toggleKey('${k.id}', ${k.enabled ? "false" : "true"})">${k.enabled ? "禁用" : "启用"}</button>
           <button class="btn small danger" onclick="deleteKey('${k.id}', '${esc(k.name)}')">删除</button>
         </div></td>
@@ -805,8 +808,32 @@ async function deleteKey(id, name) {
   } catch (e) { toast(e.message, true); }
 }
 
-function copyKey(key) {
-  navigator.clipboard.writeText(key).then(() => toast("密钥已复制"));
+async function fetchKeyValue(id) {
+  const r = await api(`/admin/api/keys/${id}/reveal`);
+  return r.key;
+}
+
+async function revealKey(id) {
+  const cell = $("#ckval-" + id);
+  const btn = $("#ckeye-" + id);
+  if (revealedKeys.has(id)) {
+    revealedKeys.delete(id);
+    cell.textContent = cell.dataset.masked;
+    btn.textContent = "显示";
+    return;
+  }
+  try {
+    cell.textContent = await fetchKeyValue(id);
+    revealedKeys.add(id);
+    btn.textContent = "隐藏";
+  } catch (e) { toast(e.message, true); }
+}
+
+async function copyKey(id) {
+  try {
+    await navigator.clipboard.writeText(await fetchKeyValue(id));
+    toast("密钥已复制");
+  } catch (e) { toast(e.message, true); }
 }
 
 /* ---------- settings ---------- */

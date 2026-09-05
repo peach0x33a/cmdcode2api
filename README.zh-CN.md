@@ -8,16 +8,17 @@
 go build -o cmdcode2api ./cmd/cmdcode2api
 ```
 
-也可以用 Docker：
+也可以用 Docker。CI 会在每次 master 推送（`latest` 标签）和 `v*` 标签时
+自动发布镜像到 GHCR：
 
 ```bash
-docker build -t cmdcode2api .
-docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data cmdcode2api
+docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data ghcr.io/synthetic-coworkers/cmdcode2api:latest
 ```
 
-`config.yaml` 和 `usage.json` 放在 `/data` 数据卷中。无法访问
-proxy.golang.org 的网络可加
-`--build-arg GOPROXY=https://goproxy.cn,direct` 构建。
+`config.yaml` 和 `usage.json` 放在 `/data` 数据卷中。本地构建用
+`docker build -t cmdcode2api .`；无法访问 proxy.golang.org 的网络可加
+`--build-arg GOPROXY=https://goproxy.cn,direct`。开箱即用的 Compose 文件见
+`docker-compose.example.yml`。
 
 ## 首次运行
 

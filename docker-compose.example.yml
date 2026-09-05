@@ -1,0 +1,19 @@
+# 复制为 docker-compose.yml 后使用：cp docker-compose.example.yml docker-compose.yml
+#
+# 首次启动：数据目录为空时容器会生成 config.yaml 并退出，
+# 用 `docker compose logs` 查看 api_key 和 admin_password，然后 `docker compose up -d` 再次启动。
+#
+# 接入 Command Code 账号（OAuth 回调监听在容器内 127.0.0.1，需要 host 网络）：
+#   docker compose run --rm --network host cmdcode2api --oauth
+# 或者在宿主机配好 accounts 后把 config.yaml 放进 ./data/。
+
+services:
+  cmdcode2api:
+    image: ghcr.io/synthetic-coworkers/cmdcode2api:latest
+    container_name: cmdcode2api
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data:/data
+    # WebUI: http://<host>:11434/webui

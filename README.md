@@ -29,16 +29,17 @@ The project was originally named `cc-gateway`; it was renamed to avoid confusion
 go build -o cmdcode2api ./cmd/cmdcode2api
 ```
 
-Or with Docker:
+Or with Docker — prebuilt images are published to GHCR by CI on every
+master push (`latest`) and every `v*` tag:
 
 ```bash
-docker build -t cmdcode2api .
-docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data cmdcode2api
+docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data ghcr.io/synthetic-coworkers/cmdcode2api:latest
 ```
 
-`config.yaml` and `usage.json` live in the `/data` volume. Networks that
-cannot reach proxy.golang.org can build with
-`--build-arg GOPROXY=https://goproxy.cn,direct`.
+`config.yaml` and `usage.json` live in the `/data` volume. To build locally,
+use `docker build -t cmdcode2api .` — networks that cannot reach
+proxy.golang.org can pass `--build-arg GOPROXY=https://goproxy.cn,direct`.
+A ready-to-copy Compose file is provided as `docker-compose.example.yml`.
 
 ## Project layout
 

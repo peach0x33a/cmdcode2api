@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,26 @@ type OAuthOptions struct {
 	CallbackURL string
 }
 
+// OAuthFlow is a running OAuth authorization. The CLI blocks on Wait; the
+// WebUI polls State until it leaves "pending". All methods are safe for
+// concurrent use.
+type OAuthFlow struct {
+	AuthURL     string
+	CallbackURL string
+	Port        int
+	State       string
+
+	server    *http.Server
+	resultCh  chan oauthCallback
+	errCh     chan error
+	done      chan struct{}
+	closeOnce sync.Once
+
+	mu     sync.Mutex
+	result *oauthCallback
+	err    error
+}
+
 // generateState 生成随机 state token 防 CSRF
 func generateState() (string, error) {
 	state, err := randomHex(32)
@@ -41,14 +62,15 @@ func generateState() (string, error) {
 	return base64.URLEncoding.EncodeToString([]byte(state)), nil
 }
 
-// runOAuth 启动本地 HTTP server，打印授权链接，等待 CC 回调，返回 API Key。
-func runOAuth(opts OAuthOptions) (string, error) {
-	// 找一个可用端口
+// StartOAuthFlow starts the local callback server and returns a handle for
+// awaiting the authorization result. The caller must eventually Wait or
+// Cancel the flow so the listener is released.
+func StartOAuthFlow(opts OAuthOptions) (*OAuthFlow, error) {
 	listenHost := "127.0.0.1"
 	listenPort := oauthPortStart
 	if opts.CallbackURL != "" {
 		if err := validateCallbackURL(opts.CallbackURL); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
 
@@ -63,7 +85,7 @@ func runOAuth(opts OAuthOptions) (string, error) {
 			}
 		}
 		if err != nil {
-			return "", fmt.Errorf("无法启动回调服务器: %w", err)
+			return nil, fmt.Errorf("无法启动回调服务器: %w", err)
 		}
 	}
 
@@ -132,16 +154,14 @@ func runOAuth(opts OAuthOptions) (string, error) {
 
 	server := &http.Server{Handler: mux}
 	go func() {
-		if err := server.Serve(listener); err != http.ErrServerClosed {
-			// server 被关闭是正常的
-		}
+		_ = server.Serve(listener) // server 被关闭是正常的
 	}()
 
 	port := listener.Addr().(*net.TCPAddr).Port
 	state, err := generateState()
 	if err != nil {
 		server.Close()
-		return "", err
+		return nil, err
 	}
 	callbackURL := opts.CallbackURL
 	if callbackURL == "" {
@@ -153,14 +173,115 @@ func runOAuth(opts OAuthOptions) (string, error) {
 	// 写入文件便于后续读取（解决 background 模式下日志不可见的问题）
 	if err := os.WriteFile(".oauth_state", []byte(state), 0600); err != nil {
 		server.Close()
-		return "", fmt.Errorf("write oauth state: %w", err)
+		return nil, fmt.Errorf("write oauth state: %w", err)
 	}
 	if err := os.WriteFile(".oauth_url", []byte(authURL), 0600); err != nil {
 		server.Close()
-		return "", fmt.Errorf("write oauth url: %w", err)
+		return nil, fmt.Errorf("write oauth url: %w", err)
 	}
 
-	log.Printf("waiting for Command Code OAuth callback on http://127.0.0.1:%d/callback", port)
+	return &OAuthFlow{
+		AuthURL:     authURL,
+		CallbackURL: callbackURL,
+		Port:        port,
+		State:       state,
+		server:      server,
+		resultCh:    resultCh,
+		errCh:       errCh,
+		done:        make(chan struct{}),
+	}, nil
+}
+
+// Wait blocks until the flow succeeds, fails, or times out.
+func (f *OAuthFlow) Wait(timeout time.Duration) (oauthCallback, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case cb := <-f.resultCh:
+		if cb.State != f.State {
+			err := fmt.Errorf("state token 不匹配，可能被篡改")
+			f.finish(err)
+			return oauthCallback{}, err
+		}
+		f.mu.Lock()
+		f.result = &cb
+		f.mu.Unlock()
+		f.finish(nil)
+		return cb, nil
+	case err := <-f.errCh:
+		f.finish(err)
+		return oauthCallback{}, err
+	case <-timer.C:
+		err := fmt.Errorf("OAuth timed out after %s", timeout)
+		f.finish(err)
+		return oauthCallback{}, err
+	}
+}
+
+// Cancel aborts a pending flow. It is safe to call at any time.
+func (f *OAuthFlow) Cancel() {
+	select {
+	case f.errCh <- fmt.Errorf("OAuth flow canceled"):
+	default:
+	}
+	f.finish(nil)
+}
+
+// finish marks the flow complete exactly once and releases the listener.
+func (f *OAuthFlow) finish(err error) {
+	if err != nil {
+		f.mu.Lock()
+		if f.err == nil {
+			f.err = err
+		}
+		f.mu.Unlock()
+	}
+	f.closeOnce.Do(func() {
+		close(f.done)
+		_ = f.server.Close()
+	})
+}
+
+// State returns "pending", "success", or "failed" without blocking.
+func (f *OAuthFlow) StateName() string {
+	select {
+	case <-f.done:
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.err != nil {
+			return "failed"
+		}
+		return "success"
+	default:
+		return "pending"
+	}
+}
+
+// Result returns the callback payload once the state is "success".
+func (f *OAuthFlow) Result() (oauthCallback, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.result == nil {
+		return oauthCallback{}, false
+	}
+	return *f.result, true
+}
+
+// Err returns the failure reason once the state is "failed".
+func (f *OAuthFlow) Err() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err
+}
+
+// runOAuth runs the CLI flow: start, print instructions, wait.
+func runOAuth(opts OAuthOptions) (string, error) {
+	flow, err := StartOAuthFlow(opts)
+	if err != nil {
+		return "", err
+	}
+
+	log.Printf("waiting for Command Code OAuth callback on http://127.0.0.1:%d/callback", flow.Port)
 
 	fmt.Printf(`Command Code OAuth
 
@@ -175,24 +296,14 @@ If this is running on a remote server, make sure that callback URL reaches:
 
 Waiting for authorization, timeout: %s
 
-`, authURL, callbackURL, port, oauthTimeout)
+`, flow.AuthURL, flow.CallbackURL, flow.Port, oauthTimeout)
 
-	// 等待结果或错误
-	select {
-	case cb := <-resultCh:
-		server.Close()
-		if cb.State != state {
-			return "", fmt.Errorf("state token 不匹配，可能被篡改")
-		}
-		log.Printf("✓ OAuth success: user %s, key %s", cb.UserName, cb.KeyName)
-		return cb.APIKey, nil
-	case err := <-errCh:
-		server.Close()
+	cb, err := flow.Wait(oauthTimeout)
+	if err != nil {
 		return "", err
-	case <-time.After(oauthTimeout):
-		server.Close()
-		return "", fmt.Errorf("OAuth timed out after %s", oauthTimeout)
 	}
+	log.Printf("✓ OAuth success: user %s, key %s", cb.UserName, cb.KeyName)
+	return cb.APIKey, nil
 }
 
 func validateCallbackURL(rawURL string) error {

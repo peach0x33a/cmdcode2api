@@ -39,7 +39,7 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 			writeError(w, 400, "invalid_request_error", "model is required")
 			return
 		}
-		if isModelExcluded(req.Model, cfg.ExcludeModels) {
+		if isModelExcluded(req.Model, cfg.Excludes()) {
 			writeError(w, 404, "invalid_request_error", fmt.Sprintf("model %q is not available", req.Model))
 			return
 		}
@@ -48,7 +48,7 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 			return
 		}
 
-		resp, err := cc.Send(r.Context(), &req)
+		resp, acct, err := cc.Send(r.Context(), &req)
 		if err != nil {
 			var invalid *invalidRequestError
 			if errors.As(err, &invalid) {
@@ -74,9 +74,9 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 
 		if req.Stream {
 			includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
-			handleStreamWithOptions(w, resp, req.Model, usage, cfg, includeUsage)
+			handleStreamWithOptions(w, resp, req.Model, usage.ForAccount(acct), cfg, includeUsage)
 		} else {
-			handleNonStream(w, resp, req.Model, usage, cfg)
+			handleNonStream(w, resp, req.Model, usage.ForAccount(acct), cfg)
 		}
 		if err := usage.save(); err != nil {
 			log.Printf("%s save usage failed: %v", colorize("[ERROR]", ansiRed), err)
@@ -88,7 +88,7 @@ func handleStream(w http.ResponseWriter, resp *http.Response, model string, usag
 	handleStreamWithOptions(w, resp, model, usage, cfg, false)
 }
 
-func handleStreamWithOptions(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config, includeUsage bool) {
+func handleStreamWithOptions(w http.ResponseWriter, resp *http.Response, model string, usage usageRecorder, cfg *Config, includeUsage bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, 500, "server_error", "streaming not supported")
@@ -274,7 +274,7 @@ func handleStreamWithOptions(w http.ResponseWriter, resp *http.Response, model s
 	usage.Record(promptTokens, completionTokens, cacheRead, cacheWrite)
 }
 
-func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, usage *UsageTracker, cfg *Config) {
+func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, usage usageRecorder, cfg *Config) {
 	msg := Message{Role: "assistant"}
 	var toolCalls toolCallDeduper
 	normalizer := newCCEventNormalizer()
@@ -375,9 +375,10 @@ func handleNonStream(w http.ResponseWriter, resp *http.Response, model string, u
 func handleModels(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		excludes := cfg.Excludes()
 		filtered := make([]ModelInfo, 0, len(modelCatalog))
 		for _, m := range modelCatalog {
-			if !isModelExcluded(m.ID, cfg.ExcludeModels) {
+			if !isModelExcluded(m.ID, excludes) {
 				filtered = append(filtered, m)
 			}
 		}

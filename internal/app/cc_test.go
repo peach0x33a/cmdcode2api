@@ -281,7 +281,7 @@ func TestCCClientSendUsesRequestContext(t *testing.T) {
 	cancel()
 
 	client := NewCCClient("test-key", "http://127.0.0.1:1")
-	_, err := client.Send(ctx, &ChatRequest{
+	_, _, err := client.Send(ctx, &ChatRequest{
 		Model:    "test-model",
 		Messages: []Message{{Role: "user", Content: TextContent("hello")}},
 	})
@@ -300,7 +300,7 @@ func TestCCClientSendParsesTopLevelRateLimitError(t *testing.T) {
 	defer upstream.Close()
 
 	client := NewCCClient("test-key", upstream.URL)
-	_, err := client.Send(context.Background(), &ChatRequest{
+	_, _, err := client.Send(context.Background(), &ChatRequest{
 		Model:    "test-model",
 		Messages: []Message{{Role: "user", Content: TextContent("hello")}},
 	})
@@ -339,7 +339,7 @@ func TestCCClientSendPreservesNestedUpstreamErrorCode(t *testing.T) {
 	defer upstream.Close()
 
 	client := NewCCClient("test-key", upstream.URL)
-	_, err := client.Send(context.Background(), &ChatRequest{
+	_, _, err := client.Send(context.Background(), &ChatRequest{
 		Model:    "test-model",
 		Messages: []Message{{Role: "user", Content: TextContent("hello")}},
 	})

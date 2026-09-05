@@ -16,13 +16,17 @@ go build -o cmdcode2api ./cmd/cmdcode2api
 ./cmdcode2api
 ```
 
+生成的 `config.yaml` 会包含本地客户端 Key 和 WebUI 管理密码，两者都会打印一次。
+
 然后完成 Command Code OAuth：
 
 ```bash
 ./cmdcode2api --oauth
 ```
 
-OAuth 成功后，Command Code API Key 会写入运行目录下的 `config.yaml`。
+OAuth 成功后，Command Code API Key 会作为**一个账号**追加写入 `config.yaml`。
+重复执行 `--oauth`（例如换一个浏览器账号）可以继续添加账号；对已存在的 Key
+重复授权不会产生重复账号。
 
 ## 远程服务器 OAuth
 
@@ -42,15 +46,79 @@ ssh -L 5959:127.0.0.1:5959 root@your-server
 
 把程序打印出的授权链接复制到本地浏览器打开即可。
 
+## 多账号轮换
+
+`commandcode.accounts` 支持配置多个 Command Code 账号。每次请求按轮询方式
+使用下一个启用的账号，遇到账号级错误自动切换：
+
+- `429`：按上游 `Retry-After` 冷却该账号（缺省 60 秒），冷却期内跳过；全部
+  账号都在冷却时向客户端返回 `429 rate_limit_error` 和最早恢复时间。
+- `401 / 403 / 5xx`：自动换下一个账号重试，直到全部尝试完毕。
+- `400 / 422`（请求本身有问题）与客户端主动取消不重试。
+- 故障转移只发生在向客户端写出任何字节之前；流式响应一旦开始不会在另一个
+  账号上重放。
+- 每个账号的请求 / token 计数持久化在 `usage.json`；错误信息、冷却窗口等
+  运行时状态可在 WebUI 中查看。
+
+## WebUI 管理台
+
+`webui` 启用（默认）时，二进制会在根路径托管内嵌的单文件管理界面：
+
+```text
+http://localhost:11434/
+```
+
+使用服务器地址 + `admin_password` 登录。`internal/web/index.html` 也可以
+直接用浏览器打开，填任意运行实例的地址使用。
+
+功能：
+
+- **概览**：版本、运行时长、监听地址、用量统计、账号与模型概览
+- **账号**：添加（粘贴 Key 或 OAuth）、启用/禁用、连通性测试、删除；展示每账号请求数、tokens、错误、冷却状态、最近错误
+- **设置**：`base_url` 与 `exclude_models`（即时生效）、`host`/`port`/`webui`（写盘后重启生效）、修改管理密码（即时生效）
+- **日志**：内存日志环形缓冲（最近 500 行）实时查看
+
+账号与设置的修改会立即写回 `config.yaml`，无需重启。
+
+### 管理 API
+
+UI 通过 `/admin/api/*` 访问管理接口，鉴权方式为
+`Authorization: Bearer <admin_password>`，脚本 / curl 同样可用：
+
+```text
+GET    /admin/api/overview
+GET    /admin/api/accounts
+POST   /admin/api/accounts             {"name": "...", "api_key": "..."}
+PATCH  /admin/api/accounts/{id}        {"enabled": true} 或 {"name": "..."}
+DELETE /admin/api/accounts/{id}
+POST   /admin/api/accounts/{id}/test
+GET    /admin/api/settings
+PUT    /admin/api/settings
+GET    /admin/api/logs?after=SEQ
+POST   /admin/api/oauth/start
+GET    /admin/api/oauth/status
+POST   /admin/api/oauth/cancel
+```
+
+WebUI 内的 OAuth 流程要求浏览器能访问服务器的 `127.0.0.1:5959-5968` 回调
+端口（本机运行开箱即用；远程服务器请用 SSH 隧道或 CLI `--oauth`）。
+
 ## 配置
 
 `config.yaml` 位于程序运行目录，示例：
 
 ```yaml
 api_key: ccgw-generated-local-client-key
+admin_password: ccgw-admin-generated-webui-password
+webui: true
 commandcode:
-  api_key: your-command-code-api-key
   base_url: https://api.commandcode.ai
+  accounts:
+    - name: main
+      api_key: your-command-code-api-key
+      enabled: true
+    - name: backup
+      api_key: another-command-code-api-key
 host: localhost
 port: 11434
 exclude_models:
@@ -62,7 +130,10 @@ exclude_models:
 字段说明：
 
 - `api_key`：本地网关的 Bearer Token，客户端请求本服务时使用。
-- `commandcode.api_key`：通过 `--oauth` 获取的 Command Code API Key。
+- `admin_password`：WebUI 管理 API 的密码；为空时首次启动自动生成并打印一次。
+- `webui`：设为 `false` 可完全不托管内嵌 WebUI 与管理 API。
+- `commandcode.accounts`：Command Code 账号列表，请求在其间轮换。旧的
+  `commandcode.api_key` 单 Key 写法仍然识别，加载时自动迁移为单账号列表。
 - `commandcode.base_url`：Command Code API 地址。
 - `host`：HTTP 监听地址，默认 `localhost`。需要对外监听时设置为 `0.0.0.0`。
 - `port`：HTTP 监听端口，默认 `11434`。
@@ -162,3 +233,4 @@ usage.json
 .oauth_state
 .oauth_url
 ```
+

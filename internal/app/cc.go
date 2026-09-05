@@ -9,18 +9,58 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
+// CCClient sends requests to the Command Code upstream, rotating across the
+// accounts in its pool and failing over on account-scoped errors.
 type CCClient struct {
+	// APIKey is only used when Pool is nil (tests / legacy construction).
 	APIKey  string
+	Pool    *AccountPool
 	BaseURL string
 	Client  *http.Client
+
+	// baseURLMu guards BaseURL, which the admin API can update at runtime.
+	baseURLMu sync.RWMutex
+}
+
+func NewCCClient(apiKey, baseURL string) *CCClient {
+	return NewCCClientWithPool(NewAccountPool([]AccountConfig{{Name: "default", APIKey: apiKey}}), baseURL)
+}
+
+func NewCCClientWithPool(pool *AccountPool, baseURL string) *CCClient {
+	return &CCClient{
+		Pool:    pool,
+		BaseURL: baseURL,
+		Client:  &http.Client{Timeout: 600 * time.Second},
+	}
+}
+
+func (c *CCClient) BaseURLValue() string {
+	c.baseURLMu.RLock()
+	defer c.baseURLMu.RUnlock()
+	return c.BaseURL
+}
+
+func (c *CCClient) SetBaseURL(url string) {
+	c.baseURLMu.Lock()
+	defer c.baseURLMu.Unlock()
+	c.BaseURL = url
+}
+
+func (c *CCClient) pool() *AccountPool {
+	if c.Pool == nil {
+		return NewAccountPool([]AccountConfig{{Name: "default", APIKey: c.APIKey}})
+	}
+	return c.Pool
 }
 
 type invalidRequestError struct {
@@ -146,33 +186,104 @@ func retryAfterFromRateLimit(reset float64, message string, now time.Time) strin
 	return strconv.FormatInt(seconds, 10)
 }
 
-func NewCCClient(apiKey, baseURL string) *CCClient {
-	return &CCClient{
-		APIKey:  apiKey,
-		BaseURL: baseURL,
-		Client:  &http.Client{Timeout: 600 * time.Second},
-	}
-}
-
-// ConvertOpenAIToCC 把 OpenAI 格式的 ChatRequest 转成 CC 格式并发请求。
-// 返回 HTTP response body，调用者负责解析 SSE 流。
-func (c *CCClient) Send(ctx context.Context, req *ChatRequest) (*http.Response, error) {
+// Send rotates across the account pool: each attempt uses the next eligible
+// account, and account-scoped failures (401/403/429/5xx, transport errors)
+// move on to the next one. Request-scoped failures (400/422, canceled
+// contexts) return immediately. Failover only happens while the client
+// response is still unwritten — once a stream starts, it is never replayed.
+// The returned Account is the credential that produced the response or error.
+func (c *CCClient) Send(ctx context.Context, req *ChatRequest) (*http.Response, *Account, error) {
 	ccReq, err := openAIToCC(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	body, err := json.Marshal(ccReq)
 	if err != nil {
-		return nil, fmt.Errorf("marshal cc request: %w", err)
+		return nil, nil, fmt.Errorf("marshal cc request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/alpha/generate", bytes.NewReader(body))
+	pool := c.pool()
+	attempts := pool.EnabledCount()
+	if attempts == 0 {
+		return nil, nil, &upstreamAPIError{
+			Status:  http.StatusServiceUnavailable,
+			Type:    "server_error",
+			Code:    "no_accounts",
+			Message: "no enabled Command Code accounts",
+		}
+	}
+
+	var lastErr error
+	var lastAcct *Account
+	for attempt := 0; attempt < attempts; attempt++ {
+		acct := pool.Acquire()
+		if acct == nil {
+			// Every enabled account is cooling down from a 429.
+			break
+		}
+		lastAcct = acct
+		resp, err := c.doSend(ctx, body, acct.APIKey)
+		if err == nil {
+			acct.RecordSuccess()
+			return resp, acct, nil
+		}
+		acct.RecordFailure(err)
+		if !shouldFailover(err) {
+			return nil, acct, err
+		}
+		lastErr = err
+		log.Printf("[WARN] account %s request failed, failing over: %v", acct.Name, err)
+	}
+	if lastErr != nil {
+		return nil, lastAcct, lastErr
+	}
+
+	wait := pool.EarliestRateLimitWait(time.Now()).Round(time.Second)
+	retryAfter := ""
+	message := "all Command Code accounts are rate limited"
+	if wait > 0 {
+		retryAfter = strconv.FormatInt(int64(wait.Seconds()), 10)
+		message += fmt.Sprintf("; next account available in %s", wait)
+	}
+	return nil, nil, &upstreamAPIError{
+		Status:     http.StatusTooManyRequests,
+		Type:       "rate_limit_error",
+		Code:       "rate_limit_exceeded",
+		Message:    message,
+		RetryAfter: retryAfter,
+	}
+}
+
+// shouldFailover reports whether an error is worth retrying with a different
+// account. Anything that would fail identically on every account (a malformed
+// request, an abandoned connection) is not.
+func shouldFailover(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var invalid *invalidRequestError
+	if errors.As(err, &invalid) {
+		return false
+	}
+	var upstreamErr *upstreamAPIError
+	if errors.As(err, &upstreamErr) {
+		switch upstreamErr.Status {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
+			return true
+		}
+		return upstreamErr.Status >= http.StatusInternalServerError
+	}
+	return true
+}
+
+func (c *CCClient) doSend(ctx context.Context, body []byte, apiKey string) (*http.Response, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.BaseURLValue()+"/alpha/generate", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("x-command-code-version", "0.24.1")
 	httpReq.Header.Set("x-cli-environment", "production")
 

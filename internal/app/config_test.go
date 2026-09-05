@@ -82,7 +82,7 @@ func TestWriteConfigTemplateIncludesDefaultExclusionComment(t *testing.T) {
 		t.Fatalf("defaultConfig: %v", err)
 	}
 	tmp := t.TempDir() + "/config.yaml"
-	if err := writeConfigTemplate(tmp, &cfg); err != nil {
+	if err := writeConfigTemplate(tmp, cfg); err != nil {
 		t.Fatalf("writeConfigTemplate: %v", err)
 	}
 	data, err := os.ReadFile(tmp)
@@ -110,7 +110,7 @@ func TestWriteConfigTemplateDefaultExclusionLoadsActive(t *testing.T) {
 		t.Fatalf("defaultConfig: %v", err)
 	}
 	tmp := t.TempDir() + "/config.yaml"
-	if err := writeConfigTemplate(tmp, &cfg); err != nil {
+	if err := writeConfigTemplate(tmp, cfg); err != nil {
 		t.Fatalf("writeConfigTemplate: %v", err)
 	}
 	loaded, err := loadConfig(tmp)

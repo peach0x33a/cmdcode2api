@@ -12,13 +12,18 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"cmdcode2api/internal/web"
 )
+
+var serverStartedAt = time.Now()
 
 func authMiddleware(cfg *Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// /health、/usage 和 CORS preflight 不需要认证
-			if r.Method == http.MethodOptions || r.URL.Path == "/health" || r.URL.Path == "/usage" {
+			// /health、/usage、WebUI 页面和 CORS preflight 不需要 Bearer 认证；
+			// /admin/* 有独立的管理密码认证。
+			if r.Method == http.MethodOptions || isPublicPath(r.URL.Path) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -37,10 +42,37 @@ func authMiddleware(cfg *Config) func(http.Handler) http.Handler {
 	}
 }
 
+func isPublicPath(path string) bool {
+	switch path {
+	case "/health", "/usage", "/", "/index.html":
+		return true
+	}
+	return strings.HasPrefix(path, "/admin/")
+}
+
+// adminAuth guards the admin API with the separate admin_password.
+func adminAuth(cfg *Config) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			auth := r.Header.Get("Authorization")
+			if !strings.HasPrefix(auth, "Bearer ") {
+				writeAdminError(w, 401, "missing Authorization header")
+				return
+			}
+			key := strings.TrimPrefix(auth, "Bearer ")
+			if subtleConstantTimeEqual(key, cfg.adminPassword()) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			writeAdminError(w, 401, "invalid admin password")
+		})
+	}
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(204)
@@ -61,7 +93,14 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
+func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) error {
+	serverStartedAt = time.Now()
+
+	pool := cc.Pool
+	if pool == nil {
+		pool = NewAccountPool(nil)
+	}
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +113,14 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(usage.Snapshot())
 	})
+
+	// WebUI：管理 API 与内嵌的单文件界面
+	adminMux := http.NewServeMux()
+	registerAdminRoutes(adminMux, cc, pool, cfg, usage, ring)
+	mux.Handle("/admin/", adminAuth(cfg)(adminMux))
+	if cfg.WebUIEnabled() {
+		mux.HandleFunc("/", web.Handler())
+	}
 
 	var handler http.Handler = mux
 	handler = authMiddleware(cfg)(handler)
@@ -108,11 +155,14 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker) error {
 	loadedModels := len(availableModels())
 	availableCount := 0
 	for _, model := range modelCatalog {
-		if !isModelExcluded(model.ID, cfg.ExcludeModels) {
+		if !isModelExcluded(model.ID, cfg.Excludes()) {
 			availableCount++
 		}
 	}
 	log.Printf("models: %d loaded, %d available", loadedModels, availableCount)
+	if cfg.WebUIEnabled() {
+		log.Printf("webui available at http://%s/", addr)
+	}
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

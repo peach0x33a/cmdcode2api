@@ -76,7 +76,7 @@ ssh -L 5959:127.0.0.1:5959 root@your-server
 
 `api_keys` 支持配置多把客户端密钥，不同客户端各用一把，互不影响：
 
-- 可在 WebUI「密钥」页新建（留空密钥值则自动生成 `ccgw-` 密钥）、复制、启用/禁用、删除；
+- 可在 WebUI「密钥」页新建（服务端自动生成 `ccgw-` 密钥）、复制、启用/禁用、删除；
 - 每把密钥独立统计请求数与 token 用量，持久化在 `usage.json` 的 `client_keys` 字段，也在 `/usage` 中可见；
 - 旧的单一 `api_key` 字段继续有效，加载时自动迁移为名为 `default` 的一把密钥。
 
@@ -97,7 +97,7 @@ http://localhost:11434/webui
 - **概览**：版本、运行时长、监听地址、用量统计、账号/密钥/模型概览
 - **账号**：添加（粘贴 Key 或 OAuth）、编辑名称/Key、启用/禁用、连通性测试、删除；展示每账号请求数、tokens、错误、冷却状态、最近错误。OAuth 添加的账号按登录账号名自动命名
 - **模型**：上游模型复选框列表，勾选 = 对外提供（`/v1/models` 可见、可调用），取消勾选 = 隐藏并拒绝调用；本页即 exclude_models 的可视化编辑器，改动即时生效
-- **密钥**：新建调用本网关的客户端 API Key（自动生成或自定义值）、复制、启用/禁用、删除；每把密钥独立的请求与 token 统计。列表中密钥默认打码，可按需显示/复制（完整值仅在创建时展示一次）
+- **密钥**：新建调用本网关的客户端 API Key（服务端自动生成，不支持手动指定值）、复制、启用/禁用、删除；每把密钥独立的请求与 token 统计。列表中密钥默认打码，可按需显示/复制（完整值仅在创建时展示一次）
 - **设置**：`base_url`（即时生效）、`host`/`port`/`webui`（写盘后重启生效）、修改管理密码（即时生效）；exclude_models 已移至「模型」页维护
 - **日志**：内存日志环形缓冲（最近 500 行）实时查看
 
@@ -118,7 +118,7 @@ POST   /admin/api/accounts/{id}/test
 GET    /admin/api/models
 PUT    /admin/api/models               {"exposed": ["model-id", ...]}
 GET    /admin/api/keys
-POST   /admin/api/keys                 {"name": "...", "key": "ccgw-...（可选，留空自动生成）"}
+POST   /admin/api/keys                 {"name": "..."} — 密钥值一律由服务端生成，不接受指定
 GET    /admin/api/keys/{id}/reveal
 PATCH  /admin/api/keys/{id}            {"enabled": true} 或 {"name": "..."}
 DELETE /admin/api/keys/{id}

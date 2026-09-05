@@ -265,10 +265,9 @@
       <h3>新建密钥</h3>
       <div class="form-row">
         <label class="field"><span class="cap">名称（可选）</span><input type="text" id="ck-name" placeholder="例如 my-agent"></label>
-        <label class="field"><span class="cap">密钥值（留空自动生成 ccgw- 密钥）</span><input type="text" id="ck-key" placeholder="ccgw-…" class="mono"></label>
         <button class="btn primary" id="ck-add-btn">新建</button>
       </div>
-      <p class="hint">客户端密钥用于调用本网关的 OpenAI 兼容接口（Bearer 认证），每个密钥独立统计用量。删除最后一把密钥前请先创建新的。</p>
+      <p class="hint">客户端密钥由服务端自动生成（无法手动指定），用于调用本网关的 OpenAI 兼容接口（Bearer 认证），每个密钥独立统计用量；完整值仅在创建时显示一次。</p>
     </div>
     <div class="panel">
       <h3>密钥列表</h3>
@@ -781,11 +780,10 @@ async function loadKeys() {
 }
 
 async function addKey() {
-  const key = $("#ck-key").value.trim();
   const name = $("#ck-name").value.trim();
   try {
-    const created = await api("/admin/api/keys", { method: "POST", body: { name, key } });
-    $("#ck-key").value = ""; $("#ck-name").value = "";
+    const created = await api("/admin/api/keys", { method: "POST", body: { name } });
+    $("#ck-name").value = "";
     toast("密钥已创建：" + created.key);
     loadKeys();
   } catch (e) { toast(e.message, true); }
@@ -953,7 +951,7 @@ $("#acc-add-btn").addEventListener("click", addAccount);
 $("#acc-key").addEventListener("keydown", e => { if (e.key === "Enter") addAccount(); });
 $("#acc-oauth-btn").addEventListener("click", startOAuth);
 $("#ck-add-btn").addEventListener("click", addKey);
-$("#ck-key").addEventListener("keydown", e => { if (e.key === "Enter") addKey(); });
+$("#ck-name").addEventListener("keydown", e => { if (e.key === "Enter") addKey(); });
 
 $("#acct-edit-save").addEventListener("click", saveAccountEdit);
 $("#acct-edit-cancel").addEventListener("click", () => { $("#acct-modal").style.display = "none"; });

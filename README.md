@@ -294,7 +294,7 @@ Features:
 - **Overview** — version, uptime, listen address, usage counters, account/key/model summaries
 - **Accounts** — add (paste a key or run OAuth), edit name/key, enable/disable, connectivity test, delete; per-account requests, tokens, errors, cooldown state, and last error. OAuth-added accounts are named after the Command Code user automatically
 - **Models** — checkbox list of upstream models; checked = exposed via `/v1/models` and callable, unchecked = hidden. This is the editor for `exclude_models` and applies live
-- **Keys** — create local client API keys (auto-generated or custom), enable/disable, copy, delete; per-key request and token usage. Keys are masked in the list — reveal or copy them on demand (the full value is shown once at creation)
+- **Keys** — create local client API keys (always server-generated), enable/disable, copy, delete; per-key request and token usage. Keys are masked in the list — reveal or copy them on demand (the full value is shown once at creation)
 - **Settings** — edit `base_url` and `exclude_models` (live), `host`/`port`/`webui` (persisted, applied on restart), and change the admin password
 - **Logs** — tail of the in-memory log ring (last 500 lines)
 
@@ -315,7 +315,7 @@ POST   /admin/api/accounts/{id}/test
 GET    /admin/api/models
 PUT    /admin/api/models               {"exposed": ["model-id", ...]}
 GET    /admin/api/keys
-POST   /admin/api/keys                 {"name": "...", "key": "ccgw-... (optional)"}
+POST   /admin/api/keys                 {"name": "..."} — the key value is always server-generated
 GET    /admin/api/keys/{id}/reveal
 PATCH  /admin/api/keys/{id}            {"enabled": true} or {"name": "..."}
 DELETE /admin/api/keys/{id}

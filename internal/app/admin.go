@@ -312,9 +312,9 @@ func handleAdminKeysList(keys *ClientKeyPool, usage *UsageTracker) http.HandlerF
 
 func handleAdminKeyAdd(keys *ClientKeyPool, cfg *Config, usage *UsageTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// 客户端密钥由服务端生成，不接受外部指定值。
 		var body struct {
 			Name string `json:"name"`
-			Key  string `json:"key"`
 		}
 		if err := decodeJSONBody(w, r, &body); err != nil {
 			writeAdminError(w, 400, err.Error())
@@ -324,7 +324,7 @@ func handleAdminKeyAdd(keys *ClientKeyPool, cfg *Config, usage *UsageTracker) ht
 		if body.Name == "" {
 			body.Name = fmt.Sprintf("key-%d", keys.Len()+1)
 		}
-		key, err := keys.Add(body.Name, body.Key, true)
+		key, err := keys.Add(body.Name, "", true)
 		if err != nil {
 			writeAdminError(w, http.StatusConflict, err.Error())
 			return

@@ -235,16 +235,17 @@ func TestAdminClientKeyLifecycle(t *testing.T) {
 	}
 	id := created["id"].(string)
 
-	// Create with a custom key, then duplicate is rejected.
-	resp, _ = adminRequest(t, srv, "POST", "/admin/api/keys", "admin-pass-123",
-		map[string]any{"name": "mine", "key": "ccgw-custom"})
+	// A client-provided key value is ignored: the server always generates.
+	resp, second := adminRequest(t, srv, "POST", "/admin/api/keys", "admin-pass-123",
+		map[string]any{"name": "mine", "key": "ccgw-i-wish"})
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("custom create status = %d", resp.StatusCode)
+		t.Fatalf("second create status = %d", resp.StatusCode)
 	}
-	resp, _ = adminRequest(t, srv, "POST", "/admin/api/keys", "admin-pass-123",
-		map[string]any{"name": "dup", "key": "ccgw-custom"})
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("duplicate status = %d, want 409", resp.StatusCode)
+	if !strings.HasPrefix(second["key"].(string), "ccgw-") || second["key"] == "ccgw-i-wish" {
+		t.Fatalf("server must generate the value, got %v", second["key"])
+	}
+	if second["key"] == created["key"] {
+		t.Fatal("two creations must not collide")
 	}
 
 	// Usage recorded under the key's ID is returned in the list.

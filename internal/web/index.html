@@ -375,15 +375,24 @@
 <div class="modal-mask" id="oauth-modal" style="display:none">
   <div class="modal">
     <h3>通过 OAuth 添加账号</h3>
-    <p class="dim" style="font-size:13px;margin:0 0 8px">点击下面的链接在浏览器中登录 Command Code 完成授权。回调会直接发送到本服务的 <code>127.0.0.1:5959-5968</code> 端口，请确保当前浏览器可以访问服务器的该端口。</p>
-    <div class="oauth-url" id="oauth-url"></div>
-    <div class="form-row" style="margin-bottom:6px">
+    <label class="field">
+      <span class="cap">回调地址（可选，远程 / 容器部署时填写）</span>
+      <input type="text" id="oauth-callback" class="mono" placeholder="">
+    </label>
+    <p class="hint" style="margin:0 0 12px">留空 = 使用服务器本地 <code>127.0.0.1:5959-5968</code> 回调（浏览器与服务器同机时可用）。浏览器无法访问服务器该端口时（远程部署），填一个<strong>浏览器可达</strong>的本服务地址，例如 <code id="oauth-callback-hint"></code>。</p>
+    <div class="oauth-url" id="oauth-url" style="display:none"></div>
+    <div class="form-row" id="oauth-begin-row" style="margin-bottom:6px">
+      <button class="btn primary" id="oauth-begin">开始授权</button>
+      <span class="spacer" style="flex:1"></span>
+      <button class="btn" id="oauth-cancel">关闭</button>
+    </div>
+    <div class="form-row" id="oauth-open-row" style="margin-bottom:6px;display:none">
       <a class="btn primary" id="oauth-open" href="#" target="_blank" rel="noopener" style="padding:7px 14px">打开授权页面</a>
       <button class="btn" id="oauth-copy">复制链接</button>
       <span class="spacer" style="flex:1"></span>
-      <button class="btn" id="oauth-cancel">取消</button>
+      <button class="btn" id="oauth-cancel2">取消</button>
     </div>
-    <div class="status-line" id="oauth-status"></div>
+    <div class="status-line" id="oauth-status" style="display:none"></div>
   </div>
 </div>
 
@@ -933,14 +942,31 @@ async function loadLogs() {
 
 /* ---------- oauth ---------- */
 
+function openOAuthModal() {
+  $("#oauth-callback").value = "";
+  $("#oauth-callback-hint").textContent = location.origin + "/admin/api/oauth/callback";
+  $("#oauth-callback").placeholder = location.origin + "/admin/api/oauth/callback";
+  $("#oauth-url").style.display = "none";
+  $("#oauth-status").style.display = "none";
+  $("#oauth-begin-row").style.display = "";
+  $("#oauth-open-row").style.display = "none";
+  $("#oauth-modal").style.display = "";
+}
+
 function startOAuth() {
-  api("/admin/api/oauth/start", { method: "POST" }).then(r => {
+  const callbackURL = $("#oauth-callback").value.trim();
+  api("/admin/api/oauth/start", { method: "POST", body: { callback_url: callbackURL } }).then(r => {
     $("#oauth-url").textContent = r.auth_url;
     $("#oauth-open").href = r.auth_url;
+    $("#oauth-url").style.display = "";
+    $("#oauth-begin-row").style.display = "none";
+    $("#oauth-open-row").style.display = "";
+    $("#oauth-status").style.display = "";
     $("#oauth-status").innerHTML = r.already_running
       ? `<span class="spinner"></span>已有授权流程进行中，等待回调…`
-      : `<span class="spinner"></span>等待授权完成…`;
-    $("#oauth-modal").style.display = "";
+      : (callbackURL
+        ? `<span class="spinner"></span>等待 Command Code 页面向你填写的回调地址回传凭据…`
+        : `<span class="spinner"></span>等待授权完成…`);
     startOAuthPolling();
   }).catch(e => toast(e.message, true));
 }
@@ -990,7 +1016,14 @@ document.querySelectorAll("nav.tabs button").forEach(b =>
 
 $("#acc-add-btn").addEventListener("click", addAccount);
 $("#acc-key").addEventListener("keydown", e => { if (e.key === "Enter") addAccount(); });
-$("#acc-oauth-btn").addEventListener("click", startOAuth);
+$("#acc-oauth-btn").addEventListener("click", openOAuthModal);
+$("#oauth-begin").addEventListener("click", startOAuth);
+$("#oauth-cancel").addEventListener("click", () => hideModal("#oauth-modal"));
+$("#oauth-cancel2").addEventListener("click", () => {
+  api("/admin/api/oauth/cancel", { method: "POST" }).catch(() => {});
+  closeOAuth();
+});
+$("#oauth-begin-row").closest; // no-op guard against stray references
 $("#ck-add-btn").addEventListener("click", addKey);
 $("#ck-name").addEventListener("keydown", e => { if (e.key === "Enter") addKey(); });
 
@@ -1008,7 +1041,7 @@ $("#oauth-cancel").addEventListener("click", () => {
   api("/admin/api/oauth/cancel", { method: "POST" }).catch(() => {});
   closeOAuth();
 });
-$("#oauth-modal").addEventListener("click", e => { if (e.target === $("#oauth-modal")) closeOAuth(); });
+$("#oauth-modal").addEventListener("click", e => { if (e.target === $("#oauth-modal")) hideModal("#oauth-modal"); });
 
 $("#set-save-btn").addEventListener("click", saveSettings);
 

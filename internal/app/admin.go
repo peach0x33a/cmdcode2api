@@ -587,6 +587,24 @@ var (
 
 func handleAdminOAuthStart(pool *AccountPool, cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			CallbackURL string `json:"callback_url"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&body)
+		body.CallbackURL = strings.TrimSpace(body.CallbackURL)
+
+		opts := OAuthOptions{}
+		if body.CallbackURL != "" {
+			if err := validateCallbackURL(body.CallbackURL); err != nil {
+				writeAdminError(w, 400, err.Error())
+				return
+			}
+			// 自定义回调走网关自身的公开回调端点，浏览器可达即可，
+			// 无需容器内 127.0.0.1:5959 可达。
+			opts.CallbackURL = body.CallbackURL
+			opts.NoLocalListener = true
+		}
+
 		webOAuthMu.Lock()
 		if webOAuthFlow != nil && webOAuthFlow.StateName() == "pending" {
 			authURL := webOAuthFlow.AuthURL
@@ -594,7 +612,7 @@ func handleAdminOAuthStart(pool *AccountPool, cfg *Config) http.HandlerFunc {
 			writeAdminJSON(w, 200, map[string]any{"state": "pending", "auth_url": authURL, "already_running": true})
 			return
 		}
-		flow, err := StartOAuthFlow(OAuthOptions{})
+		flow, err := StartOAuthFlow(opts)
 		if err != nil {
 			webOAuthMu.Unlock()
 			writeAdminError(w, 500, err.Error())
@@ -673,6 +691,71 @@ func handleAdminOAuthCancel() http.HandlerFunc {
 			flow.Cancel()
 		}
 		writeAdminJSON(w, 200, map[string]any{"canceled": true})
+	}
+}
+
+// handleWebOAuthCallback mirrors the CLI callback server's POST contract so
+// the Command Code page can deliver credentials to a URL the browser can
+// reach (the gateway itself), instead of the container's 127.0.0.1:5959.
+// It is public by design: the single-use state token is the proof.
+func handleWebOAuthCallback() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "https://commandcode.ai")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Private-Network", "true")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(204)
+			return
+		}
+		if r.Method != "POST" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(405)
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "method not allowed"})
+			return
+		}
+
+		webOAuthMu.Lock()
+		flow := webOAuthFlow
+		webOAuthMu.Unlock()
+		if flow == nil || flow.StateName() != "pending" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "no pending OAuth flow"})
+			return
+		}
+
+		var cb oauthCallback
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&cb); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "invalid JSON"})
+			return
+		}
+		if errMsg, _ := r.URL.Query()["error"]; len(errMsg) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			json.NewEncoder(w).Encode(map[string]any{"success": true})
+			flow.Cancel()
+			return
+		}
+		if cb.APIKey == "" || cb.State == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "缺少必要字段"})
+			return
+		}
+
+		if err := flow.deliver(cb); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		json.NewEncoder(w).Encode(map[string]any{"success": true})
 	}
 }
 

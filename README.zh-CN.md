@@ -8,17 +8,65 @@
 go build -o cmdcode2api ./cmd/cmdcode2api
 ```
 
-也可以用 Docker。CI 会在每次 master 推送（`latest` 标签）和 `v*` 标签时
-自动发布镜像到 GHCR：
+## Docker
+
+CI 会在每次 master 推送（`latest` 标签）和 `v*` 标签时自动发布多架构镜像到
+GHCR。`config.yaml` 和 `usage.json` 放在 `/data` 数据卷中：
 
 ```bash
 docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data ghcr.io/peach0x33a/cmdcode2api:latest
 ```
 
-`config.yaml` 和 `usage.json` 放在 `/data` 数据卷中。本地构建用
-`docker build -t cmdcode2api .`；无法访问 proxy.golang.org 的网络可加
-`--build-arg GOPROXY=https://goproxy.cn,direct`。开箱即用的 Compose 文件见
-`docker-compose.example.yml`。
+开箱即用的 Compose 文件见 `docker-compose.example.yml`：
+
+```bash
+cp docker-compose.example.yml docker-compose.yml
+docker compose up -d
+```
+
+本地构建用 `docker build -t cmdcode2api .`；无法访问 proxy.golang.org 的
+网络可加 `--build-arg GOPROXY=https://goproxy.cn,direct`。
+
+数据目录为空时，首次启动会生成 `config.yaml`，客户端 Key 和管理密码打印
+一次（`docker compose logs` 查看），随后直接进入服务状态——没有 Command
+Code 账号也不影响启动。
+
+### 在容器内完成 OAuth
+
+OAuth 回调服务器监听的是**容器内**的 `127.0.0.1:5959-5968`，因此浏览器必须
+能访问到容器网络命名空间里的这个端口。用一次性容器运行 CLI：
+
+**浏览器和 Docker 在同一台机器** —— 共享宿主机网络，让 `127.0.0.1:5959`
+直接落到容器上，然后打开命令打印的授权链接：
+
+```bash
+docker compose run --rm --network host cmdcode2api --oauth
+```
+
+授权完成后账号会自动追加到 `/data/config.yaml`；如果网关还没启动，再
+`docker compose up -d` 即可。
+
+**浏览器在另一台机器（远程服务器）** —— 先用 SSH 把回调端口转发到本地：
+
+```bash
+ssh -L 5959:127.0.0.1:5959 user@server
+```
+
+再显式指定回调地址：
+
+```bash
+docker compose run --rm --network host cmdcode2api --oauth \
+  --oauth-callback http://localhost:5959/callback
+```
+
+不用 Compose 时的等价写法：
+
+```bash
+docker run --rm -it --network host -v cmdcode2api-data:/data ghcr.io/peach0x33a/cmdcode2api:latest --oauth
+```
+
+也可以完全跳过 OAuth：直接在 WebUI「账号」页粘贴 Command Code API Key，
+不受容器网络限制。
 
 ## 首次运行
 
@@ -95,7 +143,7 @@ http://localhost:11434/webui
 功能：
 
 - **概览**：版本、运行时长、监听地址、用量统计、账号/密钥/模型概览
-- **账号**：添加（粘贴 Key 或 OAuth）、编辑名称/Key、启用/禁用、连通性测试、删除；展示每账号请求数、tokens、错误、冷却状态、最近错误。OAuth 添加的账号按登录账号名自动命名
+- **账号**：添加（粘贴 Key 或 OAuth，OAuth 支持填写回调地址）、编辑名称/Key、启用/禁用、连通性测试、删除；展示每账号请求数、tokens、错误、冷却状态、最近错误。OAuth 添加的账号按登录账号名自动命名
 - **模型**：上游模型复选框列表，勾选 = 对外提供（`/v1/models` 可见、可调用），取消勾选 = 隐藏并拒绝调用；本页即 exclude_models 的可视化编辑器，改动即时生效
 - **密钥**：新建调用本网关的客户端 API Key（服务端自动生成，不支持手动指定值）、复制、启用/禁用、删除；每把密钥独立的请求与 token 统计。列表中密钥默认打码，可按需显示/复制（完整值仅在创建时展示一次）
 - **设置**：`base_url`（即时生效）、`host`/`port`/`webui`（写盘后重启生效）、修改管理密码（即时生效）；exclude_models 已移至「模型」页维护
@@ -130,8 +178,12 @@ GET    /admin/api/oauth/status
 POST   /admin/api/oauth/cancel
 ```
 
-WebUI 内的 OAuth 流程要求浏览器能访问服务器的 `127.0.0.1:5959-5968` 回调
-端口（本机运行开箱即用；远程服务器请用 SSH 隧道或 CLI `--oauth`）。
+WebUI 的 OAuth 弹窗支持**填写回调地址**：默认使用服务器本地
+`127.0.0.1:5959-5968` 回调（浏览器与服务器同机时开箱即用）；远程 / 容器部署
+时，在弹窗中填一个浏览器可达的本服务地址，例如
+`http://<server>:11434/admin/api/oauth/callback`，Command Code 页面会把凭据
+POST 到该地址（由一次性 state token 保护）。SSH 隧道或 CLI `--oauth` 仍是
+备选方案。
 
 ## 配置
 

@@ -31,7 +31,11 @@ func newAdminTestEnv(t *testing.T) (*httptest.Server, *AccountPool, *ClientKeyPo
 
 	mux := http.NewServeMux()
 	registerAdminRoutes(mux, cc, pool, keys, cfg, usage, ring)
-	srv := httptest.NewServer(adminAuth(cfg)(mux))
+	// Mirror runServer: the public OAuth callback lives outside adminAuth.
+	root := http.NewServeMux()
+	root.HandleFunc("POST /admin/api/oauth/callback", handleWebOAuthCallback())
+	root.Handle("/admin/", adminAuth(cfg)(mux))
+	srv := httptest.NewServer(root)
 	t.Cleanup(srv.Close)
 	return srv, pool, keys, cfg, usage, ring
 }

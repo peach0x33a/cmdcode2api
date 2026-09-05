@@ -31,6 +31,10 @@ type oauthCallback struct {
 
 type OAuthOptions struct {
 	CallbackURL string
+	// NoLocalListener skips the 127.0.0.1 callback server. Use when the
+	// callback is delivered through another endpoint (e.g. the WebUI's own
+	// /admin/api/oauth/callback), which then must call flow.deliver.
+	NoLocalListener bool
 }
 
 // OAuthFlow is a running OAuth authorization. The CLI blocks on Wait; the
@@ -42,11 +46,12 @@ type OAuthFlow struct {
 	Port        int
 	State       string
 
-	server    *http.Server
-	resultCh  chan oauthCallback
-	errCh     chan error
-	done      chan struct{}
-	closeOnce sync.Once
+	server     *http.Server // nil in NoLocalListener mode
+	noListener bool
+	resultCh   chan oauthCallback
+	errCh      chan error
+	done       chan struct{}
+	closeOnce  sync.Once
 
 	mu     sync.Mutex
 	result *oauthCallback
@@ -62,17 +67,23 @@ func generateState() (string, error) {
 	return base64.URLEncoding.EncodeToString([]byte(state)), nil
 }
 
-// StartOAuthFlow starts the local callback server and returns a handle for
-// awaiting the authorization result. The caller must eventually Wait or
-// Cancel the flow so the listener is released.
+// StartOAuthFlow starts the OAuth flow and returns a handle for awaiting the
+// authorization result. Unless NoLocalListener is set, it also starts the
+// 127.0.0.1 callback server; the caller must eventually Wait or Cancel the
+// flow so the listener is released.
 func StartOAuthFlow(opts OAuthOptions) (*OAuthFlow, error) {
-	listenHost := "127.0.0.1"
-	listenPort := oauthPortStart
 	if opts.CallbackURL != "" {
 		if err := validateCallbackURL(opts.CallbackURL); err != nil {
 			return nil, err
 		}
 	}
+
+	if opts.NoLocalListener {
+		return newOAuthFlow(opts, nil)
+	}
+
+	listenHost := "127.0.0.1"
+	listenPort := oauthPortStart
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", listenHost, listenPort))
 	if err != nil {
@@ -157,39 +168,88 @@ func StartOAuthFlow(opts OAuthOptions) (*OAuthFlow, error) {
 		_ = server.Serve(listener) // server 被关闭是正常的
 	}()
 
-	port := listener.Addr().(*net.TCPAddr).Port
-	state, err := generateState()
+	flow, err := newOAuthFlow(opts, server)
 	if err != nil {
 		server.Close()
 		return nil, err
 	}
-	callbackURL := opts.CallbackURL
-	if callbackURL == "" {
-		callbackURL = fmt.Sprintf("http://localhost:%d/callback", port)
+	flow.Port = listener.Addr().(*net.TCPAddr).Port
+	flow.CallbackURL = opts.CallbackURL
+	if flow.CallbackURL == "" {
+		flow.CallbackURL = fmt.Sprintf("http://localhost:%d/callback", flow.Port)
 	}
-	authURL := fmt.Sprintf("%s/studio/auth/cli?callback=%s&state=%s",
-		studioBaseURL, callbackURL, state)
+	flow.AuthURL = buildAuthURL(flow.CallbackURL, flow.State)
+	if err := flow.writeScratchFiles(); err != nil {
+		flow.finish(err)
+		return nil, err
+	}
+	return flow, nil
+}
 
-	// 写入文件便于后续读取（解决 background 模式下日志不可见的问题）
-	if err := os.WriteFile(".oauth_state", []byte(state), 0600); err != nil {
-		server.Close()
-		return nil, fmt.Errorf("write oauth state: %w", err)
+// newOAuthFlow builds the flow shared state. The listener server is optional
+// (NoLocalListener mode delivers via flow.deliver instead).
+func newOAuthFlow(opts OAuthOptions, server *http.Server) (*OAuthFlow, error) {
+	state, err := generateState()
+	if err != nil {
+		return nil, err
 	}
-	if err := os.WriteFile(".oauth_url", []byte(authURL), 0600); err != nil {
-		server.Close()
-		return nil, fmt.Errorf("write oauth url: %w", err)
+	flow := &OAuthFlow{
+		State:      state,
+		server:     server,
+		resultCh:   make(chan oauthCallback, 1),
+		errCh:      make(chan error, 1),
+		done:       make(chan struct{}),
+		noListener: opts.NoLocalListener,
 	}
+	if opts.CallbackURL != "" {
+		flow.CallbackURL = opts.CallbackURL
+		flow.AuthURL = buildAuthURL(opts.CallbackURL, state)
+		if writeErr := flow.writeScratchFiles(); writeErr != nil {
+			return nil, writeErr
+		}
+	}
+	return flow, nil
+}
 
-	return &OAuthFlow{
-		AuthURL:     authURL,
-		CallbackURL: callbackURL,
-		Port:        port,
-		State:       state,
-		server:      server,
-		resultCh:    resultCh,
-		errCh:       errCh,
-		done:        make(chan struct{}),
-	}, nil
+func buildAuthURL(callbackURL, state string) string {
+	return fmt.Sprintf("%s/studio/auth/cli?callback=%s&state=%s",
+		studioBaseURL, url.QueryEscape(callbackURL), state)
+}
+
+// writeScratchFiles persists the URL/state for background CLI runs.
+func (f *OAuthFlow) writeScratchFiles() error {
+	if err := os.WriteFile(".oauth_state", []byte(f.State), 0600); err != nil {
+		return fmt.Errorf("write oauth state: %w", err)
+	}
+	if f.AuthURL == "" {
+		return nil
+	}
+	if err := os.WriteFile(".oauth_url", []byte(f.AuthURL), 0600); err != nil {
+		return fmt.Errorf("write oauth url: %w", err)
+	}
+	return nil
+}
+
+// deliver accepts a callback payload from an external transport (the WebUI
+// callback endpoint). It mirrors the state check the local server relies on.
+func (f *OAuthFlow) deliver(cb oauthCallback) error {
+	select {
+	case <-f.done:
+		return fmt.Errorf("OAuth flow is no longer pending")
+	default:
+	}
+	if cb.State != f.State {
+		return fmt.Errorf("state token 不匹配，可能被篡改")
+	}
+	f.mu.Lock()
+	f.result = &cb
+	f.mu.Unlock()
+	f.finish(nil)
+	select {
+	case f.resultCh <- cb:
+	default:
+	}
+	return nil
 }
 
 // Wait blocks until the flow succeeds, fails, or times out.
@@ -238,7 +298,9 @@ func (f *OAuthFlow) finish(err error) {
 	}
 	f.closeOnce.Do(func() {
 		close(f.done)
-		_ = f.server.Close()
+		if f.server != nil {
+			_ = f.server.Close()
+		}
 	})
 }
 

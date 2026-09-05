@@ -151,6 +151,9 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 	registerAdminRoutes(adminMux, cc, pool, keys, cfg, usage, ring)
 	if cfg.WebUIEnabled() {
 		mux.Handle("/admin/", adminAuth(cfg)(adminMux))
+		// Command Code 页面回传凭据的公开端点（靠 state 校验，非管理密码）。
+		// 注册为更具体的 pattern，绕过 adminAuth。
+		mux.HandleFunc("POST /admin/api/oauth/callback", handleWebOAuthCallback())
 		mux.HandleFunc("/webui", web.Handler())
 		mux.HandleFunc("/webui/", web.Handler())
 	}

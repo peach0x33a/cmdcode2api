@@ -29,17 +29,70 @@ The project was originally named `cc-gateway`; it was renamed to avoid confusion
 go build -o cmdcode2api ./cmd/cmdcode2api
 ```
 
-Or with Docker — prebuilt images are published to GHCR by CI on every
-master push (`latest`) and every `v*` tag:
+## Docker
+
+Prebuilt multi-arch images are published to GHCR by CI on every master push
+(`latest`) and every `v*` tag. `config.yaml` and `usage.json` live in the
+`/data` volume, so bind-mount or name a volume for them:
 
 ```bash
 docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data ghcr.io/peach0x33a/cmdcode2api:latest
 ```
 
-`config.yaml` and `usage.json` live in the `/data` volume. To build locally,
-use `docker build -t cmdcode2api .` — networks that cannot reach
-proxy.golang.org can pass `--build-arg GOPROXY=https://goproxy.cn,direct`.
-A ready-to-copy Compose file is provided as `docker-compose.example.yml`.
+A ready-to-copy Compose file is provided as `docker-compose.example.yml`:
+
+```bash
+cp docker-compose.example.yml docker-compose.yml
+docker compose up -d
+```
+
+To build the image locally, use `docker build -t cmdcode2api .` — networks
+that cannot reach proxy.golang.org can pass
+`--build-arg GOPROXY=https://goproxy.cn,direct`.
+
+With an empty data directory the first start generates `config.yaml`, prints
+the client key and admin password once (`docker compose logs`), and then
+serves — the gateway starts fine with zero Command Code accounts.
+
+### OAuth inside the container
+
+The OAuth callback server listens on `127.0.0.1:5959-5968` *inside the
+container*, so the browser must be able to reach that port in the container's
+network namespace. Run the CLI in a dedicated container:
+
+**Browser on the same machine** — share the host network so `127.0.0.1:5959`
+reaches the container, then open the printed URL:
+
+```bash
+docker compose run --rm --network host cmdcode2api --oauth
+```
+
+Once you authorize, the account is appended to `/data/config.yaml`
+automatically; `docker compose up -d` afterwards if the gateway is still
+stopped.
+
+**Browser on a different machine (remote server)** — forward the callback
+port over SSH first:
+
+```bash
+ssh -L 5959:127.0.0.1:5959 user@server
+```
+
+then pass an explicit callback URL:
+
+```bash
+docker compose run --rm --network host cmdcode2api --oauth \
+  --oauth-callback http://localhost:5959/callback
+```
+
+Without Compose, the same one-off run looks like:
+
+```bash
+docker run --rm -it --network host -v cmdcode2api-data:/data ghcr.io/peach0x33a/cmdcode2api:latest --oauth
+```
+
+Or skip OAuth entirely: the WebUI (Accounts tab) accepts a pasted Command
+Code API key, which works regardless of container networking.
 
 ## Project layout
 
@@ -292,7 +345,7 @@ pointed at any running instance.
 Features:
 
 - **Overview** — version, uptime, listen address, usage counters, account/key/model summaries
-- **Accounts** — add (paste a key or run OAuth), edit name/key, enable/disable, connectivity test, delete; per-account requests, tokens, errors, cooldown state, and last error. OAuth-added accounts are named after the Command Code user automatically
+- **Accounts** — add (paste a key or run OAuth with an optional callback URL), edit name/key, enable/disable, connectivity test, delete; per-account requests, tokens, errors, cooldown state, and last error. OAuth-added accounts are named after the Command Code user automatically
 - **Models** — checkbox list of upstream models; checked = exposed via `/v1/models` and callable, unchecked = hidden. This is the editor for `exclude_models` and applies live
 - **Keys** — create local client API keys (always server-generated), enable/disable, copy, delete; per-key request and token usage. Keys are masked in the list — reveal or copy them on demand (the full value is shown once at creation)
 - **Settings** — edit `base_url` and `exclude_models` (live), `host`/`port`/`webui` (persisted, applied on restart), and change the admin password
@@ -327,9 +380,14 @@ GET    /admin/api/oauth/status
 POST   /admin/api/oauth/cancel
 ```
 
-The WebUI OAuth flow needs the browser to reach the server's
-`127.0.0.1:5959-5968` callback ports (local runs work out of the box; on
-remote servers use an SSH tunnel or the CLI `--oauth` mode instead).
+By default the WebUI OAuth flow uses the server's local `127.0.0.1:5959-5968`
+callback ports (works when the browser runs on the same machine). For remote
+or containerized deployments, fill in the **callback URL** field in the OAuth
+dialog with an address the browser can reach — the gateway's own
+`http://<server>:11434/admin/api/oauth/callback` is the usual choice. The
+Command Code page then posts the credential there; the transfer is protected
+by a single-use state token. The CLI `--oauth` mode and an SSH tunnel remain
+alternatives.
 
 ## Files intentionally not committed
 

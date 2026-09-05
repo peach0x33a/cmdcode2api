@@ -1,0 +1,13 @@
+.git
+.github
+.taskman
+.zcode
+cmdcode2api
+cc-gateway
+*.exe
+config.yaml
+usage.json
+.oauth_state
+.oauth_url
+*.log
+codebase_review.md

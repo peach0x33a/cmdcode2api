@@ -15,11 +15,11 @@ The project was originally named `cc-gateway`; it was renamed to avoid confusion
 - OpenAI base64 data `image_url` conversion to Command Code / Anthropic-style image blocks
 - Multiple Command Code accounts with round-robin rotation and automatic failover (401/403/429/5xx), including per-account 429 cooldown
 - Multiple local client API keys with per-key usage tracking, managed in the WebUI or `config.yaml`
-- Embedded single-file WebUI: usage dashboard, account management (add/enable/disable/test/delete), live settings, and log tail
+- Embedded single-file WebUI: usage dashboard, account/key management, model exposure editor, live settings, and log tail
 - Browser OAuth helper for obtaining a Command Code API key (CLI or from the WebUI); each OAuth run adds an account
 - Local bearer-token auth for clients and a separate admin password for the WebUI
 - CORS enabled for local UI clients
-- Usage counters (global and per-account) persisted to `usage.json`
+- Usage counters (global, per-account, and per-client-key) persisted to `usage.json`
 - Health endpoint: `GET /health`
 - Usage endpoint: `GET /usage`
 
@@ -28,6 +28,17 @@ The project was originally named `cc-gateway`; it was renamed to avoid confusion
 ```bash
 go build -o cmdcode2api ./cmd/cmdcode2api
 ```
+
+Or with Docker:
+
+```bash
+docker build -t cmdcode2api .
+docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data cmdcode2api
+```
+
+`config.yaml` and `usage.json` live in the `/data` volume. Networks that
+cannot reach proxy.golang.org can build with
+`--build-arg GOPROXY=https://goproxy.cn,direct`.
 
 ## Project layout
 
@@ -113,7 +124,7 @@ Fields:
 - `commandcode.base_url` — Command Code API base URL.
 - `host` — HTTP listen host. Defaults to `localhost`. Use `0.0.0.0` to listen on all interfaces.
 - `port` — local listen port. Defaults to `11434`.
-- `exclude_models` — model ID prefixes hidden from `/v1/models` and rejected by `/v1/chat/completions`.
+- `exclude_models` — model ID prefixes hidden from `/v1/models` and rejected by `/v1/chat/completions`. Maintained from the WebUI's Models tab, where the upstream catalog is shown with checkboxes.
 
 New configs exclude `gpt-`, `claude-`, and `gemini-` by default. These prefixes match both plain model IDs such as `gpt-4` and provider-qualified IDs such as `openai/gpt-4` by checking the part after the final `/`.
 
@@ -171,7 +182,7 @@ Set the base URL to your local gateway:
 http://localhost:11434/v1
 ```
 
-Use the generated `api_key` from `config.yaml` as the bearer token.
+Use any key from the `api_keys` list in `config.yaml` as the bearer token.
 
 ### curl example
 
@@ -240,7 +251,8 @@ For `/v1/chat/completions`, upstream `inputTokenDetails.cacheReadTokens` is expo
 
 ### `GET /v1/models`
 
-Returns the model list after applying `exclude_models` filtering.
+Returns the model list after applying `exclude_models` filtering. Each entry
+carries a `context_window` field when the upstream reports one.
 
 ### `POST /v1/chat/completions`
 
@@ -291,9 +303,11 @@ The UI talks to a JSON API under `/admin/api/*`, authenticated with
 GET    /admin/api/overview
 GET    /admin/api/accounts
 POST   /admin/api/accounts             {"name": "...", "api_key": "..."}
-PATCH  /admin/api/accounts/{id}        {"enabled": true} or {"name": "..."}
+PATCH  /admin/api/accounts/{id}        {"enabled": true}, {"name": "..."} or {"api_key": "..."}
 DELETE /admin/api/accounts/{id}
 POST   /admin/api/accounts/{id}/test
+GET    /admin/api/models
+PUT    /admin/api/models               {"exposed": ["model-id", ...]}
 GET    /admin/api/keys
 POST   /admin/api/keys                 {"name": "...", "key": "ccgw-... (optional)"}
 PATCH  /admin/api/keys/{id}            {"enabled": true} or {"name": "..."}

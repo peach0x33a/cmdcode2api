@@ -8,6 +8,17 @@
 go build -o cmdcode2api ./cmd/cmdcode2api
 ```
 
+也可以用 Docker：
+
+```bash
+docker build -t cmdcode2api .
+docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data cmdcode2api
+```
+
+`config.yaml` 和 `usage.json` 放在 `/data` 数据卷中。无法访问
+proxy.golang.org 的网络可加
+`--build-arg GOPROXY=https://goproxy.cn,direct` 构建。
+
 ## 首次运行
 
 先运行一次生成配置：
@@ -83,11 +94,11 @@ http://localhost:11434/webui
 
 功能：
 
-- **概览**：版本、运行时长、监听地址、用量统计、账号与模型概览
+- **概览**：版本、运行时长、监听地址、用量统计、账号/密钥/模型概览
 - **账号**：添加（粘贴 Key 或 OAuth）、编辑名称/Key、启用/禁用、连通性测试、删除；展示每账号请求数、tokens、错误、冷却状态、最近错误。OAuth 添加的账号按登录账号名自动命名
 - **模型**：上游模型复选框列表，勾选 = 对外提供（`/v1/models` 可见、可调用），取消勾选 = 隐藏并拒绝调用；本页即 exclude_models 的可视化编辑器，改动即时生效
 - **密钥**：新建调用本网关的客户端 API Key（自动生成或自定义值）、复制、启用/禁用、删除；每把密钥独立的请求与 token 统计
-- **设置**：`base_url` 与 `exclude_models`（即时生效）、`host`/`port`/`webui`（写盘后重启生效）、修改管理密码（即时生效）
+- **设置**：`base_url`（即时生效）、`host`/`port`/`webui`（写盘后重启生效）、修改管理密码（即时生效）；exclude_models 已移至「模型」页维护
 - **日志**：内存日志环形缓冲（最近 500 行）实时查看
 
 账号与设置的修改会立即写回 `config.yaml`，无需重启。
@@ -104,6 +115,8 @@ POST   /admin/api/accounts             {"name": "...", "api_key": "..."}
 PATCH  /admin/api/accounts/{id}        {"enabled": true} 或 {"name": "..."}
 DELETE /admin/api/accounts/{id}
 POST   /admin/api/accounts/{id}/test
+GET    /admin/api/models
+PUT    /admin/api/models               {"exposed": ["model-id", ...]}
 GET    /admin/api/keys
 POST   /admin/api/keys                 {"name": "...", "key": "ccgw-...（可选，留空自动生成）"}
 PATCH  /admin/api/keys/{id}            {"enabled": true} 或 {"name": "..."}
@@ -159,7 +172,7 @@ exclude_models:
 - `commandcode.base_url`：Command Code API 地址。
 - `host`：HTTP 监听地址，默认 `localhost`。需要对外监听时设置为 `0.0.0.0`。
 - `port`：HTTP 监听端口，默认 `11434`。
-- `exclude_models`：要从 `/v1/models` 隐藏、并在 `/v1/chat/completions` 中拒绝调用的模型 ID 前缀。
+- `exclude_models`：要从 `/v1/models` 隐藏、并在 `/v1/chat/completions` 中拒绝调用的模型 ID 前缀。在 WebUI「模型」页以复选框方式维护。
 
 新生成的配置默认排除 `gpt-`、`claude-`、`gemini-` 前缀。匹配时会同时支持普通模型 ID（例如 `gpt-4`）和带 provider 的 ID（例如 `openai/gpt-4`，会匹配最后一个 `/` 后面的 `gpt-4`）。
 
@@ -204,7 +217,7 @@ http://localhost:11434/v1
 https://example.com/ai/v1
 ```
 
-客户端 Bearer Token 使用 `config.yaml` 里的 `api_key`。
+客户端 Bearer Token 使用 `config.yaml` 里 `api_keys` 列表中的任意一把密钥。
 
 ## 模型 ID
 
@@ -224,6 +237,8 @@ deepseek-ai/deepseek-v4-flash
 ```
 
 如果 `/v1/chat/completions` 请求命中 `exclude_models`，服务会返回 `404` 和 OpenAI 兼容的错误 JSON，表示该模型不可用。
+
+`/v1/models` 的每个条目在上游提供时会附带 `context_window` 字段（上下文窗口大小）。
 
 ## 测试请求
 

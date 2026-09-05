@@ -12,7 +12,7 @@ go build -o cmdcode2api ./cmd/cmdcode2api
 自动发布镜像到 GHCR：
 
 ```bash
-docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data ghcr.io/synthetic-coworkers/cmdcode2api:latest
+docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data ghcr.io/peach0x33a/cmdcode2api:latest
 ```
 
 `config.yaml` 和 `usage.json` 放在 `/data` 数据卷中。本地构建用

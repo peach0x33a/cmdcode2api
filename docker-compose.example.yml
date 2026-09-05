@@ -9,7 +9,7 @@
 
 services:
   cmdcode2api:
-    image: ghcr.io/synthetic-coworkers/cmdcode2api:latest
+    image: ghcr.io/peach0x33a/cmdcode2api:latest
     container_name: cmdcode2api
     restart: unless-stopped
     ports:

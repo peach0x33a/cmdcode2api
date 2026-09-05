@@ -33,7 +33,7 @@ Or with Docker — prebuilt images are published to GHCR by CI on every
 master push (`latest`) and every `v*` tag:
 
 ```bash
-docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data ghcr.io/synthetic-coworkers/cmdcode2api:latest
+docker run -d --name cmdcode2api -p 11434:11434 -v cmdcode2api-data:/data ghcr.io/peach0x33a/cmdcode2api:latest
 ```
 
 `config.yaml` and `usage.json` live in the `/data` volume. To build locally,

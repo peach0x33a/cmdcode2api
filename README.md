@@ -14,6 +14,7 @@ The project was originally named `cc-gateway`; it was renamed to avoid confusion
 - Streaming and non-streaming chat completions
 - OpenAI base64 data `image_url` conversion to Command Code / Anthropic-style image blocks
 - Multiple Command Code accounts with round-robin rotation and automatic failover (401/403/429/5xx), including per-account 429 cooldown
+- Multiple local client API keys with per-key usage tracking, managed in the WebUI or `config.yaml`
 - Embedded single-file WebUI: usage dashboard, account management (add/enable/disable/test/delete), live settings, and log tail
 - Browser OAuth helper for obtaining a Command Code API key (CLI or from the WebUI); each OAuth run adds an account
 - Local bearer-token auth for clients and a separate admin password for the WebUI
@@ -79,7 +80,12 @@ Example shape:
 
 ```yaml
 api_key: ccgw-generated-local-client-key
-admin_password: ccgw-admin-generated-webui-password
+api_keys:
+  - name: default
+    key: ccgw-generated-local-client-key
+  - name: my-agent
+    key: ccgw-another-client-key
+admin_password: kR7vBn2xQm9T
 webui: true
 commandcode:
   base_url: https://api.commandcode.ai
@@ -99,7 +105,8 @@ exclude_models:
 
 Fields:
 
-- `api_key` — local bearer token required by clients calling this gateway.
+- `api_key` — legacy single local client key. Migrated into `api_keys` on load and cleared on save once the list is non-empty.
+- `api_keys` — local bearer keys that clients use to call this gateway. Requests and token usage are tracked per key. Manage them in the WebUI (generate new keys, enable/disable, delete); changes apply immediately and persist here.
 - `admin_password` — password for the WebUI admin API. Generated on first start when empty and printed once.
 - `webui` — set to `false` to disable serving the embedded WebUI and admin API entirely.
 - `commandcode.accounts` — list of Command Code credentials. Requests rotate across enabled accounts (see below). The legacy single-key field `commandcode.api_key` is still accepted and migrated to a one-entry list on load.
@@ -220,6 +227,9 @@ per-account counters when accounts are configured:
   "cache_write_tokens": 0,
   "accounts": {
     "a1b2c3d4": {"requests": 1, "prompt_tokens": 7527, "completion_tokens": 55, "cache_read_tokens": 7424, "cache_write_tokens": 0}
+  },
+  "client_keys": {
+    "k9f8e7d6c": {"requests": 1, "prompt_tokens": 7527, "completion_tokens": 55, "cache_read_tokens": 7424, "cache_write_tokens": 0}
   }
 }
 ```
@@ -263,8 +273,10 @@ pointed at any running instance.
 
 Features:
 
-- **Overview** — version, uptime, listen address, usage counters, account and model summaries
-- **Accounts** — add (paste a key or run OAuth), enable/disable, connectivity test, delete; per-account requests, tokens, errors, cooldown state, and last error
+- **Overview** — version, uptime, listen address, usage counters, account/key/model summaries
+- **Accounts** — add (paste a key or run OAuth), edit name/key, enable/disable, connectivity test, delete; per-account requests, tokens, errors, cooldown state, and last error. OAuth-added accounts are named after the Command Code user automatically
+- **Models** — checkbox list of upstream models; checked = exposed via `/v1/models` and callable, unchecked = hidden. This is the editor for `exclude_models` and applies live
+- **Keys** — create local client API keys (auto-generated or custom), enable/disable, copy, delete; per-key request and token usage
 - **Settings** — edit `base_url` and `exclude_models` (live), `host`/`port`/`webui` (persisted, applied on restart), and change the admin password
 - **Logs** — tail of the in-memory log ring (last 500 lines)
 
@@ -282,6 +294,10 @@ POST   /admin/api/accounts             {"name": "...", "api_key": "..."}
 PATCH  /admin/api/accounts/{id}        {"enabled": true} or {"name": "..."}
 DELETE /admin/api/accounts/{id}
 POST   /admin/api/accounts/{id}/test
+GET    /admin/api/keys
+POST   /admin/api/keys                 {"name": "...", "key": "ccgw-... (optional)"}
+PATCH  /admin/api/keys/{id}            {"enabled": true} or {"name": "..."}
+DELETE /admin/api/keys/{id}            (the last remaining key cannot be deleted)
 GET    /admin/api/settings
 PUT    /admin/api/settings
 GET    /admin/api/logs?after=SEQ

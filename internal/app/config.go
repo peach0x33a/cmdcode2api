@@ -19,8 +19,24 @@ func (a AccountConfig) IsEnabled() bool {
 	return a.Enabled == nil || *a.Enabled
 }
 
+// ClientKeyConfig is one local bearer key that clients use to call this
+// gateway.
+type ClientKeyConfig struct {
+	Name    string `yaml:"name"`
+	Key     string `yaml:"key"`
+	Enabled *bool  `yaml:"enabled,omitempty"` // nil means enabled
+}
+
+func (k ClientKeyConfig) IsEnabled() bool {
+	return k.Enabled == nil || *k.Enabled
+}
+
 type Config struct {
 	APIKey string `yaml:"api_key"`
+	// APIKeys is the list of local client keys. The legacy single api_key
+	// field above is migrated into it on load and cleared on save once the
+	// list is non-empty.
+	APIKeys []ClientKeyConfig `yaml:"api_keys,omitempty"`
 	// AdminPassword guards the WebUI admin API. Generated on first start when
 	// empty; changeable at runtime via the admin API.
 	AdminPassword string `yaml:"admin_password,omitempty"`
@@ -102,6 +118,7 @@ func defaultConfig() (*Config, error) {
 		Port:          11434,
 		ExcludeModels: []string{"gpt-", "claude-", "gemini-"},
 	}
+	c.APIKeys = []ClientKeyConfig{{Name: "default", Key: apiKey}}
 	c.CommandCode.BaseURL = "https://api.commandcode.ai"
 	return c, nil
 }
@@ -115,15 +132,12 @@ func genAPIKey() (string, error) {
 }
 
 func genAdminPassword() (string, error) {
-	key, err := randomHex(18)
-	if err != nil {
-		return "", fmt.Errorf("generate admin password: %w", err)
-	}
-	return "ccgw-admin-" + key, nil
+	// 12 位纯随机字符即可，不加可读前缀
+	return randomPassword(12)
 }
 
-// loadConfig reads config.yaml and migrates the legacy single-key field into
-// the accounts list.
+// loadConfig reads config.yaml and migrates the legacy single-key fields into
+// the accounts and client-keys lists.
 func loadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -139,15 +153,21 @@ func loadConfig(path string) (*Config, error) {
 	if len(cfg.CommandCode.Accounts) == 0 && cfg.CommandCode.APIKey != "" {
 		cfg.CommandCode.Accounts = []AccountConfig{{Name: "default", APIKey: cfg.CommandCode.APIKey}}
 	}
+	if len(cfg.APIKeys) == 0 && cfg.APIKey != "" {
+		cfg.APIKeys = []ClientKeyConfig{{Name: "default", Key: cfg.APIKey}}
+	}
 	return &cfg, nil
 }
 
 func saveConfig(path string, cfg *Config) error {
 	cfg.mu.Lock()
-	// A non-empty accounts list is the source of truth; keeping the legacy
-	// field would resurrect a deleted key on the next load.
+	// Non-empty lists are the source of truth; keeping the legacy fields
+	// would resurrect deleted keys on the next load.
 	if len(cfg.CommandCode.Accounts) > 0 {
 		cfg.CommandCode.APIKey = ""
+	}
+	if len(cfg.APIKeys) > 0 {
+		cfg.APIKey = ""
 	}
 	data, err := yaml.Marshal(cfg)
 	cfg.mu.Unlock()
@@ -170,7 +190,8 @@ func writeConfigTemplate(path string, cfg *Config) error {
 		"# Remove entries below or set exclude_models: [] to make all models available.\n" +
 		"\n" +
 		"# commandcode.accounts holds one or more upstream API keys; requests are\n" +
-		"# rotated across them. admin_password guards the WebUI admin API.\n" +
+		"# rotated across them. api_keys holds the local bearer keys that clients\n" +
+		"# use to call this gateway; both are editable in the WebUI at /webui.\n" +
 		"\n" +
 		string(data)
 	return os.WriteFile(path, []byte(template), 0600)

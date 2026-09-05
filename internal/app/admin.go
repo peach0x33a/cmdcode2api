@@ -14,13 +14,19 @@ import (
 
 // registerAdminRoutes wires the admin JSON API used by the WebUI. It must be
 // mounted behind adminAuth.
-func registerAdminRoutes(mux *http.ServeMux, cc *CCClient, pool *AccountPool, cfg *Config, usage *UsageTracker, ring *logRing) {
-	mux.HandleFunc("GET /admin/api/overview", handleAdminOverview(cfg, pool, usage))
+func registerAdminRoutes(mux *http.ServeMux, cc *CCClient, pool *AccountPool, keys *ClientKeyPool, cfg *Config, usage *UsageTracker, ring *logRing) {
+	mux.HandleFunc("GET /admin/api/overview", handleAdminOverview(cfg, pool, keys, usage))
 	mux.HandleFunc("GET /admin/api/accounts", handleAdminAccountsList(pool, usage))
 	mux.HandleFunc("POST /admin/api/accounts", handleAdminAccountAdd(pool, cfg, usage))
 	mux.HandleFunc("PATCH /admin/api/accounts/{id}", handleAdminAccountPatch(pool, cfg, usage))
 	mux.HandleFunc("DELETE /admin/api/accounts/{id}", handleAdminAccountDelete(pool, cfg, usage))
 	mux.HandleFunc("POST /admin/api/accounts/{id}/test", handleAdminAccountTest(pool, cc))
+	mux.HandleFunc("GET /admin/api/models", handleAdminModelsGet(cfg))
+	mux.HandleFunc("PUT /admin/api/models", handleAdminModelsPut(cfg))
+	mux.HandleFunc("GET /admin/api/keys", handleAdminKeysList(keys, usage))
+	mux.HandleFunc("POST /admin/api/keys", handleAdminKeyAdd(keys, cfg, usage))
+	mux.HandleFunc("PATCH /admin/api/keys/{id}", handleAdminKeyPatch(keys, cfg, usage))
+	mux.HandleFunc("DELETE /admin/api/keys/{id}", handleAdminKeyDelete(keys, cfg, usage))
 	mux.HandleFunc("GET /admin/api/settings", handleAdminSettingsGet(cfg))
 	mux.HandleFunc("PUT /admin/api/settings", handleAdminSettingsPut(cfg, cc, pool))
 	mux.HandleFunc("GET /admin/api/logs", handleAdminLogs(ring))
@@ -46,21 +52,22 @@ func subtleConstantTimeEqual(a, b string) bool {
 // adminAccount merges the ephemeral health view with durable usage counters.
 type adminAccount struct {
 	AccountView
-	AccountUsageSnapshot
+	UsageSnapshotEntry
 }
 
 func adminAccountViews(pool *AccountPool, usage *UsageTracker) []adminAccount {
 	views := pool.Views()
 	out := make([]adminAccount, 0, len(views))
 	for _, v := range views {
-		out = append(out, adminAccount{AccountView: v, AccountUsageSnapshot: usage.AccountUsage(v.ID)})
+		out = append(out, adminAccount{AccountView: v, UsageSnapshotEntry: usage.AccountUsage(v.ID)})
 	}
 	return out
 }
 
-func handleAdminOverview(cfg *Config, pool *AccountPool, usage *UsageTracker) http.HandlerFunc {
+func handleAdminOverview(cfg *Config, pool *AccountPool, keys *ClientKeyPool, usage *UsageTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		total, enabled, rateLimited := pool.Stats()
+		keyTotal, keyEnabled := keys.Stats()
 		loaded := len(modelCatalog)
 		available := 0
 		for _, m := range modelCatalog {
@@ -76,6 +83,7 @@ func handleAdminOverview(cfg *Config, pool *AccountPool, usage *UsageTracker) ht
 			Usage:         usage.Snapshot(),
 		}
 		overview.Accounts = adminAccountsSummary{Total: total, Enabled: enabled, RateLimited: rateLimited}
+		overview.Keys = adminKeysSummary{Total: keyTotal, Enabled: keyEnabled}
 		overview.Models = adminModelsSummary{Loaded: loaded, Available: available}
 		writeAdminJSON(w, 200, overview)
 	}
@@ -88,7 +96,13 @@ type adminOverview struct {
 	WebUI         bool                 `json:"webui"`
 	Usage         UsageSnapshot        `json:"usage"`
 	Accounts      adminAccountsSummary `json:"accounts"`
+	Keys          adminKeysSummary     `json:"keys"`
 	Models        adminModelsSummary   `json:"models"`
+}
+
+type adminKeysSummary struct {
+	Total   int `json:"total"`
+	Enabled int `json:"enabled"`
 }
 
 type adminAccountsSummary struct {
@@ -132,7 +146,7 @@ func handleAdminAccountAdd(pool *AccountPool, cfg *Config, usage *UsageTracker) 
 			return
 		}
 		log.Printf("account %q added via webui", acct.Name)
-		writeAdminJSON(w, 201, adminAccount{AccountView: acct.View(), AccountUsageSnapshot: usage.AccountUsage(acct.ID)})
+		writeAdminJSON(w, 201, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(acct.ID)})
 	}
 }
 
@@ -142,6 +156,7 @@ func handleAdminAccountPatch(pool *AccountPool, cfg *Config, usage *UsageTracker
 		var body struct {
 			Enabled *bool   `json:"enabled"`
 			Name    *string `json:"name"`
+			APIKey  *string `json:"api_key"`
 		}
 		if err := decodeJSONBody(w, r, &body); err != nil {
 			writeAdminError(w, 400, err.Error())
@@ -157,12 +172,22 @@ func handleAdminAccountPatch(pool *AccountPool, cfg *Config, usage *UsageTracker
 				return
 			}
 		}
+		if body.APIKey != nil {
+			newID, err := pool.SetKey(id, *body.APIKey)
+			if err != nil {
+				writeAdminError(w, http.StatusConflict, err.Error())
+				return
+			}
+			// The ID derives from the key; carry the usage history over.
+			usage.MoveAccount(id, newID)
+			id = newID
+		}
 		if err := persistPool(pool, cfg); err != nil {
 			writeAdminError(w, 500, "saving config failed: "+err.Error())
 			return
 		}
 		acct := pool.Get(id)
-		writeAdminJSON(w, 200, adminAccount{AccountView: acct.View(), AccountUsageSnapshot: usage.AccountUsage(id)})
+		writeAdminJSON(w, 200, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(id)})
 	}
 }
 
@@ -175,6 +200,181 @@ func handleAdminAccountDelete(pool *AccountPool, cfg *Config, usage *UsageTracke
 		}
 		usage.DropAccount(id)
 		if err := persistPool(pool, cfg); err != nil {
+			writeAdminError(w, 500, "saving config failed: "+err.Error())
+			return
+		}
+		writeAdminJSON(w, 200, map[string]any{"deleted": true})
+	}
+}
+
+// ====== model exposure ======
+
+type adminModel struct {
+	ID      string `json:"id"`
+	Exposed bool   `json:"exposed"`
+}
+
+// handleAdminModelsGet lists every loaded upstream model together with its
+// exposure state (exposed = not matching exclude_models).
+func handleAdminModelsGet(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		excludes := cfg.Excludes()
+		models := make([]adminModel, 0, len(modelCatalog))
+		for _, m := range modelCatalog {
+			models = append(models, adminModel{ID: m.ID, Exposed: !isModelExcluded(m.ID, excludes)})
+		}
+		writeAdminJSON(w, 200, map[string]any{"models": models, "exclude_models": excludes})
+	}
+}
+
+// handleAdminModelsPut sets the exposed model set. The persisted
+// exclude_models becomes "catalog IDs the user unchecked"; prefix entries
+// that match no loaded model are kept so they still guard chat-time
+// requests for models outside the current catalog.
+func handleAdminModelsPut(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Exposed []string `json:"exposed"`
+		}
+		if err := decodeJSONBody(w, r, &body); err != nil {
+			writeAdminError(w, 400, err.Error())
+			return
+		}
+		exposed := make(map[string]bool, len(body.Exposed))
+		for _, id := range body.Exposed {
+			exposed[strings.TrimSpace(id)] = true
+		}
+
+		excludes := make([]string, 0, len(modelCatalog))
+		known := make(map[string]bool, len(modelCatalog))
+		for _, m := range modelCatalog {
+			known[m.ID] = true
+			if !exposed[m.ID] {
+				excludes = append(excludes, m.ID)
+			}
+		}
+		for _, e := range cfg.Excludes() {
+			if known[e] {
+				continue
+			}
+			matchesCatalog := false
+			for id := range known {
+				if isModelExcluded(id, []string{e}) {
+					matchesCatalog = true
+					break
+				}
+			}
+			if !matchesCatalog {
+				excludes = append(excludes, e)
+			}
+		}
+
+		cfg.SetExcludes(excludes)
+		if err := saveConfig(configFile, cfg); err != nil {
+			writeAdminError(w, 500, "applied but saving config failed: "+err.Error())
+			return
+		}
+		log.Printf("model exposure updated via webui (%d exposed, %d excluded)", len(exposed), len(excludes))
+		writeAdminJSON(w, 200, map[string]any{"exclude_models": excludes})
+	}
+}
+
+// ====== client keys ======
+
+// adminKey merges the client key view with its durable usage counters. The
+// full key value is included: the admin password already grants full config
+// access, and users need to copy keys into their clients.
+type adminKey struct {
+	ClientKeyView
+	UsageSnapshotEntry
+}
+
+func adminKeyViews(keys *ClientKeyPool, usage *UsageTracker) []adminKey {
+	views := keys.Views()
+	out := make([]adminKey, 0, len(views))
+	for _, v := range views {
+		out = append(out, adminKey{ClientKeyView: v, UsageSnapshotEntry: usage.ClientKeyUsage(v.ID)})
+	}
+	return out
+}
+
+func handleAdminKeysList(keys *ClientKeyPool, usage *UsageTracker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeAdminJSON(w, 200, map[string]any{"keys": adminKeyViews(keys, usage)})
+	}
+}
+
+func handleAdminKeyAdd(keys *ClientKeyPool, cfg *Config, usage *UsageTracker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name string `json:"name"`
+			Key  string `json:"key"`
+		}
+		if err := decodeJSONBody(w, r, &body); err != nil {
+			writeAdminError(w, 400, err.Error())
+			return
+		}
+		body.Name = strings.TrimSpace(body.Name)
+		if body.Name == "" {
+			body.Name = fmt.Sprintf("key-%d", keys.Len()+1)
+		}
+		key, err := keys.Add(body.Name, body.Key, true)
+		if err != nil {
+			writeAdminError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err := persistKeys(keys, cfg); err != nil {
+			writeAdminError(w, 500, "key created but saving config failed: "+err.Error())
+			return
+		}
+		log.Printf("client key %q added via webui", key.Name)
+		writeAdminJSON(w, 201, adminKey{ClientKeyView: key.View(), UsageSnapshotEntry: usage.ClientKeyUsage(key.ID)})
+	}
+}
+
+func handleAdminKeyPatch(keys *ClientKeyPool, cfg *Config, usage *UsageTracker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		var body struct {
+			Enabled *bool   `json:"enabled"`
+			Name    *string `json:"name"`
+		}
+		if err := decodeJSONBody(w, r, &body); err != nil {
+			writeAdminError(w, 400, err.Error())
+			return
+		}
+		if body.Enabled != nil && !keys.SetEnabled(id, *body.Enabled) {
+			writeAdminError(w, 404, "key not found")
+			return
+		}
+		if body.Name != nil {
+			if !keys.Rename(id, strings.TrimSpace(*body.Name)) {
+				writeAdminError(w, 404, "key not found")
+				return
+			}
+		}
+		if err := persistKeys(keys, cfg); err != nil {
+			writeAdminError(w, 500, "saving config failed: "+err.Error())
+			return
+		}
+		key := keys.Get(id)
+		writeAdminJSON(w, 200, adminKey{ClientKeyView: key.View(), UsageSnapshotEntry: usage.ClientKeyUsage(id)})
+	}
+}
+
+func handleAdminKeyDelete(keys *ClientKeyPool, cfg *Config, usage *UsageTracker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if keys.Len() <= 1 {
+			writeAdminError(w, 400, "cannot delete the last API key")
+			return
+		}
+		if !keys.Remove(id) {
+			writeAdminError(w, 404, "key not found")
+			return
+		}
+		usage.DropClientKey(id)
+		if err := persistKeys(keys, cfg); err != nil {
 			writeAdminError(w, 500, "saving config failed: "+err.Error())
 			return
 		}
@@ -388,10 +588,7 @@ func handleAdminOAuthStart(pool *AccountPool, cfg *Config) http.HandlerFunc {
 				log.Printf("[WARN] webui oauth flow ended: %v", err)
 				return
 			}
-			name := strings.TrimSpace(cb.KeyName)
-			if name == "" {
-				name = strings.TrimSpace(cb.UserName)
-			}
+			name := cb.displayName()
 			if name == "" {
 				name = "oauth"
 			}

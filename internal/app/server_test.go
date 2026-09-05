@@ -18,7 +18,7 @@ func TestWebUIServedUnderWebuiPathOnly(t *testing.T) {
 	mux.HandleFunc("/v1/models", handleModels(cfg))
 	mux.HandleFunc("/webui", web.Handler())
 	mux.HandleFunc("/webui/", web.Handler())
-	handler := corsMiddleware(authMiddleware(cfg)(mux))
+	handler := corsMiddleware(authMiddleware(cfg, nil)(mux))
 
 	// /webui is public and serves the embedded HTML.
 	req := httptest.NewRequest(http.MethodGet, "/webui", nil)
@@ -58,7 +58,7 @@ func TestWebUIServedUnderWebuiPathOnly(t *testing.T) {
 
 func TestAuthMiddlewareRejectsMissingTokenWithCorsHeaders(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
-	handler := corsMiddleware(authMiddleware(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := corsMiddleware(authMiddleware(cfg, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler should not be called")
 	})))
 
@@ -76,7 +76,7 @@ func TestAuthMiddlewareRejectsMissingTokenWithCorsHeaders(t *testing.T) {
 
 func TestCorsPreflightBypassesAuth(t *testing.T) {
 	cfg := &Config{APIKey: "secret"}
-	handler := corsMiddleware(authMiddleware(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := corsMiddleware(authMiddleware(cfg, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler should not be called")
 	})))
 

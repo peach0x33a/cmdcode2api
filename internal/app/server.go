@@ -18,10 +18,32 @@ import (
 
 var serverStartedAt = time.Now()
 
-func authMiddleware(cfg *Config) func(http.Handler) http.Handler {
+// ctxKeyClientKeyID identifies the authenticated client key in request
+// contexts.
+type ctxKey int
+
+const ctxKeyClientKeyID ctxKey = iota
+
+// clientKeyID returns the authenticated client key ID stored by
+// authMiddleware, or "".
+func clientKeyIDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(ctxKeyClientKeyID).(string)
+	return id
+}
+
+func authMiddleware(cfg *Config, keys *ClientKeyPool) func(http.Handler) http.Handler {
+	if keys == nil {
+		// Legacy single-key setup (also keeps direct middleware use in tests
+		// working without a pool).
+		if cfg.APIKey != "" {
+			keys = NewClientKeyPool([]ClientKeyConfig{{Name: "default", Key: cfg.APIKey}})
+		} else {
+			keys = NewClientKeyPool(nil)
+		}
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// /health、/usage、WebUI 页面和 CORS preflight 不需要 Bearer 认证；
+			// /health、/usage、/webui 页面和 CORS preflight 不需要 Bearer 认证；
 			// /admin/* 有独立的管理密码认证。
 			if r.Method == http.MethodOptions || isPublicPath(r.URL.Path) {
 				next.ServeHTTP(w, r)
@@ -33,11 +55,14 @@ func authMiddleware(cfg *Config) func(http.Handler) http.Handler {
 				return
 			}
 			key := strings.TrimPrefix(auth, "Bearer ")
-			if key != cfg.APIKey {
+			ck := keys.Lookup(key)
+			if ck == nil || !ck.Enabled {
 				writeError(w, 401, "authentication_error", "invalid API key")
 				return
 			}
-			next.ServeHTTP(w, r)
+			ck.RecordUsed()
+			ctx := context.WithValue(r.Context(), ctxKeyClientKeyID, ck.ID)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
@@ -106,6 +131,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 	if pool == nil {
 		pool = NewAccountPool(nil)
 	}
+	keys := NewClientKeyPool(cfg.APIKeys)
 
 	mux := http.NewServeMux()
 
@@ -122,7 +148,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 
 	// WebUI：管理 API 与内嵌的单文件界面，挂在 /webui 下，根路径留给 API。
 	adminMux := http.NewServeMux()
-	registerAdminRoutes(adminMux, cc, pool, cfg, usage, ring)
+	registerAdminRoutes(adminMux, cc, pool, keys, cfg, usage, ring)
 	if cfg.WebUIEnabled() {
 		mux.Handle("/admin/", adminAuth(cfg)(adminMux))
 		mux.HandleFunc("/webui", web.Handler())
@@ -130,7 +156,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 	}
 
 	var handler http.Handler = mux
-	handler = authMiddleware(cfg)(handler)
+	handler = authMiddleware(cfg, keys)(handler)
 	handler = loggingMiddleware(handler)
 	handler = corsMiddleware(handler)
 
@@ -159,6 +185,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 	}()
 
 	log.Printf("cmdcode2api listening on http://%s", addr)
+	log.Printf("client keys: %d configured, %d enabled", keys.Len(), keys.EnabledCount())
 	loadedModels := len(availableModels())
 	availableCount := 0
 	for _, model := range modelCatalog {

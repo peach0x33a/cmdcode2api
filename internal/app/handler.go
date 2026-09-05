@@ -74,9 +74,9 @@ func handleChatCompletions(cc *CCClient, cfg *Config, usage *UsageTracker) http.
 
 		if req.Stream {
 			includeUsage := req.StreamOptions != nil && req.StreamOptions.IncludeUsage
-			handleStreamWithOptions(w, resp, req.Model, usage.ForAccount(acct), cfg, includeUsage)
+			handleStreamWithOptions(w, resp, req.Model, usage.RecorderFor(acct, clientKeyIDFrom(r.Context())), cfg, includeUsage)
 		} else {
-			handleNonStream(w, resp, req.Model, usage.ForAccount(acct), cfg)
+			handleNonStream(w, resp, req.Model, usage.RecorderFor(acct, clientKeyIDFrom(r.Context())), cfg)
 		}
 		if err := usage.save(); err != nil {
 			log.Printf("%s save usage failed: %v", colorize("[ERROR]", ansiRed), err)

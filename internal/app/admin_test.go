@@ -13,7 +13,7 @@ import (
 )
 
 // newAdminTestEnv starts an admin API server backed by temp-dir persistence.
-func newAdminTestEnv(t *testing.T) (*httptest.Server, *AccountPool, *Config, *UsageTracker, *logRing) {
+func newAdminTestEnv(t *testing.T) (*httptest.Server, *AccountPool, *ClientKeyPool, *Config, *UsageTracker, *logRing) {
 	t.Helper()
 
 	oldConfigFile := configFile
@@ -24,15 +24,16 @@ func newAdminTestEnv(t *testing.T) (*httptest.Server, *AccountPool, *Config, *Us
 	cfg.SetUpstreamBaseURL("https://api.commandcode.test")
 	cfg.setAdminPassword("admin-pass-123")
 	pool := NewAccountPool(nil)
+	keys := NewClientKeyPool(nil)
 	cc := NewCCClientWithPool(pool, cfg.UpstreamBaseURL())
 	usage := &UsageTracker{}
 	ring := newLogRing()
 
 	mux := http.NewServeMux()
-	registerAdminRoutes(mux, cc, pool, cfg, usage, ring)
+	registerAdminRoutes(mux, cc, pool, keys, cfg, usage, ring)
 	srv := httptest.NewServer(adminAuth(cfg)(mux))
 	t.Cleanup(srv.Close)
-	return srv, pool, cfg, usage, ring
+	return srv, pool, keys, cfg, usage, ring
 }
 
 func adminRequest(t *testing.T, srv *httptest.Server, method, path, password string, body any) (*http.Response, map[string]any) {
@@ -62,7 +63,7 @@ func adminRequest(t *testing.T, srv *httptest.Server, method, path, password str
 }
 
 func TestAdminAuthRejectsBadPassword(t *testing.T) {
-	srv, _, _, _, _ := newAdminTestEnv(t)
+	srv, _, _, _, _, _ := newAdminTestEnv(t)
 
 	for _, password := range []string{"", "wrong"} {
 		resp, _ := adminRequest(t, srv, "GET", "/admin/api/overview", password, nil)
@@ -73,7 +74,7 @@ func TestAdminAuthRejectsBadPassword(t *testing.T) {
 }
 
 func TestAdminAccountLifecycle(t *testing.T) {
-	srv, pool, _, usage, _ := newAdminTestEnv(t)
+	srv, pool, _, _, usage, _ := newAdminTestEnv(t)
 
 	// Add
 	resp, payload := adminRequest(t, srv, "POST", "/admin/api/accounts", "admin-pass-123",
@@ -139,9 +140,10 @@ func TestAdminAccountLifecycle(t *testing.T) {
 }
 
 func TestAdminOverviewAndLogs(t *testing.T) {
-	srv, pool, _, usage, ring := newAdminTestEnv(t)
+	srv, pool, keys, _, usage, ring := newAdminTestEnv(t)
 
 	pool.Add("main", "cc-key-1", true)
+	keys.Add("cli", "ccgw-key-ov", true)
 	usage.Record(1, 2, 0, 0)
 	modelCatalog = []ModelInfo{{ID: "m1", Object: "model", Created: 1700000000, OwnedBy: "commandcode"}}
 	t.Cleanup(func() { modelCatalog = nil })
@@ -157,6 +159,10 @@ func TestAdminOverviewAndLogs(t *testing.T) {
 	if accounts["total"] != float64(1) || accounts["enabled"] != float64(1) {
 		t.Fatalf("accounts summary = %v", accounts)
 	}
+	keysSummary := payload["keys"].(map[string]any)
+	if keysSummary["total"] != float64(1) || keysSummary["enabled"] != float64(1) {
+		t.Fatalf("keys summary = %v", keysSummary)
+	}
 
 	// Logs endpoint returns lines written through the registered ring.
 	fmt.Fprint(ring, "hello ring\n")
@@ -168,7 +174,7 @@ func TestAdminOverviewAndLogs(t *testing.T) {
 }
 
 func TestAdminSettingsPut(t *testing.T) {
-	srv, pool, cfg, _, _ := newAdminTestEnv(t)
+	srv, pool, _, cfg, _, _ := newAdminTestEnv(t)
 	pool.Add("main", "cc-key-1", true)
 
 	resp, payload := adminRequest(t, srv, "PUT", "/admin/api/settings", "admin-pass-123", map[string]any{
@@ -215,6 +221,92 @@ func TestAdminSettingsPut(t *testing.T) {
 	}
 }
 
+func TestAdminClientKeyLifecycle(t *testing.T) {
+	srv, _, keys, _, usage, _ := newAdminTestEnv(t)
+
+	// Create with an auto-generated key.
+	resp, created := adminRequest(t, srv, "POST", "/admin/api/keys", "admin-pass-123",
+		map[string]any{"name": "agent"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d: %v", resp.StatusCode, created)
+	}
+	if !strings.HasPrefix(created["key"].(string), "ccgw-") {
+		t.Fatalf("generated key = %v", created["key"])
+	}
+	id := created["id"].(string)
+
+	// Create with a custom key, then duplicate is rejected.
+	resp, _ = adminRequest(t, srv, "POST", "/admin/api/keys", "admin-pass-123",
+		map[string]any{"name": "mine", "key": "ccgw-custom"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("custom create status = %d", resp.StatusCode)
+	}
+	resp, _ = adminRequest(t, srv, "POST", "/admin/api/keys", "admin-pass-123",
+		map[string]any{"name": "dup", "key": "ccgw-custom"})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("duplicate status = %d, want 409", resp.StatusCode)
+	}
+
+	// Usage recorded under the key's ID is returned in the list.
+	usage.Recorder("", id).Record(2, 3, 0, 0)
+	_, payload := adminRequest(t, srv, "GET", "/admin/api/keys", "admin-pass-123", nil)
+	list := payload["keys"].([]any)
+	if len(list) != 2 {
+		t.Fatalf("keys list = %v", list)
+	}
+	first := list[0].(map[string]any)
+	if first["requests"] != float64(1) || first["prompt_tokens"] != float64(2) {
+		t.Fatalf("key usage not merged: %v", first)
+	}
+
+	// Persisted to config.yaml.
+	saved, err := loadConfig(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.APIKeys) != 2 || saved.APIKey != "" {
+		t.Fatalf("persisted keys = %+v (legacy = %q)", saved.APIKeys, saved.APIKey)
+	}
+
+	// Disable.
+	_, payload = adminRequest(t, srv, "PATCH", "/admin/api/keys/"+id, "admin-pass-123",
+		map[string]any{"enabled": false})
+	if payload["enabled"] != false {
+		t.Fatalf("patched = %v", payload)
+	}
+	if keys.Get(id).Enabled {
+		t.Fatal("key still enabled in pool")
+	}
+
+	// With two keys, deletion works normally.
+	other := list[1].(map[string]any)["id"].(string)
+	resp, _ = adminRequest(t, srv, "DELETE", "/admin/api/keys/"+other, "admin-pass-123", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("delete other status = %d", resp.StatusCode)
+	}
+
+	// Deleting the final remaining key is rejected.
+	resp, _ = adminRequest(t, srv, "DELETE", "/admin/api/keys/"+id, "admin-pass-123", nil)
+	if resp.StatusCode != 400 {
+		t.Fatalf("last-key delete status = %d, want 400", resp.StatusCode)
+	}
+	if keys.Len() != 1 {
+		t.Fatalf("pool len = %d, want 1 after guarded delete", keys.Len())
+	}
+
+	// Creating a second key unlocks deletion again.
+	if _, err := keys.Add("temp", "ccgw-temp", true); err != nil {
+		t.Fatal(err)
+	}
+	resp, _ = adminRequest(t, srv, "DELETE", "/admin/api/keys/"+id, "admin-pass-123", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("final delete status = %d", resp.StatusCode)
+	}
+	if usage.ClientKeyUsage(id).Requests != 0 {
+		t.Fatal("usage counters not dropped")
+	}
+}
+
 func TestNormalizeExcludeModels(t *testing.T) {
 	got := normalizeExcludeModels([]string{"gpt-", " claude- ,gemini-", "", ","})
 	want := []string{"gpt-", "claude-", "gemini-"}
@@ -254,7 +346,7 @@ func TestAccountTestKeyProbe(t *testing.T) {
 
 func TestConfigFileRedirectedForAdminPersistence(t *testing.T) {
 	// Guards against admin handlers accidentally writing into the package dir.
-	srv, _, _, _, _ := newAdminTestEnv(t)
+	srv, _, _, _, _, _ := newAdminTestEnv(t)
 	adminRequest(t, srv, "POST", "/admin/api/accounts", "admin-pass-123",
 		map[string]any{"name": "x", "api_key": "cc-k"})
 	if _, err := os.Stat(configFile); err != nil {

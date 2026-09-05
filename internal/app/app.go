@@ -49,19 +49,22 @@ func Run() {
 			cfg = cfg2
 		}
 
-		apiKey, err := runOAuth(OAuthOptions{CallbackURL: *oauthCallback})
+		cb, err := runOAuth(OAuthOptions{CallbackURL: *oauthCallback})
 		if err != nil {
 			log.Fatalf("OAuth failed: %v", err)
 		}
 
 		// OAuth 追加账号而不是覆盖：重复执行即可接入多个账号。
 		pool := NewAccountPool(cfg.CommandCode.Accounts)
-		if acct := pool.Get(accountID(apiKey)); acct != nil {
+		if acct := pool.Get(accountID(cb.APIKey)); acct != nil {
 			fmt.Printf("\nℹ️  API key already configured as account %q in %s\n", acct.Name, cfgPath)
 			return
 		}
-		name := oauthAccountName(pool)
-		if _, err := pool.Add(name, apiKey, true); err != nil {
+		name := cb.displayName()
+		if name == "" {
+			name = oauthAccountName(pool)
+		}
+		if _, err := pool.Add(name, cb.APIKey, true); err != nil {
 			log.Fatalf("add oauth account failed: %v", err)
 		}
 		pool.SyncToConfig(cfg)

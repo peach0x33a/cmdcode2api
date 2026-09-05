@@ -60,6 +60,15 @@ ssh -L 5959:127.0.0.1:5959 root@your-server
 - 每个账号的请求 / token 计数持久化在 `usage.json`；错误信息、冷却窗口等
   运行时状态可在 WebUI 中查看。
 
+## 多客户端密钥
+
+`api_keys` 支持配置多把客户端密钥，不同客户端各用一把，互不影响：
+
+- 可在 WebUI「密钥」页新建（留空密钥值则自动生成 `ccgw-` 密钥）、复制、启用/禁用、删除；
+- 每把密钥独立统计请求数与 token 用量，持久化在 `usage.json` 的 `client_keys` 字段，也在 `/usage` 中可见；
+- 禁用立即生效；删除最后一把密钥会被拒绝，避免把自己锁在外面；
+- 旧的单一 `api_key` 字段继续有效，加载时自动迁移为名为 `default` 的一把密钥。
+
 ## WebUI 管理台
 
 `webui` 启用（默认）时，二进制会在 `/webui` 路径托管内嵌的单文件管理界面
@@ -75,7 +84,9 @@ http://localhost:11434/webui
 功能：
 
 - **概览**：版本、运行时长、监听地址、用量统计、账号与模型概览
-- **账号**：添加（粘贴 Key 或 OAuth）、启用/禁用、连通性测试、删除；展示每账号请求数、tokens、错误、冷却状态、最近错误
+- **账号**：添加（粘贴 Key 或 OAuth）、编辑名称/Key、启用/禁用、连通性测试、删除；展示每账号请求数、tokens、错误、冷却状态、最近错误。OAuth 添加的账号按登录账号名自动命名
+- **模型**：上游模型复选框列表，勾选 = 对外提供（`/v1/models` 可见、可调用），取消勾选 = 隐藏并拒绝调用；本页即 exclude_models 的可视化编辑器，改动即时生效
+- **密钥**：新建调用本网关的客户端 API Key（自动生成或自定义值）、复制、启用/禁用、删除；每把密钥独立的请求与 token 统计
 - **设置**：`base_url` 与 `exclude_models`（即时生效）、`host`/`port`/`webui`（写盘后重启生效）、修改管理密码（即时生效）
 - **日志**：内存日志环形缓冲（最近 500 行）实时查看
 
@@ -93,6 +104,10 @@ POST   /admin/api/accounts             {"name": "...", "api_key": "..."}
 PATCH  /admin/api/accounts/{id}        {"enabled": true} 或 {"name": "..."}
 DELETE /admin/api/accounts/{id}
 POST   /admin/api/accounts/{id}/test
+GET    /admin/api/keys
+POST   /admin/api/keys                 {"name": "...", "key": "ccgw-...（可选，留空自动生成）"}
+PATCH  /admin/api/keys/{id}            {"enabled": true} 或 {"name": "..."}
+DELETE /admin/api/keys/{id}            （最后一把密钥不可删除）
 GET    /admin/api/settings
 PUT    /admin/api/settings
 GET    /admin/api/logs?after=SEQ
@@ -110,7 +125,12 @@ WebUI 内的 OAuth 流程要求浏览器能访问服务器的 `127.0.0.1:5959-59
 
 ```yaml
 api_key: ccgw-generated-local-client-key
-admin_password: ccgw-admin-generated-webui-password
+api_keys:
+  - name: default
+    key: ccgw-generated-local-client-key
+  - name: my-agent
+    key: ccgw-another-client-key
+admin_password: kR7vBn2xQm9T
 webui: true
 commandcode:
   base_url: https://api.commandcode.ai
@@ -130,7 +150,8 @@ exclude_models:
 
 字段说明：
 
-- `api_key`：本地网关的 Bearer Token，客户端请求本服务时使用。
+- `api_key`：旧版单客户端密钥字段；加载时自动迁移进 `api_keys`，列表非空后保存时清除。
+- `api_keys`：调用本网关的客户端密钥列表，每个密钥独立统计请求与 token 用量。可在 WebUI「密钥」页新建（自动生成或自定义）、启停、删除，改动即时生效并写回本文件。
 - `admin_password`：WebUI 管理 API 的密码；为空时首次启动自动生成并打印一次。
 - `webui`：设为 `false` 可完全不托管内嵌 WebUI 与管理 API。
 - `commandcode.accounts`：Command Code 账号列表，请求在其间轮换。旧的

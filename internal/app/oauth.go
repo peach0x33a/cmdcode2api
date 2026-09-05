@@ -274,11 +274,20 @@ func (f *OAuthFlow) Err() error {
 	return f.err
 }
 
+// displayName picks the human label for an OAuth-authorized account: the
+// logged-in user's account name first, then the key's name.
+func (cb oauthCallback) displayName() string {
+	if name := strings.TrimSpace(cb.UserName); name != "" {
+		return name
+	}
+	return strings.TrimSpace(cb.KeyName)
+}
+
 // runOAuth runs the CLI flow: start, print instructions, wait.
-func runOAuth(opts OAuthOptions) (string, error) {
+func runOAuth(opts OAuthOptions) (oauthCallback, error) {
 	flow, err := StartOAuthFlow(opts)
 	if err != nil {
-		return "", err
+		return oauthCallback{}, err
 	}
 
 	log.Printf("waiting for Command Code OAuth callback on http://127.0.0.1:%d/callback", flow.Port)
@@ -300,10 +309,10 @@ Waiting for authorization, timeout: %s
 
 	cb, err := flow.Wait(oauthTimeout)
 	if err != nil {
-		return "", err
+		return oauthCallback{}, err
 	}
 	log.Printf("✓ OAuth success: user %s, key %s", cb.UserName, cb.KeyName)
-	return cb.APIKey, nil
+	return cb, nil
 }
 
 func validateCallbackURL(rawURL string) error {

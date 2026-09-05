@@ -158,6 +158,15 @@
     height: 60vh; overflow: auto; white-space: pre-wrap; word-break: break-all;
   }
   .logbox .t { color: var(--text-faint); margin-right: 8px; }
+  .model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 4px 14px; max-height: 62vh; overflow: auto; }
+  .model-grid label {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+    border-radius: 6px; cursor: pointer; font-size: 12.5px;
+  }
+  .model-grid label:hover { background: var(--panel-2); }
+  .model-grid input[type=checkbox] { width: auto; accent-color: var(--accent); }
+  .model-grid .mid { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+  .model-grid label.hidden-model .mid { color: var(--text-faint); }
   .empty { color: var(--text-faint); text-align: center; padding: 26px 0; font-size: 13px; }
   .kv { display: grid; grid-template-columns: 180px 1fr; gap: 4px 14px; font-size: 13px; }
   .kv .k { color: var(--text-dim); }
@@ -201,6 +210,8 @@
   <nav class="tabs">
     <button data-tab="overview" class="active">概览</button>
     <button data-tab="accounts">账号</button>
+    <button data-tab="models">模型</button>
+    <button data-tab="keys">密钥</button>
     <button data-tab="settings">设置</button>
     <button data-tab="logs">日志</button>
   </nav>
@@ -232,6 +243,39 @@
     </div>
   </section>
 
+  <!-- 模型 -->
+  <section id="tab-models" style="display:none">
+    <div class="panel">
+      <h3 style="display:flex;align-items:center;justify-content:space-between">
+        <span>对外暴露的模型</span>
+        <span style="display:flex;gap:8px;align-items:center;font-weight:400;text-transform:none;letter-spacing:0">
+          <input type="text" id="model-search" placeholder="搜索模型…" style="width:200px;padding:5px 10px;font-size:12.5px">
+          <button class="btn small" id="model-all-btn">全选</button>
+          <button class="btn small" id="model-none-btn">全不选</button>
+        </span>
+      </h3>
+      <div id="model-list" class="model-grid"><div class="empty">加载中…</div></div>
+      <p class="hint">勾选 = 对外提供（<code>/v1/models</code> 可见、可调用）；取消勾选 = 隐藏并拒绝调用，等同于 exclude_models。更改即时生效并写回 config.yaml。</p>
+    </div>
+  </section>
+
+  <!-- 密钥 -->
+  <section id="tab-keys" style="display:none">
+    <div class="panel">
+      <h3>新建密钥</h3>
+      <div class="form-row">
+        <label class="field"><span class="cap">名称（可选）</span><input type="text" id="ck-name" placeholder="例如 my-agent"></label>
+        <label class="field"><span class="cap">密钥值（留空自动生成 ccgw- 密钥）</span><input type="text" id="ck-key" placeholder="ccgw-…" class="mono"></label>
+        <button class="btn primary" id="ck-add-btn">新建</button>
+      </div>
+      <p class="hint">客户端密钥用于调用本网关的 OpenAI 兼容接口（Bearer 认证），每个密钥独立统计用量。删除最后一把密钥前请先创建新的。</p>
+    </div>
+    <div class="panel">
+      <h3>密钥列表</h3>
+      <div id="ck-table"></div>
+    </div>
+  </section>
+
   <!-- 设置 -->
   <section id="tab-settings" style="display:none">
     <div class="panel">
@@ -240,10 +284,7 @@
         <span class="cap">Base URL（即时生效）</span>
         <input type="text" id="set-baseurl" class="mono">
       </label>
-      <label class="field">
-        <span class="cap">exclude_models（每行一个前缀，即时生效）</span>
-        <textarea id="set-excludes" rows="4" placeholder="gpt-&#10;claude-&#10;gemini-"></textarea>
-      </label>
+      <p class="hint" style="margin:0 0 0">exclude_models 已移至「模型」页维护。</p>
     </div>
     <div class="panel">
       <h3>服务</h3>
@@ -279,6 +320,27 @@
   </section>
 </div>
 
+<!-- 账号编辑弹窗 -->
+<div class="modal-mask" id="acct-modal" style="display:none">
+  <div class="modal">
+    <h3>编辑账号</h3>
+    <label class="field">
+      <span class="cap">名称</span>
+      <input type="text" id="acct-edit-name">
+    </label>
+    <label class="field">
+      <span class="cap">API Key（留空表示不修改）</span>
+      <input type="text" id="acct-edit-key" placeholder="cc-…" class="mono">
+    </label>
+    <p class="hint" style="margin:0 0 14px">更换 Key 后账号 ID 会变化，用量统计会自动迁移到新 ID。</p>
+    <div class="form-row">
+      <button class="btn primary" id="acct-edit-save">保存</button>
+      <span class="spacer" style="flex:1"></span>
+      <button class="btn" id="acct-edit-cancel">取消</button>
+    </div>
+  </div>
+</div>
+
 <!-- OAuth 弹窗 -->
 <div class="modal-mask" id="oauth-modal" style="display:none">
   <div class="modal">
@@ -307,6 +369,8 @@ const state = {
   tab: "overview",
   logsSeq: 0,
   oauthTimer: null,
+  models: [],
+  editingAccount: null,
 };
 
 /* ---------- helpers ---------- */
@@ -442,11 +506,13 @@ function switchTab(tab) {
   state.tab = tab;
   document.querySelectorAll("nav.tabs button").forEach(b =>
     b.classList.toggle("active", b.dataset.tab === tab));
-  for (const t of ["overview", "accounts", "settings", "logs"]) {
+  for (const t of ["overview", "accounts", "models", "keys", "settings", "logs"]) {
     $("#tab-" + t).style.display = t === tab ? "" : "none";
   }
   if (tab === "logs") loadLogs();
   if (tab === "settings") loadSettings();
+  if (tab === "keys") loadKeys();
+  if (tab === "models") loadModels();
 }
 
 async function refreshAll() {
@@ -460,6 +526,7 @@ async function refreshAll() {
 setInterval(() => {
   if (document.hidden || $("#view-app").style.display === "none") return;
   if (state.tab === "overview" || state.tab === "accounts") refreshAll();
+  if (state.tab === "keys") loadKeys();
   if (state.tab === "logs") loadLogs();
 }, 5000);
 
@@ -474,6 +541,7 @@ function renderOverview(ov) {
     ["Completion Tokens", fmtTokens(u.completion_tokens), ""],
     ["Cache 读取 / 写入", fmtTokens(u.cache_read_tokens) + " / " + fmtTokens(u.cache_write_tokens), ""],
     ["账号", `${ov.accounts.enabled} 启用 / ${ov.accounts.total}`, ov.accounts.rate_limited > 0 ? ov.accounts.rate_limited + " 个限流中" : ""],
+    ["客户端密钥", `${ov.keys.enabled} 启用 / ${ov.keys.total}`, ""],
     ["模型", `${ov.models.available} 可用`, `共加载 ${ov.models.loaded}`],
   ];
   $("#ov-cards").innerHTML = cards.map(([label, value, sub]) => `
@@ -537,6 +605,7 @@ function renderAccounts(accounts) {
         <td class="nowrap dim">${esc(relTime(a.last_used_at))}</td>
         <td><div class="row-actions">
           <button class="btn small" onclick="testAccount('${a.id}')">测试</button>
+          <button class="btn small" onclick="openAccountEdit('${a.id}', '${esc(a.name)}')">编辑</button>
           <button class="btn small" onclick="toggleAccount('${a.id}', ${a.enabled ? "false" : "true"})">${a.enabled ? "禁用" : "启用"}</button>
           <button class="btn small danger" onclick="deleteAccount('${a.id}', '${esc(a.name)}')">删除</button>
         </div></td>
@@ -576,6 +645,28 @@ async function deleteAccount(id, name) {
   } catch (e) { toast(e.message, true); }
 }
 
+function openAccountEdit(id, name) {
+  state.editingAccount = id;
+  $("#acct-edit-name").value = name;
+  $("#acct-edit-key").value = "";
+  $("#acct-modal").style.display = "";
+  $("#acct-edit-name").focus();
+}
+
+async function saveAccountEdit() {
+  const id = state.editingAccount;
+  if (!id) return;
+  const body = { name: $("#acct-edit-name").value.trim() };
+  const newKey = $("#acct-edit-key").value.trim();
+  if (newKey) body.api_key = newKey;
+  try {
+    await api("/admin/api/accounts/" + id, { method: "PATCH", body });
+    $("#acct-modal").style.display = "none";
+    toast("账号已更新");
+    refreshAll();
+  } catch (e) { toast(e.message, true); }
+}
+
 async function testAccount(id) {
   toast("正在测试连通性…");
   try {
@@ -585,13 +676,145 @@ async function testAccount(id) {
   } catch (e) { toast(e.message, true); }
 }
 
+/* ---------- models ---------- */
+
+async function loadModels() {
+  try {
+    const r = await api("/admin/api/models");
+    state.models = r.models || [];
+    renderModels();
+  } catch (e) { /* 401 已处理 */ }
+}
+
+function renderModels() {
+  const box = $("#model-list");
+  const q = ($("#model-search").value || "").trim().toLowerCase();
+  const items = state.models.filter(m => !q || m.id.toLowerCase().includes(q));
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">${q ? "没有匹配的模型" : "模型目录为空（上游未返回）"}</div>`;
+    return;
+  }
+  box.innerHTML = items.map((m, i) => `
+    <label class="${m.exposed ? "" : "hidden-model"}">
+      <input type="checkbox" data-mid="${esc(m.id)}" ${m.exposed ? "checked" : ""}>
+      <span class="mid">${esc(m.id)}</span>
+    </label>`).join("");
+}
+
+async function saveModels() {
+  const exposed = [...document.querySelectorAll("#model-list input[type=checkbox]:checked")]
+    .map(cb => cb.dataset.mid);
+  try {
+    await api("/admin/api/models", { method: "PUT", body: { exposed } });
+    toast("模型暴露列表已保存（" + exposed.length + " 个可用）");
+  } catch (e) { toast(e.message, true); }
+}
+
+function setAllModels(exposed) {
+  for (const m of state.models) m.exposed = exposed;
+  renderModels();
+  saveModelsState(state.models.filter(m => m.exposed).map(m => m.id));
+}
+
+// Single checkbox toggle: update state and save immediately.
+document.addEventListener("change", async e => {
+  const cb = e.target;
+  if (!(cb instanceof HTMLInputElement) || !cb.dataset.mid || !cb.closest("#model-list")) return;
+  const m = state.models.find(x => x.id === cb.dataset.mid);
+  if (m) m.exposed = cb.checked;
+  cb.closest("label").classList.toggle("hidden-model", !cb.checked);
+  await saveModelsState(state.models.filter(x => x.exposed).map(x => x.id));
+});
+
+async function saveModelsState(exposedIds) {
+  try {
+    await api("/admin/api/models", { method: "PUT", body: { exposed: exposedIds } });
+    toast("已保存：" + exposedIds.length + " 个模型对外提供");
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ---------- client keys ---------- */
+
+function renderKeys(keys) {
+  if (!keys || !keys.length) {
+    $("#ck-table").innerHTML = `<div class="empty">还没有密钥 —— 新建一把给客户端使用</div>`;
+    return;
+  }
+  $("#ck-table").innerHTML = `
+  <table>
+    <thead><tr>
+      <th>名称</th><th>密钥</th><th>状态</th>
+      <th style="text-align:right">请求</th>
+      <th style="text-align:right">Tokens</th>
+      <th>最近使用</th>
+      <th style="text-align:right">操作</th>
+    </tr></thead>
+    <tbody>
+    ${keys.map(k => {
+      const tokens = (k.prompt_tokens || 0) + (k.completion_tokens || 0);
+      return `<tr>
+        <td><strong>${esc(k.name)}</strong></td>
+        <td class="mono">${esc(k.key)}</td>
+        <td>${k.enabled ? `<span class="badge ok">启用</span>` : `<span class="badge off">已禁用</span>`}</td>
+        <td class="num" style="text-align:right">${fmtInt(k.requests)}</td>
+        <td class="num" style="text-align:right">${fmtTokens(tokens)}</td>
+        <td class="nowrap dim">${esc(relTime(k.last_used_at))}</td>
+        <td><div class="row-actions">
+          <button class="btn small" onclick="copyKey('${esc(k.key)}')">复制</button>
+          <button class="btn small" onclick="toggleKey('${k.id}', ${k.enabled ? "false" : "true"})">${k.enabled ? "禁用" : "启用"}</button>
+          <button class="btn small danger" onclick="deleteKey('${k.id}', '${esc(k.name)}')">删除</button>
+        </div></td>
+      </tr>`;
+    }).join("")}
+    </tbody>
+  </table>`;
+}
+
+async function loadKeys() {
+  try {
+    const r = await api("/admin/api/keys");
+    renderKeys(r.keys);
+  } catch (e) { /* 401 已处理 */ }
+}
+
+async function addKey() {
+  const key = $("#ck-key").value.trim();
+  const name = $("#ck-name").value.trim();
+  try {
+    const created = await api("/admin/api/keys", { method: "POST", body: { name, key } });
+    $("#ck-key").value = ""; $("#ck-name").value = "";
+    toast("密钥已创建：" + created.key);
+    loadKeys();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function toggleKey(id, enabled) {
+  try {
+    await api("/admin/api/keys/" + id, { method: "PATCH", body: { enabled } });
+    toast(enabled ? "密钥已启用" : "密钥已禁用");
+    loadKeys();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteKey(id, name) {
+  if (!confirm(`确定删除密钥「${name}」？使用它的客户端将立即失去访问权限。`)) return;
+  try {
+    await api("/admin/api/keys/" + id, { method: "DELETE" });
+    toast("密钥已删除");
+    loadKeys();
+  } catch (e) { toast(e.message, true); }
+}
+
+function copyKey(key) {
+  navigator.clipboard.writeText(key).then(() => toast("密钥已复制"));
+}
+
 /* ---------- settings ---------- */
 
 async function loadSettings() {
   try {
     const s = await api("/admin/api/settings");
     $("#set-baseurl").value = s.base_url || "";
-    $("#set-excludes").value = (s.exclude_models || []).join("\n");
     $("#set-host").value = s.host || "";
     $("#set-port").value = s.port || "";
     $("#set-webui").value = s.webui ? "true" : "false";
@@ -602,7 +825,6 @@ async function loadSettings() {
 async function saveSettings() {
   const body = {
     base_url: $("#set-baseurl").value.trim(),
-    exclude_models: $("#set-excludes").value.split("\n").map(s => s.trim()).filter(Boolean),
     host: $("#set-host").value.trim(),
     port: parseInt($("#set-port").value, 10) || 0,
     webui: $("#set-webui").value === "true",
@@ -703,6 +925,16 @@ document.querySelectorAll("nav.tabs button").forEach(b =>
 $("#acc-add-btn").addEventListener("click", addAccount);
 $("#acc-key").addEventListener("keydown", e => { if (e.key === "Enter") addAccount(); });
 $("#acc-oauth-btn").addEventListener("click", startOAuth);
+$("#ck-add-btn").addEventListener("click", addKey);
+$("#ck-key").addEventListener("keydown", e => { if (e.key === "Enter") addKey(); });
+
+$("#acct-edit-save").addEventListener("click", saveAccountEdit);
+$("#acct-edit-cancel").addEventListener("click", () => { $("#acct-modal").style.display = "none"; });
+$("#acct-modal").addEventListener("click", e => { if (e.target === $("#acct-modal")) $("#acct-modal").style.display = "none"; });
+
+$("#model-search").addEventListener("input", renderModels);
+$("#model-all-btn").addEventListener("click", () => setAllModels(true));
+$("#model-none-btn").addEventListener("click", () => setAllModels(false));
 $("#oauth-copy").addEventListener("click", () => {
   navigator.clipboard.writeText($("#oauth-url").textContent).then(() => toast("链接已复制"));
 });

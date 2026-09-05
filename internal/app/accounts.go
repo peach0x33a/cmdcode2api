@@ -286,6 +286,40 @@ func (p *AccountPool) Rename(id, name string) bool {
 	return true
 }
 
+// SetKey replaces an account's credential. Because IDs derive from the key,
+// the account's ID changes too; the caller is responsible for migrating usage
+// counters (UsageTracker.MoveAccount).
+func (p *AccountPool) SetKey(id, newKey string) (string, error) {
+	newKey = strings.TrimSpace(newKey)
+	if newKey == "" {
+		return "", fmt.Errorf("api_key cannot be empty")
+	}
+	newID := accountID(newKey)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var a *Account
+	for _, cand := range p.accounts {
+		if cand.ID == id {
+			a = cand
+			break
+		}
+	}
+	if a == nil {
+		return "", fmt.Errorf("account not found")
+	}
+	for _, other := range p.accounts {
+		if other != a && other.ID == newID {
+			return "", errDuplicateAccount
+		}
+	}
+	a.mu.Lock()
+	a.APIKey = newKey
+	a.ID = newID
+	a.mu.Unlock()
+	return newID, nil
+}
+
 // EarliestRateLimitWait reports how long until the first rate-limited account
 // recovers, for the 429 response sent when every enabled account is cooling
 // down.

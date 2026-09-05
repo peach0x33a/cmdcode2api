@@ -108,6 +108,38 @@
   .fields-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 640px) { .fields-2 { grid-template-columns: 1fr; } }
 
+  /* motion: subtle, fast, purposeful */
+  @keyframes tabIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @keyframes fadeIn { from { opacity: 0; } }
+  @keyframes popIn { from { opacity: 0; transform: scale(.96) translateY(6px); } }
+  @keyframes logIn { from { opacity: 0; transform: translateX(-4px); } }
+
+  section[id^="tab-"] { animation: tabIn .22s ease-out; }
+  .login-box { animation: rise .35s ease-out both; }
+  .modal-mask { animation: fadeIn .16s ease-out; }
+  .modal-mask .modal { animation: popIn .2s ease-out; }
+  .modal-mask.out { animation: fadeIn .16s ease-out reverse forwards; }
+  .logbox > div { animation: logIn .18s ease-out; }
+
+  button.btn, input, textarea, select, .badge, .card, nav.tabs button {
+    transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, color .15s ease, transform .12s ease, opacity .15s ease;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary:hover { box-shadow: 0 2px 10px rgba(79,140,255,.35); }
+  nav.tabs button { border-bottom: 2px solid transparent; }
+  nav.tabs button:hover { border-bottom-color: var(--border); }
+  nav.tabs button.active:hover { border-bottom-color: var(--accent); }
+  .card:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+  tbody tr { transition: background .12s ease; }
+  tbody tr:hover { background: rgba(255,255,255,.02); }
+  .toast { transition: opacity .18s ease, transform .18s ease; }
+  .toast.out { opacity: 0; transform: translateY(6px); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+
   .form-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
   .form-row label.field { flex: 1; min-width: 160px; margin-bottom: 0; }
 
@@ -422,7 +454,10 @@ function toast(msg, isErr) {
   el.className = "toast" + (isErr ? " err" : "");
   el.textContent = msg;
   $("#toasts").appendChild(el);
-  setTimeout(() => el.remove(), isErr ? 6000 : 3200);
+  setTimeout(() => {
+    el.classList.add("out");
+    setTimeout(() => el.remove(), 200);
+  }, isErr ? 6000 : 3200);
 }
 
 async function api(path, opts = {}) {
@@ -659,7 +694,7 @@ async function saveAccountEdit() {
   if (newKey) body.api_key = newKey;
   try {
     await api("/admin/api/accounts/" + id, { method: "PATCH", body });
-    $("#acct-modal").style.display = "none";
+    hideModal("#acct-modal");
     toast("账号已更新");
     refreshAll();
   } catch (e) { toast(e.message, true); }
@@ -932,9 +967,15 @@ function stopOAuthPolling() {
   if (state.oauthTimer) { clearInterval(state.oauthTimer); state.oauthTimer = null; }
 }
 
+function hideModal(sel) {
+  const m = $(sel);
+  m.classList.add("out");
+  setTimeout(() => { m.classList.remove("out"); m.style.display = "none"; }, 160);
+}
+
 function closeOAuth() {
   stopOAuthPolling();
-  $("#oauth-modal").style.display = "none";
+  hideModal("#oauth-modal");
 }
 
 /* ---------- events ---------- */
@@ -954,8 +995,8 @@ $("#ck-add-btn").addEventListener("click", addKey);
 $("#ck-name").addEventListener("keydown", e => { if (e.key === "Enter") addKey(); });
 
 $("#acct-edit-save").addEventListener("click", saveAccountEdit);
-$("#acct-edit-cancel").addEventListener("click", () => { $("#acct-modal").style.display = "none"; });
-$("#acct-modal").addEventListener("click", e => { if (e.target === $("#acct-modal")) $("#acct-modal").style.display = "none"; });
+$("#acct-edit-cancel").addEventListener("click", () => hideModal("#acct-modal"));
+$("#acct-modal").addEventListener("click", e => { if (e.target === $("#acct-modal")) hideModal("#acct-modal"); });
 
 $("#model-search").addEventListener("input", renderModels);
 $("#model-all-btn").addEventListener("click", () => setAllModels(true));

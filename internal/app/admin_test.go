@@ -34,7 +34,7 @@ func newAdminTestEnv(t *testing.T) (*httptest.Server, *AccountPool, *ClientKeyPo
 	// Mirror runServer: the public OAuth callback lives outside adminAuth.
 	root := http.NewServeMux()
 	root.HandleFunc("POST /admin/api/oauth/callback", handleWebOAuthCallback())
-	root.Handle("/admin/", adminAuth(cfg)(mux))
+	root.Handle("/admin/", adminAuth(cfg, nil)(mux))
 	srv := httptest.NewServer(root)
 	t.Cleanup(srv.Close)
 	return srv, pool, keys, cfg, usage, ring
@@ -181,10 +181,26 @@ func TestAdminSettingsPut(t *testing.T) {
 	srv, pool, _, cfg, _, _ := newAdminTestEnv(t)
 	pool.Add("main", "cc-key-1", true)
 
+	// Changing the password requires the current one.
+	resp, _ := adminRequest(t, srv, "PUT", "/admin/api/settings", "admin-pass-123", map[string]any{
+		"admin_password": "new-password-9",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing old password status = %d, want 403", resp.StatusCode)
+	}
+	resp, _ = adminRequest(t, srv, "PUT", "/admin/api/settings", "admin-pass-123", map[string]any{
+		"admin_password": "new-password-9",
+		"old_password":   "wrong-current",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong old password status = %d, want 403", resp.StatusCode)
+	}
+
 	resp, payload := adminRequest(t, srv, "PUT", "/admin/api/settings", "admin-pass-123", map[string]any{
 		"base_url":       "https://api2.commandcode.test",
 		"exclude_models": []string{"gpt-", " claude- "},
 		"admin_password": "new-password-9",
+		"old_password":   "admin-pass-123",
 	})
 	if resp.StatusCode != 200 {
 		t.Fatalf("settings status = %d: %v", resp.StatusCode, payload)

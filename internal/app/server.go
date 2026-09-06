@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -81,21 +82,59 @@ func isPublicPath(path string) bool {
 	return false
 }
 
-// adminAuth guards the admin API with the separate admin_password.
-func adminAuth(cfg *Config) func(http.Handler) http.Handler {
+// adminAuth guards the admin API with the separate admin_password. Failed
+// attempts are rate limited per source IP; the limiter instance lives as
+// long as the middleware does (pass nil to get a fresh one).
+func adminAuth(cfg *Config, limiter *ipRateLimiter) func(http.Handler) http.Handler {
+	if limiter == nil {
+		limiter = newIPRateLimiter()
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := clientIP(r.RemoteAddr)
+			if ok, retryAfter := limiter.Allow(ip); !ok {
+				seconds := int(retryAfter.Seconds()) + 1
+				w.Header().Set("Retry-After", strconv.Itoa(seconds))
+				writeAdminError(w, http.StatusTooManyRequests,
+					fmt.Sprintf("失败次数过多，请 %d 秒后重试", seconds))
+				return
+			}
 			auth := r.Header.Get("Authorization")
 			if !strings.HasPrefix(auth, "Bearer ") {
+				limiter.Fail(ip)
 				writeAdminError(w, 401, "missing Authorization header")
 				return
 			}
 			key := strings.TrimPrefix(auth, "Bearer ")
-			if subtleConstantTimeEqual(key, cfg.adminPassword()) {
-				next.ServeHTTP(w, r)
+			if !subtleConstantTimeEqual(key, cfg.adminPassword()) {
+				limiter.Fail(ip)
+				writeAdminError(w, 401, "invalid admin password")
 				return
 			}
-			writeAdminError(w, 401, "invalid admin password")
+			limiter.Reset(ip)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// securityHeaders adds hardening headers to every response. The CSP allows
+// the embedded console's inline script/styles while blocking framing,
+// sniffing, referrer leakage, and external content sources.
+func securityHeaders() func(http.Handler) http.Handler {
+	csp := "default-src 'self'; " +
+		"script-src 'self' 'unsafe-inline'; " +
+		"style-src 'unsafe-inline'; " +
+		"connect-src 'self'; " +
+		"img-src 'self' data:; " +
+		"base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Referrer-Policy", "no-referrer")
+			h.Set("Content-Security-Policy", csp)
+			next.ServeHTTP(w, r)
 		})
 	}
 }
@@ -150,7 +189,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 	adminMux := http.NewServeMux()
 	registerAdminRoutes(adminMux, cc, pool, keys, cfg, usage, ring)
 	if cfg.WebUIEnabled() {
-		mux.Handle("/admin/", adminAuth(cfg)(adminMux))
+		mux.Handle("/admin/", adminAuth(cfg, nil)(adminMux))
 		// Command Code 页面回传凭据的公开端点（靠 state 校验，非管理密码）。
 		// 注册为更具体的 pattern，绕过 adminAuth。
 		mux.HandleFunc("POST /admin/api/oauth/callback", handleWebOAuthCallback())
@@ -160,6 +199,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 
 	var handler http.Handler = mux
 	handler = authMiddleware(cfg, keys)(handler)
+	handler = securityHeaders()(handler)
 	handler = loggingMiddleware(handler)
 	handler = corsMiddleware(handler)
 

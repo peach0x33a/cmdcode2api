@@ -348,7 +348,7 @@ Features:
 - **Accounts** — add (paste a key or run OAuth with an optional callback URL), edit name/key, enable/disable, connectivity test, delete; per-account requests, tokens, errors, cooldown state, and last error. OAuth-added accounts are named after the Command Code user automatically
 - **Models** — checkbox list of upstream models; checked = exposed via `/v1/models` and callable, unchecked = hidden. This is the editor for `exclude_models` and applies live
 - **Keys** — create local client API keys (always server-generated), enable/disable, copy, delete; per-key request and token usage. Keys are masked in the list — reveal or copy them on demand (the full value is shown once at creation)
-- **Settings** — edit `base_url` and `exclude_models` (live), `host`/`port`/`webui` (persisted, applied on restart), and change the admin password
+- **Settings** — edit `base_url` (live), `host`/`port`/`webui` (persisted, applied on restart), and change the admin password (requires the current password; every existing admin session is kicked afterwards)
 - **Logs** — tail of the in-memory log ring (last 500 lines)
 
 Changes to accounts and settings are written back to `config.yaml` immediately.
@@ -379,6 +379,15 @@ POST   /admin/api/oauth/start
 GET    /admin/api/oauth/status
 POST   /admin/api/oauth/cancel
 ```
+
+Security notes: admin authentication is rate limited per source IP
+(5 failed attempts in 10 minutes locks the source out for 15 minutes),
+responses carry hardening headers (CSP, `X-Frame-Options: DENY`,
+`nosniff`, `Referrer-Policy: no-referrer`) and are never cached, changing
+the password demands the old one and invalidates all sessions, and the
+login form supports password managers (Bitwarden et al.). "Remember
+password" keeps the credential in `localStorage`; unchecked, it lives in
+`sessionStorage` and dies with the tab.
 
 By default the WebUI OAuth flow uses the server's local `127.0.0.1:5959-5968`
 callback ports (works when the browser runs on the same machine). For remote

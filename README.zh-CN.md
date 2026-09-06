@@ -146,7 +146,7 @@ http://localhost:11434/webui
 - **账号**：添加（粘贴 Key 或 OAuth，OAuth 支持填写回调地址）、编辑名称/Key、启用/禁用、连通性测试、删除；展示每账号请求数、tokens、错误、冷却状态、最近错误。OAuth 添加的账号按登录账号名自动命名
 - **模型**：上游模型复选框列表，勾选 = 对外提供（`/v1/models` 可见、可调用），取消勾选 = 隐藏并拒绝调用；本页即 exclude_models 的可视化编辑器，改动即时生效
 - **密钥**：新建调用本网关的客户端 API Key（服务端自动生成，不支持手动指定值）、复制、启用/禁用、删除；每把密钥独立的请求与 token 统计。列表中密钥默认打码，可按需显示/复制（完整值仅在创建时展示一次）
-- **设置**：`base_url`（即时生效）、`host`/`port`/`webui`（写盘后重启生效）、修改管理密码（即时生效）；exclude_models 已移至「模型」页维护
+- **设置**：`base_url`（即时生效）、`host`/`port`/`webui`（写盘后重启生效）、修改管理密码（需提供原密码，成功后踢出所有已登录管理会话）；exclude_models 已移至「模型」页维护
 - **日志**：内存日志环形缓冲（最近 500 行）实时查看
 
 账号与设置的修改会立即写回 `config.yaml`，无需重启。
@@ -177,6 +177,12 @@ POST   /admin/api/oauth/start
 GET    /admin/api/oauth/status
 POST   /admin/api/oauth/cancel
 ```
+
+WebUI 安全机制：管理接口按来源 IP 限速（10 分钟内失败 5 次锁定 15 分钟）、
+响应携带安全头（CSP、`X-Frame-Options: DENY`、`nosniff`、
+`Referrer-Policy: no-referrer`）且禁用缓存、修改密码需原密码并使所有会话
+失效、登录表单兼容 Bitwarden 等密码管理器；「记住密码」存于 localStorage，
+取消勾选则仅存 sessionStorage（关标签页即失效）。
 
 WebUI 的 OAuth 弹窗支持**填写回调地址**：默认使用服务器本地
 `127.0.0.1:5959-5968` 回调（浏览器与服务器同机时开箱即用）；远程 / 容器部署

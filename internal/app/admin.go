@@ -37,6 +37,8 @@ func registerAdminRoutes(mux *http.ServeMux, cc *CCClient, pool *AccountPool, ke
 }
 
 func writeAdminJSON(w http.ResponseWriter, status int, payload any) {
+	// Admin responses can carry credentials (key reveal, masks) — never cache.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(payload)
@@ -492,6 +494,7 @@ type adminSettingsUpdate struct {
 	Port          *int      `json:"port"`
 	WebUI         *bool     `json:"webui"`
 	AdminPassword *string   `json:"admin_password"`
+	OldPassword   *string   `json:"old_password"`
 }
 
 // handleAdminSettingsPut applies settings. exclude_models, base_url, and the
@@ -503,6 +506,17 @@ func handleAdminSettingsPut(cfg *Config, cc *CCClient, pool *AccountPool) http.H
 		if err := decodeJSONBody(w, r, &body); err != nil {
 			writeAdminError(w, 400, err.Error())
 			return
+		}
+		// 修改管理密码必须提供原密码；错误即拒绝，不泄露当前值。
+		if body.AdminPassword != nil && len(strings.TrimSpace(*body.AdminPassword)) < 8 {
+			writeAdminError(w, 400, "admin_password must be at least 8 characters")
+			return
+		}
+		if body.AdminPassword != nil {
+			if body.OldPassword == nil || !subtleConstantTimeEqual(*body.OldPassword, cfg.adminPassword()) {
+				writeAdminError(w, http.StatusForbidden, "当前管理密码不正确")
+				return
+			}
 		}
 
 		restartRequired := []string{}
@@ -525,6 +539,7 @@ func handleAdminSettingsPut(cfg *Config, cc *CCClient, pool *AccountPool) http.H
 				writeAdminError(w, 400, "admin_password must be at least 8 characters")
 				return
 			}
+			// 管理认证就是密码本身：改完即踢出所有已持有的旧凭据。
 			cfg.setAdminPassword(password)
 		}
 		if body.Host != nil && strings.TrimSpace(*body.Host) != "" {

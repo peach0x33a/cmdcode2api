@@ -217,16 +217,23 @@
   <div class="login-box">
     <div class="title">cmdcode2api <span>控制台</span></div>
     <div class="desc">使用配置文件中的 admin_password 登录管理接口</div>
-    <label class="field">
-      <span class="cap">服务器地址</span>
-      <input type="text" id="login-base" placeholder="http://localhost:11434">
-    </label>
-    <label class="field">
-      <span class="cap">管理密码（admin_password）</span>
-      <input type="password" id="login-token" placeholder="ccgw-admin-…">
-    </label>
-    <div class="login-err" id="login-err"></div>
-    <button class="btn primary" id="login-btn" style="width:100%;padding:9px">连 接</button>
+    <form id="login-form" autocomplete="on">
+      <label class="field">
+        <span class="cap">服务器地址</span>
+        <input type="text" id="login-base" name="server" autocomplete="url" placeholder="http://localhost:11434">
+      </label>
+      <label class="field">
+        <span class="cap">管理密码（admin_password）</span>
+        <input type="text" id="login-user" name="username" value="admin" autocomplete="username" aria-hidden="true" tabindex="-1" style="position:absolute;left:-9999px;height:0;width:0;opacity:0">
+        <input type="password" id="login-token" name="password" autocomplete="current-password" placeholder="管理密码">
+      </label>
+      <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+        <input type="checkbox" id="login-remember" checked style="width:auto;accent-color:var(--accent)">
+        <span class="cap" style="margin:0">记住密码（取消则仅在当前标签页内保留）</span>
+      </label>
+      <div class="login-err" id="login-err"></div>
+      <button type="submit" class="btn primary" id="login-btn" style="width:100%;padding:9px">连 接</button>
+    </form>
   </div>
 </div>
 
@@ -328,10 +335,19 @@
           <option value="false">禁用</option>
         </select>
       </label>
-      <label class="field"><span class="cap">新管理密码（留空表示不修改，即时生效，至少 8 位）</span>
-        <input type="password" id="set-password" placeholder="••••••••">
-      </label>
-      <button class="btn primary" id="set-save-btn">保存设置</button>
+      <form id="pw-form" autocomplete="on">
+        <label class="field"><span class="cap">当前管理密码</span>
+          <input type="password" id="set-password-old" name="password" autocomplete="current-password" required>
+        </label>
+        <label class="field"><span class="cap">新管理密码（至少 8 位）</span>
+          <input type="password" id="set-password" name="new-password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <button type="submit" class="btn primary">修改管理密码</button>
+        <span class="hint" style="margin-left:10px">修改成功后会踢出所有已登录的管理会话（包括当前浏览器），需用新密码重新登录。</span>
+      </form>
+      <div style="margin-top:16px">
+        <button class="btn primary" id="set-save-btn">保存设置</button>
+      </div>
       <div class="restart-note" id="set-restart"></div>
     </div>
   </section>
@@ -402,9 +418,13 @@
 "use strict";
 
 const $ = (s) => document.querySelector(s);
+function readStoredToken() {
+  return localStorage.getItem("cc2api.token") || sessionStorage.getItem("cc2api.token") || "";
+}
+
 const state = {
   base: localStorage.getItem("cc2api.base") || "",
-  token: localStorage.getItem("cc2api.token") || "",
+  token: readStoredToken(),
   tab: "overview",
   logsSeq: 0,
   oauthTimer: null,
@@ -518,6 +538,7 @@ function showApp() {
 
 function logout(msg) {
   localStorage.removeItem("cc2api.token");
+  sessionStorage.removeItem("cc2api.token");
   state.token = "";
   stopOAuthPolling();
   showLogin(msg || "");
@@ -531,7 +552,10 @@ async function tryConnect() {
   try {
     const ov = await api("/admin/api/overview");
     localStorage.setItem("cc2api.base", base);
-    localStorage.setItem("cc2api.token", token);
+    localStorage.removeItem("cc2api.token");
+    sessionStorage.removeItem("cc2api.token");
+    if ($("#login-remember").checked) localStorage.setItem("cc2api.token", token);
+    else sessionStorage.setItem("cc2api.token", token);
     $("#login-err").textContent = "";
     renderOverview(ov);
     showApp();
@@ -888,6 +912,7 @@ async function loadSettings() {
     $("#set-port").value = s.port || "";
     $("#set-webui").value = s.webui ? "true" : "false";
     $("#set-password").value = "";
+    $("#set-password-old").value = "";
   } catch (e) { /* 401 已处理 */ }
 }
 
@@ -898,12 +923,9 @@ async function saveSettings() {
     port: parseInt($("#set-port").value, 10) || 0,
     webui: $("#set-webui").value === "true",
   };
-  const newPassword = $("#set-password").value;
-  if (newPassword) body.admin_password = newPassword;
   try {
     const r = await api("/admin/api/settings", { method: "PUT", body });
-    if (newPassword) { $("#set-password").value = ""; toast("管理密码已更新"); }
-    else toast("设置已保存");
+    toast("设置已保存");
     const need = r.restart_required || [];
     const note = $("#set-restart");
     if (need.length) {
@@ -1006,9 +1028,8 @@ function closeOAuth() {
 
 /* ---------- events ---------- */
 
-$("#login-btn").addEventListener("click", tryConnect);
-$("#login-token").addEventListener("keydown", e => { if (e.key === "Enter") tryConnect(); });
-$("#login-base").addEventListener("keydown", e => { if (e.key === "Enter") $("#login-token").focus(); });
+$("#login-form").addEventListener("submit", e => { e.preventDefault(); tryConnect(); });
+$("#login-base").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("#login-token").focus(); } });
 $("#logout-btn").addEventListener("click", () => logout());
 
 document.querySelectorAll("nav.tabs button").forEach(b =>
@@ -1044,6 +1065,18 @@ $("#oauth-cancel").addEventListener("click", () => {
 $("#oauth-modal").addEventListener("click", e => { if (e.target === $("#oauth-modal")) hideModal("#oauth-modal"); });
 
 $("#set-save-btn").addEventListener("click", saveSettings);
+
+$("#pw-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const newPassword = $("#set-password").value;
+  const oldPassword = $("#set-password-old").value;
+  if (!newPassword || !oldPassword) { toast("请填写当前密码和新密码", true); return; }
+  try {
+    await api("/admin/api/settings", { method: "PUT", body: { admin_password: newPassword, old_password: oldPassword } });
+    toast("管理密码已修改，请用新密码重新登录");
+    logout("管理密码已修改，请使用新密码重新登录");
+  } catch (err) { toast(err.message, true); }
+});
 
 /* ---------- boot ---------- */
 

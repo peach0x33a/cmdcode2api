@@ -612,7 +612,7 @@ func contentToCC(m Message) ([]CCPart, error) {
 		}}, nil
 	}
 
-	var parts []CCPart
+	parts := []CCPart{}
 	if m.Role == "assistant" && m.ReasoningContent != "" {
 		parts = append(parts, CCPart{Type: "reasoning", Text: m.ReasoningContent})
 	}

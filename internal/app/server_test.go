@@ -166,6 +166,32 @@ func TestLoggingMiddlewareLogsMethodPathStatusAndDuration(t *testing.T) {
 	}
 }
 
+func TestLoggingMiddlewareLogsForwardedClientIP(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	oldWriter := log.Writer()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldWriter)
+
+	handler := loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.RemoteAddr = "127.0.0.1:11434"
+	req.Header.Set("CF-Connecting-IP", "203.0.113.18")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	line := buf.String()
+	if !strings.Contains(line, "203.0.113.18") {
+		t.Fatalf("log %q missing forwarded client IP", line)
+	}
+	if strings.Contains(line, "127.0.0.1") {
+		t.Fatalf("log %q contains proxy IP", line)
+	}
+}
+
 func TestLoggingMiddlewareSkipsHealth(t *testing.T) {
 	oldWriter := log.Writer()
 	var buf bytes.Buffer
@@ -182,5 +208,64 @@ func TestLoggingMiddlewareSkipsHealth(t *testing.T) {
 
 	if buf.Len() != 0 {
 		t.Fatalf("health log = %q", buf.String())
+	}
+}
+
+func TestRequestClientIPUsesCloudflareHeaderThroughLoopbackProxy(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:11434"
+	req.Header.Set("CF-Connecting-IP", "203.0.113.8")
+	req.Header.Set("X-Forwarded-For", "198.51.100.4, 203.0.113.8")
+
+	if got := requestClientIP(req); got != "203.0.113.8" {
+		t.Fatalf("client IP = %q, want 203.0.113.8", got)
+	}
+}
+
+func TestRequestClientIPFallsBackThroughTrustedHeaders(t *testing.T) {
+	tests := []struct {
+		name string
+		cf   string
+		xff  string
+		real string
+		want string
+	}{
+		{name: "xff", xff: "198.51.100.7, 203.0.113.9", want: "198.51.100.7"},
+		{name: "real ip", real: "2001:db8::7", want: "2001:db8::7"},
+		{name: "invalid headers", cf: "not-an-ip", xff: "bad, also-bad", real: "bad", want: "127.0.0.1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.RemoteAddr = "127.0.0.1:11434"
+			req.Header.Set("CF-Connecting-IP", tt.cf)
+			req.Header.Set("X-Forwarded-For", tt.xff)
+			req.Header.Set("X-Real-IP", tt.real)
+			if got := requestClientIP(req); got != tt.want {
+				t.Fatalf("client IP = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRequestClientIPIgnoresHeadersFromDirectPeer(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "198.51.100.20:443"
+	req.Header.Set("CF-Connecting-IP", "203.0.113.8")
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	req.Header.Set("X-Real-IP", "203.0.113.10")
+
+	if got := requestClientIP(req); got != "198.51.100.20" {
+		t.Fatalf("client IP = %q, want 198.51.100.20", got)
+	}
+}
+
+func TestRequestClientIPHandlesLoopbackIPv6(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[::1]:11434"
+	req.Header.Set("CF-Connecting-IP", "2001:db8::8")
+
+	if got := requestClientIP(req); got != "2001:db8::8" {
+		t.Fatalf("client IP = %q, want 2001:db8::8", got)
 	}
 }

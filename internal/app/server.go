@@ -92,7 +92,7 @@ func adminAuth(cfg *Config, limiter *ipRateLimiter) func(http.Handler) http.Hand
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := clientIP(r.RemoteAddr)
+			ip := requestClientIP(r)
 			if ok, retryAfter := limiter.Allow(ip); !ok {
 				seconds := int(retryAfter.Seconds()) + 1
 				w.Header().Set("Retry-After", strconv.Itoa(seconds))
@@ -159,7 +159,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		recorder, wrapped := newStatusRecorder(w)
 		next.ServeHTTP(wrapped, r)
 		if r.URL.Path != "/health" {
-			log.Print(formatHTTPLog(r.Method, r.URL.Path, recorder.status, time.Since(start), r.RemoteAddr))
+			log.Print(formatHTTPLog(r.Method, r.URL.Path, recorder.status, time.Since(start), requestClientIP(r)))
 		}
 	})
 }
@@ -172,6 +172,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 		pool = NewAccountPool(nil)
 	}
 	keys := NewClientKeyPool(cfg.APIKeys)
+	quotas := NewQuotaService(cc, pool, usage)
 
 	mux := http.NewServeMux()
 
@@ -188,7 +189,7 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 
 	// WebUI：管理 API 与内嵌的单文件界面，挂在 /webui 下，根路径留给 API。
 	adminMux := http.NewServeMux()
-	registerAdminRoutes(adminMux, cc, pool, keys, cfg, usage, ring)
+	registerAdminRoutes(adminMux, cc, pool, keys, cfg, usage, ring, quotas)
 	if cfg.WebUIEnabled() {
 		mux.Handle("/admin/", adminAuth(cfg, nil)(adminMux))
 		// Command Code 页面回传凭据的公开端点（靠 state 校验，非管理密码）。
@@ -215,6 +216,11 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 
 	shutdownSignal, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
+
+	// 额度采集：启动后立即刷新一次，之后每 5 分钟一次；服务退出时停止。
+	quotaCtx, stopQuotas := context.WithCancel(shutdownSignal)
+	defer stopQuotas()
+	go quotas.Run(quotaCtx)
 
 	idleConnsClosed := make(chan struct{})
 	go func() {

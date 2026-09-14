@@ -200,6 +200,14 @@ func (p *AccountPool) Len() int {
 	return len(p.accounts)
 }
 
+// List returns a snapshot of the pool's accounts for background jobs that
+// iterate without holding the pool lock.
+func (p *AccountPool) List() []*Account {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return append([]*Account(nil), p.accounts...)
+}
+
 func (p *AccountPool) EnabledCount() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

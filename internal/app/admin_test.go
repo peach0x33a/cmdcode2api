@@ -20,23 +20,36 @@ func newAdminTestEnv(t *testing.T) (*httptest.Server, *AccountPool, *ClientKeyPo
 	configFile = filepath.Join(t.TempDir(), "config.yaml")
 	t.Cleanup(func() { configFile = oldConfigFile })
 
+	oldUsageFile := usageFile
+	usageFile = filepath.Join(t.TempDir(), "usage.json")
+	t.Cleanup(func() { usageFile = oldUsageFile })
+
+	// Stub upstream: keeps background refreshes off the network and fast.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(upstream.Close)
+
 	cfg := &Config{APIKey: "client-key", Host: "localhost", Port: 11434}
-	cfg.SetUpstreamBaseURL("https://api.commandcode.test")
+	cfg.SetUpstreamBaseURL(upstream.URL)
 	cfg.setAdminPassword("admin-pass-123")
 	pool := NewAccountPool(nil)
 	keys := NewClientKeyPool(nil)
-	cc := NewCCClientWithPool(pool, cfg.UpstreamBaseURL())
+	cc := NewCCClientWithPool(pool, upstream.URL)
 	usage := &UsageTracker{}
 	ring := newLogRing()
+	quotas := NewQuotaService(cc, pool, usage)
 
 	mux := http.NewServeMux()
-	registerAdminRoutes(mux, cc, pool, keys, cfg, usage, ring)
+	registerAdminRoutes(mux, cc, pool, keys, cfg, usage, ring, quotas)
 	// Mirror runServer: the public OAuth callback lives outside adminAuth.
 	root := http.NewServeMux()
 	root.HandleFunc("POST /admin/api/oauth/callback", handleWebOAuthCallback())
 	root.Handle("/admin/", adminAuth(cfg, nil)(mux))
 	srv := httptest.NewServer(root)
 	t.Cleanup(srv.Close)
+	// Drain background quota refreshes before restoring the shared globals.
+	t.Cleanup(quotas.Wait)
 	return srv, pool, keys, cfg, usage, ring
 }
 

@@ -27,6 +27,9 @@ type UsageTracker struct {
 	accMu      sync.Mutex
 	accounts   map[string]*UsageCounters
 	clientKeys map[string]*UsageCounters
+	// quotas caches the latest fetched quota snapshot per account ID; the
+	// entries are replaced wholesale and never mutated in place.
+	quotas map[string]*QuotaSnapshot
 }
 
 type UsageCounters struct {
@@ -157,11 +160,18 @@ func (u *UsageTracker) ensureMapsLocked() {
 	if u.clientKeys == nil {
 		u.clientKeys = make(map[string]*UsageCounters)
 	}
+	if u.quotas == nil {
+		u.quotas = make(map[string]*QuotaSnapshot)
+	}
 }
 
-func (u *UsageTracker) countersFor(m map[string]*UsageCounters, id string) UsageSnapshotEntry {
+// countersFor returns the counters for id from the map selected by m. m is a
+// pointer so the field is dereferenced only under accMu: reading u.accounts /
+// u.clientKeys at the call site would race with ensureMapsLocked, which can
+// initialize them from a background goroutine.
+func (u *UsageTracker) countersFor(m *map[string]*UsageCounters, id string) UsageSnapshotEntry {
 	u.accMu.Lock()
-	c := m[id]
+	c := (*m)[id]
 	u.accMu.Unlock()
 	if c == nil {
 		return UsageSnapshotEntry{}
@@ -171,19 +181,62 @@ func (u *UsageTracker) countersFor(m map[string]*UsageCounters, id string) Usage
 
 // AccountUsage returns a snapshot of one account's durable counters.
 func (u *UsageTracker) AccountUsage(id string) UsageSnapshotEntry {
-	return u.countersFor(u.accounts, id)
+	return u.countersFor(&u.accounts, id)
 }
 
 // ClientKeyUsage returns a snapshot of one client key's durable counters.
 func (u *UsageTracker) ClientKeyUsage(id string) UsageSnapshotEntry {
-	return u.countersFor(u.clientKeys, id)
+	return u.countersFor(&u.clientKeys, id)
 }
 
-// DropAccount forgets a removed account's counters so they stop persisting.
+// DropAccount forgets a removed account's counters and quota snapshot so they
+// stop persisting.
 func (u *UsageTracker) DropAccount(id string) {
 	u.accMu.Lock()
 	defer u.accMu.Unlock()
 	delete(u.accounts, id)
+	delete(u.quotas, id)
+}
+
+// Quota returns the cached quota snapshot for an account, or nil. Stored
+// snapshots are immutable; callers must not mutate the returned value.
+func (u *UsageTracker) Quota(id string) *QuotaSnapshot {
+	u.accMu.Lock()
+	defer u.accMu.Unlock()
+	return u.quotas[id]
+}
+
+// SetQuota stores an account's latest quota snapshot.
+func (u *UsageTracker) SetQuota(id string, snap *QuotaSnapshot) {
+	if id == "" || snap == nil {
+		return
+	}
+	u.accMu.Lock()
+	defer u.accMu.Unlock()
+	u.ensureMapsLocked()
+	u.quotas[id] = snap
+}
+
+// DropQuota forgets an account's quota snapshot, used when its key changes
+// because the snapshot belongs to the old credential.
+func (u *UsageTracker) DropQuota(id string) {
+	u.accMu.Lock()
+	defer u.accMu.Unlock()
+	delete(u.quotas, id)
+}
+
+// quotaSnapshot copies the quota map for persistence.
+func (u *UsageTracker) quotaSnapshot() map[string]*QuotaSnapshot {
+	u.accMu.Lock()
+	defer u.accMu.Unlock()
+	if len(u.quotas) == 0 {
+		return nil
+	}
+	out := make(map[string]*QuotaSnapshot, len(u.quotas))
+	for id, q := range u.quotas {
+		out[id] = q
+	}
+	return out
 }
 
 // MoveAccount migrates counters when an account's key (and therefore ID)
@@ -263,6 +316,14 @@ type UsageSnapshotEntry struct {
 	CacheWriteTokens int64 `json:"cache_write_tokens"`
 }
 
+// persistedUsage is the on-disk shape of usage.json: the public usage
+// snapshot plus per-account quota snapshots, which stay out of UsageSnapshot
+// so they never reach the unauthenticated /usage endpoint.
+type persistedUsage struct {
+	UsageSnapshot
+	Quotas map[string]*QuotaSnapshot `json:"quotas,omitempty"`
+}
+
 // TotalTokens returns prompt + completion (not counting cache separately)
 func (s UsageSnapshot) TotalTokens() int64 {
 	return s.PromptTokens + s.CompletionTokens
@@ -279,7 +340,7 @@ func loadUsage() *UsageTracker {
 	if err != nil {
 		return u
 	}
-	var snap UsageSnapshot
+	var snap persistedUsage
 	if json.Unmarshal(data, &snap) != nil {
 		return u
 	}
@@ -301,6 +362,9 @@ func loadUsage() *UsageTracker {
 		c.restore(entry)
 		u.clientKeys[id] = c
 	}
+	for id, q := range snap.Quotas {
+		u.quotas[id] = q
+	}
 	u.accMu.Unlock()
 	return u
 }
@@ -309,7 +373,7 @@ func (u *UsageTracker) save() error {
 	u.saveMu.Lock()
 	defer u.saveMu.Unlock()
 
-	snap := u.Snapshot()
+	snap := persistedUsage{UsageSnapshot: u.Snapshot(), Quotas: u.quotaSnapshot()}
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return err

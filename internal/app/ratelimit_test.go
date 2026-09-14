@@ -66,3 +66,35 @@ func TestAdminAuthRateLimitsBruteForce(t *testing.T) {
 		t.Fatalf("fresh limiter status = %d, want 200", rec.Code)
 	}
 }
+
+func TestAdminAuthRateLimitsByForwardedClientIP(t *testing.T) {
+	cfg := &Config{}
+	cfg.setAdminPassword("correct-horse")
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /admin/api/overview", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := adminAuth(cfg, nil)(mux)
+
+	attempt := func(ip, password string) int {
+		req := httptest.NewRequest(http.MethodGet, "/admin/api/overview", nil)
+		req.RemoteAddr = "127.0.0.1:11434"
+		req.Header.Set("CF-Connecting-IP", ip)
+		req.Header.Set("Authorization", "Bearer "+password)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	for i := 0; i < adminFailLimit; i++ {
+		if code := attempt("203.0.113.11", "wrong"); code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status = %d, want 401", i+1, code)
+		}
+	}
+	if code := attempt("203.0.113.11", "correct-horse"); code != http.StatusTooManyRequests {
+		t.Fatalf("locked forwarded IP status = %d, want 429", code)
+	}
+	if code := attempt("203.0.113.12", "correct-horse"); code != http.StatusOK {
+		t.Fatalf("different forwarded IP status = %d, want 200", code)
+	}
+}

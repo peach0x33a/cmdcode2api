@@ -142,14 +142,35 @@ http://localhost:11434/webui
 
 功能：
 
-- **概览**：版本、运行时长、监听地址、用量统计、账号/密钥/模型概览
-- **账号**：添加（粘贴 Key 或 OAuth，OAuth 支持填写回调地址）、编辑名称/Key、启用/禁用、连通性测试、删除；展示每账号请求数、tokens、错误、冷却状态、最近错误。OAuth 添加的账号按登录账号名自动命名
+- **概览**：版本、运行时长、监听地址、用量统计、账号/密钥/模型概览、额度同步汇总（已同步 / 超限 / 低余额账号数、最近刷新时间）
+- **账号**：添加（粘贴 Key 或 OAuth，OAuth 支持填写回调地址）、编辑名称/Key、启用/禁用、连通性测试、刷新额度、删除；展示每账号请求数、tokens、错误、冷却状态、最近错误，以及额度（5 小时 / 周 / 按月估算进度条、余额、套餐、账期）。OAuth 添加的账号按登录账号名自动命名
 - **模型**：上游模型复选框列表，勾选 = 对外提供（`/v1/models` 可见、可调用），取消勾选 = 隐藏并拒绝调用；本页即 exclude_models 的可视化编辑器，改动即时生效
 - **密钥**：新建调用本网关的客户端 API Key（服务端自动生成，不支持手动指定值）、复制、启用/禁用、删除；每把密钥独立的请求与 token 统计。列表中密钥默认打码，可按需显示/复制（完整值仅在创建时展示一次）
 - **设置**：`base_url`（即时生效）、`host`/`port`/`webui`（写盘后重启生效）、修改管理密码（需提供原密码，成功后踢出所有已登录管理会话）；exclude_models 已移至「模型」页维护
 - **日志**：内存日志环形缓冲（最近 500 行）实时查看
 
 账号与设置的修改会立即写回 `config.yaml`，无需重启。
+
+### 额度展示
+
+「账号」页展示每个账号的 Command Code 额度，使用同一个 API Key 读取未公开的
+`/alpha/*` 接口（`whoami`、`billing/credits`、`billing/subscriptions`、
+`usage/summary`）：
+
+- **5 小时**、**本周**进度条直接来自上游 `windowLimits`；已用 ≥50% 显示黄色、
+  ≥75% 深黄、≥90% 红色。
+- **月度**为推算值：接口没有月度窗口对象，上限来自社区 CLI 的套餐映射
+  （`individual-pro` → 30、`individual-pro-v1` → 80 等），已用 = 上限 − 剩余
+  月度额度，界面上标注“按套餐估算”；未知套餐仅显示余额。
+- 余额（月度剩余 / 充值 / 免费）、套餐名称与状态、账期结束时间、账期用量统计。
+- 账号页提供单账号「刷新额度」与「刷新全部额度」按钮。
+
+额度会在启动后不久自动刷新一次，之后每 5 分钟刷新一次，快照缓存在
+`usage.json` 中，重启后仍然保留。查询失败时保留上一次成功的数据，只更新错误与
+查询时间。接口路径取自
+[commandcode-usage](https://github.com/MAXeaglet/commandcode-usage)，属未公开接口，
+解析层兼容字段漂移（camelCase / snake_case、秒 / 毫秒 / ISO 时间、顶层或 `data`
+嵌套）。
 
 ### 管理 API
 
@@ -163,6 +184,8 @@ POST   /admin/api/accounts             {"name": "...", "api_key": "..."}
 PATCH  /admin/api/accounts/{id}        {"enabled": true} 或 {"name": "..."}
 DELETE /admin/api/accounts/{id}
 POST   /admin/api/accounts/{id}/test
+POST   /admin/api/accounts/{id}/quota/refresh
+POST   /admin/api/quotas/refresh       {"id": "..."} 可选，省略则刷新全部账号
 GET    /admin/api/models
 PUT    /admin/api/models               {"exposed": ["model-id", ...]}
 GET    /admin/api/keys
@@ -177,6 +200,9 @@ POST   /admin/api/oauth/start
 GET    /admin/api/oauth/status
 POST   /admin/api/oauth/cancel
 ```
+
+`GET /admin/api/accounts` 每个账号带嵌套 `quota` 对象；`GET /admin/api/overview`
+带 `quotas` 汇总（`synced`、`exceeded`、`low_balance`、`last_checked_at`）。
 
 WebUI 安全机制：管理接口按来源 IP 限速（10 分钟内失败 5 次锁定 15 分钟）、
 响应携带安全头（CSP、`X-Frame-Options: DENY`、`nosniff`、
@@ -280,6 +306,13 @@ http://localhost:11434/v1
 https://example.com/ai/v1
 ```
 
+如果 nginx 与 cmdcode2api 在同一台主机，请继续转发 Cloudflare 的
+`CF-Connecting-IP` 和 `X-Forwarded-For`。服务端只接受来自本机回环代理连接的
+这些请求头，并将解析后的地址用于 HTTP 日志和管理登录限流；直连请求即使携带
+伪造请求头，也仍使用 TCP 对端地址。若还需要让 nginx 自身的 `$remote_addr`
+表示最终用户，请在 nginx 中配置 `real_ip_header CF-Connecting-IP`，并填写
+Cloudflare 官方公布的代理网段。
+
 客户端 Bearer Token 使用 `config.yaml` 里 `api_keys` 列表中的任意一把密钥。
 
 ## 模型 ID
@@ -333,4 +366,3 @@ usage.json
 .oauth_state
 .oauth_url
 ```
-

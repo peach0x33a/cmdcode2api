@@ -211,6 +211,25 @@
   .faint { color: var(--text-faint); }
   .restart-note { color: var(--amber); font-size: 12.5px; margin-top: 8px; display: none; }
   .err-line { color: var(--red); font-size: 12px; font-family: var(--mono); word-break: break-all; }
+
+  /* quota */
+  .quota-bars { display: flex; flex-direction: column; gap: 7px; max-width: 640px; }
+  .qbar { display: grid; grid-template-columns: 104px 1fr 240px; gap: 10px; align-items: center; font-size: 12px; }
+  .qbar .qlabel { color: var(--text-dim); white-space: nowrap; }
+  .qbar .track { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; height: 9px; overflow: hidden; }
+  .qbar .fill { display: block; height: 100%; }
+  .qbar .meta { color: var(--text-faint); font-family: var(--mono); font-size: 11.5px; text-align: right; white-space: nowrap; }
+  .lvl-1 { background: var(--green); }
+  .lvl-2 { background: var(--amber); }
+  .lvl-3 { background: #f97316; }
+  .lvl-4 { background: var(--red); }
+  .quota-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 12.5px; color: var(--text-dim); }
+  .quota-meta b { color: var(--text); font-weight: 600; font-family: var(--mono); }
+  .quota-err { color: var(--red); font-size: 12px; font-family: var(--mono); margin-top: 6px; word-break: break-all; }
+
+  /* each account's main row and its quota/usage detail read as one block */
+  tbody.acc-group tr > td { border-bottom: none; }
+  tbody.acc-group + tbody.acc-group tr:first-child > td { border-top: 1px solid var(--border); }
 </style>
 </head>
 <body>
@@ -287,10 +306,13 @@
         <button class="btn primary" id="acc-add-btn" data-i18n="acc.add">Add</button>
         <button class="btn" id="acc-oauth-btn" data-i18n="acc.addOAuth">Add via OAuth</button>
       </div>
-      <p class="hint" data-i18n="acc.hint">Accounts are used in round-robin order. A rate-limited (429) account goes into cooldown and is skipped until it recovers; 401/403/5xx fail over to the next account automatically. OAuth requires the browser to reach the server's callback ports 127.0.0.1:5959-5968.</p>
+      <p class="hint" data-i18n="acc.hint">Accounts are used in round-robin order. A rate-limited (429) account goes into cooldown and is skipped until it recovers; 401/403/5xx fail over to the next account automatically. OAuth requires the browser to reach the server's callback ports 127.0.0.1:5959-5968. Quotas auto-refresh every 5 minutes; tap a refresh icon on an account to force a fresh check.</p>
     </div>
     <div class="panel">
-      <h3 data-i18n="acc.listTitle">Account list</h3>
+      <h3 style="display:flex;align-items:center;justify-content:space-between">
+        <span data-i18n="acc.listTitle">Account list</span>
+        <button class="btn small" id="quota-refresh-all" style="font-weight:400;text-transform:none;letter-spacing:0" data-i18n="quota.refreshAll">Refresh all quotas</button>
+      </h3>
       <div id="acc-table"></div>
     </div>
   </section>
@@ -473,6 +495,48 @@ const I18N = {
     "common.actions": "Actions",
     "common.listSep": ", ",
 
+    "quota.refreshAll": "Refresh all quotas",
+    "quota.refreshOne": "Refresh quota",
+    "quota.refreshing": "Refreshing quotas…",
+    "quota.refreshed": "Quotas refreshed: {n} account(s)",
+    "quota.syncStatus": "Quota sync",
+    "quota.syncValue": "{synced} of {total} synced",
+    "quota.exceeded": "{n} quota exceeded",
+    "quota.lowBalance": "{n} low balance",
+    "quota.lastChecked": "Last checked {when}",
+    "quota.notSynced": "Quota not synced — waiting for a background refresh or click a refresh icon",
+    "quota.noWindow": "No quota windows returned for this account",
+    "quota.errorPrefix": "Quota query error:",
+    "quota.lastCheckedShort": "checked {when}",
+
+    "quota.resetAfter": "Resets after {d}",
+    "quota.dhm": "{d}d {h}h",
+    "quota.hm": "{h}h {m}m",
+    "quota.mins": "{m}m",
+    "quota.kvExceeded": "Quota-exceeded accounts",
+    "quota.kvLowBalance": "Low-balance accounts",
+    "quota.kvLastChecked": "Last quota refresh",
+    "quota.refreshedOne": "Quota refreshed",
+
+    "quota.monthly": "Monthly",
+    "quota.weekly": "Weekly",
+    "quota.window.5h": "5 hours",
+    "quota.window.weekly": "Weekly",
+    "quota.window.monthly": "Monthly",
+    "quota.monthlyRemaining": "Monthly remaining {v}$",
+    "quota.purchasedBalance": "Purchased balance {v}$",
+    "quota.freeBalance": "Free balance {v}$",
+    "quota.plan": "Plan",
+    "quota.planStatus": "{plan} · {status}",
+    "quota.billingPeriod": "Billing period to {v}",
+    "quota.cancelAtPeriodEnd": "Cancel at period end",
+    "quota.lowBalanceBadge": "low balance",
+    "quota.exceededBadge": "{n} exceeded",
+    "quota.estimated": "(estimated)",
+    "quota.unknownReset": "Reset time unknown",
+    "quota.noResetPoint": "Not used yet, no reset point",
+    "quota.resetIn": "Resets in {d}",
+
     "login.desc": "Sign in to the admin API with admin_password from your config file.",
     "login.serverAddress": "Server address",
     "login.passwordLabel": "Admin password (admin_password)",
@@ -495,6 +559,9 @@ const I18N = {
     "time.inSeconds": "in {n}s",
     "time.inMinutes": "in {n} min",
     "time.inHours": "in {n}h",
+    "time.dayShort": "{n}d",
+    "time.hourShort": "{n}h",
+    "time.minuteShort": "{n}m",
 
     "uptime.dhm": "{d}d {h}h {m}m",
     "uptime.hm": "{h}h {m}m",
@@ -524,7 +591,7 @@ const I18N = {
     "acc.namePlaceholder": "e.g. backup",
     "acc.add": "Add",
     "acc.addOAuth": "Add via OAuth",
-    "acc.hint": "Accounts are used in round-robin order. A rate-limited (429) account goes into cooldown and is skipped until it recovers; 401/403/5xx fail over to the next account automatically. OAuth requires the browser to reach the server's callback ports 127.0.0.1:5959-5968.",
+    "acc.hint": "Accounts are used in round-robin order. A rate-limited (429) account goes into cooldown and is skipped until it recovers; 401/403/5xx fail over to the next account automatically. OAuth requires the browser to reach the server's callback ports 127.0.0.1:5959-5968. Quotas auto-refresh every 5 minutes; tap a refresh icon on an account to force a fresh check.",
     "acc.listTitle": "Account list",
     "acc.empty": "No accounts yet — add an API key or use OAuth",
     "acc.statusOk": "Healthy",
@@ -642,6 +709,48 @@ const I18N = {
     "common.actions": "操作",
     "common.listSep": "、",
 
+    "quota.refreshAll": "刷新全部额度",
+    "quota.refreshOne": "刷新额度",
+    "quota.refreshing": "正在刷新额度…",
+    "quota.refreshed": "额度已刷新：{n} 个账号",
+    "quota.syncStatus": "额度同步",
+    "quota.syncValue": "{synced} / {total} 已同步",
+    "quota.exceeded": "{n} 额度超限",
+    "quota.lowBalance": "{n} 余额不足",
+    "quota.lastChecked": "上次检查 {when}",
+    "quota.notSynced": "额度未同步 —— 等待后台刷新或点击刷新图标",
+    "quota.noWindow": "本账号返回的额度窗口为空",
+    "quota.errorPrefix": "额度查询错误：",
+    "quota.lastCheckedShort": "已检查 {when}",
+
+    "quota.resetAfter": "重置于 {d} 后",
+    "quota.dhm": "{d}天{h}小时",
+    "quota.hm": "{h}小时{m}分钟",
+    "quota.mins": "{m}分钟",
+    "quota.kvExceeded": "额度超限账号",
+    "quota.kvLowBalance": "低余额账号",
+    "quota.kvLastChecked": "最近额度刷新",
+    "quota.refreshedOne": "额度已刷新",
+
+    "quota.monthly": "每月",
+    "quota.weekly": "每周",
+    "quota.window.5h": "5 小时",
+    "quota.window.weekly": "每周",
+    "quota.window.monthly": "每月",
+    "quota.monthlyRemaining": "本月剩余 {v}$",
+    "quota.purchasedBalance": "已购余额 {v}$",
+    "quota.freeBalance": "免费余额 {v}$",
+    "quota.plan": "套餐",
+    "quota.planStatus": "{plan} · {status}",
+    "quota.billingPeriod": "账期截至 {v}",
+    "quota.cancelAtPeriodEnd": "到期后取消",
+    "quota.lowBalanceBadge": "余额不足",
+    "quota.exceededBadge": "{n} 超限",
+    "quota.estimated": "（估计）",
+    "quota.unknownReset": "重置时间未知",
+    "quota.noResetPoint": "尚未使用，无重置点",
+    "quota.resetIn": "{d} 后重置",
+
     "login.desc": "使用配置文件中的 admin_password 登录管理接口",
     "login.serverAddress": "服务器地址",
     "login.passwordLabel": "管理密码（admin_password）",
@@ -664,6 +773,9 @@ const I18N = {
     "time.inSeconds": "{n} 秒后",
     "time.inMinutes": "{n} 分钟后",
     "time.inHours": "{n} 小时后",
+    "time.dayShort": "{n}天",
+    "time.hourShort": "{n}小时",
+    "time.minuteShort": "{n}分钟",
 
     "uptime.dhm": "{d}天 {h}小时 {m}分",
     "uptime.hm": "{h}小时 {m}分",
@@ -693,7 +805,7 @@ const I18N = {
     "acc.namePlaceholder": "例如 backup",
     "acc.add": "添加",
     "acc.addOAuth": "通过 OAuth 添加",
-    "acc.hint": "多账号按轮询方式轮流使用；某个账号 429 限流时自动冷却并在期间跳过，401/403/5xx 自动切换到下一个账号。OAuth 需要浏览器能访问服务器的 127.0.0.1:5959-5968 回调端口。",
+    "acc.hint": "多账号按轮询方式轮流使用；某个账号 429 限流时自动冷却并在期间跳过，401/403/5xx 自动切换到下一个账号。OAuth 需要浏览器能访问服务器的 127.0.0.1:5959-5968 回调端口。额度每 5 分钟自动刷新，也可在账号列表中手动刷新。",
     "acc.listTitle": "账号列表",
     "acc.empty": "还没有账号 —— 添加一个 API Key 或使用 OAuth",
     "acc.statusOk": "正常",
@@ -900,6 +1012,126 @@ function inTime(iso) {
   return t("time.inHours", { n: Math.ceil(diff / 3600) });
 }
 
+/* ---------- quota ---------- */
+
+function fmtCredit(n) {
+  if (n == null || !isFinite(Number(n))) return "—";
+  return Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString();
+}
+
+// Color grading per the reference dashboard: >=50% amber, >=75% heavier
+// amber, >=90% red, otherwise green.
+function quotaLevel(ratio) {
+  if (!isFinite(ratio) || ratio < 0.5) return 1;
+  if (ratio < 0.75) return 2;
+  if (ratio < 0.9) return 3;
+  return 4;
+}
+
+// Relative reset countdown with days, mirroring the reference dashboard.
+// The upstream returns resetAt=0 for an unused window (no reset point), which
+// is shown separately from a known-but-unparseable reset time.
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const d = Math.floor(sec / 86400); sec %= 86400;
+  const h = Math.floor(sec / 3600); sec %= 3600;
+  const m = Math.floor(sec / 60);
+  if (d > 0) return t("quota.dhm", { d, h });
+  if (h > 0) return t("quota.hm", { h, m });
+  return t("quota.mins", { m });
+}
+
+function quotaResetText(w) {
+  if (!w.reset_at) {
+    return Number(w.used || 0) > 0 ? t("quota.unknownReset") : t("quota.noResetPoint");
+  }
+  const at = new Date(w.reset_at).getTime();
+  if (!isFinite(at)) return t("quota.unknownReset");
+  return t("quota.resetAfter", { d: fmtDuration((at - Date.now()) / 1000) });
+}
+
+function quotaBar(label, w, estimated) {
+  if (!w) return "";
+  const cap = Number(w.cap || 0), used = Number(w.used || 0);
+  const ratio = cap > 0 ? used / cap : 0;
+  const pct = cap > 0 ? Math.min(100, Math.max(0, ratio * 100)) : 0;
+  let meta = "—";
+  if (cap > 0) {
+    meta = fmtCredit(used) + "$ / " + fmtCredit(cap) + "$";
+    meta += " · " + quotaResetText(w);
+  }
+  return `<div class="qbar">
+    <span class="qlabel">${esc(label)}${estimated ? ' <span class="faint">(' + esc(t("quota.estimated")) + ')</span>' : ""}</span>
+    <span class="track"><span class="fill lvl-${quotaLevel(ratio)}" style="width:${pct.toFixed(1)}%"></span></span>
+    <span class="meta">${esc(meta)}</span>
+  </div>`;
+}
+
+// The API exposes no monthly window: cap comes from the plan mapping and
+// used = cap − remaining monthly credits. Hidden for unknown plans.
+function quotaMonthBar(q) {
+  const plan = q.plan || {};
+  const cap = plan.monthly_credits;
+  const remaining = q.monthly_credits;
+  if (cap == null || remaining == null || cap <= 0) return "";
+  const used = Math.max(0, cap - remaining);
+  return quotaBar(t("quota.monthly"), { used, cap, exceeded: used >= cap, reset_at: plan.current_period_end }, true);
+}
+
+function quotaDetail(a) {
+  const q = a.quota;
+  if (!q) {
+    return `<div class="faint">${esc(t("quota.notSynced"))}</div>`;
+  }
+  const bars = [
+    quotaBar(t("quota.window.5h"), q.five_hour, false),
+    quotaBar(t("quota.weekly"), q.weekly, false),
+    quotaMonthBar(q),
+  ].filter(Boolean).join("");
+  const meta = [];
+  if (q.monthly_credits != null) meta.push(t("quota.monthlyRemaining", { v: fmtCredit(q.monthly_credits) }));
+  if (q.purchased_credits != null) meta.push(t("quota.purchasedBalance", { v: fmtCredit(q.purchased_credits) }));
+  if (q.free_credits != null) meta.push(t("quota.freeBalance", { v: fmtCredit(q.free_credits) }));
+  if (q.plan && q.plan.name) meta.push('<span class="badge ok">' + esc(q.plan.name) + '</span>' + (q.plan.status ? ' · ' + esc(q.plan.status) : ''));
+  if (q.plan && q.plan.current_period_end) meta.push(t("quota.billingPeriod", { v: fmtDate(q.plan.current_period_end) }));
+  if (q.plan && q.plan.cancel_at_period_end) meta.push('<span class="badge warn">' + esc(t("quota.cancelAtPeriodEnd")) + '</span>');
+  if (q.below_threshold) meta.push('<span class="badge warn">' + esc(t("quota.lowBalanceBadge")) + '</span>');
+  if (q.exceeded) meta.push('<span class="badge err">' + esc(t("quota.exceededBadge", { n: q.exceeded })) + '</span>');
+  const errs = [];
+  if (q.last_error) errs.push(q.last_error);
+  if (q.failures && q.failures.length) errs.push(q.failures.join(", "));
+  const metaHTML = meta.map(m => `<span>${m}</span>`).join("") +
+    (q.last_checked ? `<span class="faint">${esc(t("quota.lastChecked", { when: relTime(q.last_checked) }))}</span>` : "");
+  return `<div class="quota-bars">${bars || `<span class="faint">${esc(t("quota.noWindow"))}</span>`}</div>
+    ${metaHTML ? `<div class="quota-meta">${metaHTML}</div>` : ""}
+    ${errs.length ? `<div class="quota-err">${t("quota.errorPrefix")} ${esc(errs.join(", "))}</div>` : ""}`;
+}
+
+async function refreshAccountQuota(id) {
+  toast(t("quota.refreshing"));
+  try {
+    await api("/admin/api/accounts/" + id + "/quota/refresh", { method: "POST" });
+    toast(t("quota.refreshedOne"));
+    refreshAll();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function refreshAllQuotas() {
+  toast(t("quota.refreshing"));
+  try {
+    const r = await api("/admin/api/quotas/refresh", { method: "POST" });
+    toast(t("quota.refreshed", { n: (r.accounts && r.accounts.length) || 0 }));
+    refreshAll();
+  } catch (e) { toast(e.message, true); }
+}
+
 function toast(msg, isErr) {
   const el = document.createElement("div");
   el.className = "toast" + (isErr ? " err" : "");
@@ -1040,12 +1272,18 @@ setInterval(() => {
 function renderOverview(ov) {
   $("#ver").textContent = ov.version + " · " + ov.listen;
   const u = ov.usage;
+  const quo = ov.quotas || {};
+  const quotaSub = [];
+  if (quo.exceeded) quotaSub.push(t('quota.exceeded', { n: quo.exceeded }));
+  if (quo.low_balance) quotaSub.push(t('quota.lowBalance', { n: quo.low_balance }));
+  if (quo.last_checked_at) quotaSub.push(t('quota.lastCheckedShort', { when: relTime(quo.last_checked_at) }));
   const cards = [
     [t("ov.totalRequests"), fmtInt(u.total_requests), t("ov.running", { uptime: fmtUptime(ov.uptime_seconds) })],
     [t("ov.promptTokens"), fmtTokens(u.prompt_tokens), ""],
     [t("ov.completionTokens"), fmtTokens(u.completion_tokens), ""],
     [t("ov.cacheTokens"), fmtTokens(u.cache_read_tokens) + " / " + fmtTokens(u.cache_write_tokens), ""],
     [t("ov.accounts"), t("ov.accountsValue", { enabled: ov.accounts.enabled, total: ov.accounts.total }), ov.accounts.rate_limited > 0 ? t("ov.rateLimitedCount", { n: ov.accounts.rate_limited }) : ""],
+    [t("quota.syncStatus"), t("quota.syncValue", { synced: quo.synced || 0, total: ov.accounts.total }), quotaSub.join(" · ")],
     [t("ov.clientKeys"), t("ov.keysValue", { enabled: ov.keys.enabled, total: ov.keys.total }), ""],
     [t("ov.models"), t("ov.modelsAvailable", { n: ov.models.available }), t("ov.modelsLoaded", { n: ov.models.loaded })],
   ];
@@ -1061,6 +1299,9 @@ function renderOverview(ov) {
     <span class="k">${esc(t("ov.listen"))}</span><span class="v">${esc(ov.listen)}</span>
     <span class="k">${esc(t("ov.webui"))}</span><span class="v">${ov.webui ? esc(t("common.enabled")) : esc(t("common.disabled"))}</span>
     <span class="k">${esc(t("ov.rateLimited"))}</span><span class="v">${accs.rate_limited}</span>
+    <span class="k">${esc(t("quota.kvExceeded"))}</span><span class="v">${quo.exceeded || 0}</span>
+    <span class="k">${esc(t("quota.kvLowBalance"))}</span><span class="v">${quo.low_balance || 0}</span>
+    <span class="k">${esc(t("quota.kvLastChecked"))}</span><span class="v">${esc(relTime(quo.last_checked_at))}</span>
   </div>`;
   $("#ov-accounts").innerHTML = html;
 }
@@ -1100,10 +1341,10 @@ function renderAccounts(accounts) {
       <th>${esc(t("common.lastUsed"))}</th>
       <th style="text-align:right">${esc(t("common.actions"))}</th>
     </tr></thead>
-    <tbody>
     ${accounts.map(a => {
       const tokens = (a.prompt_tokens || 0) + (a.completion_tokens || 0);
-      return `<tr>
+      return `<tbody class="acc-group">
+      <tr class="acc-main">
         <td><strong>${esc(a.name)}</strong></td>
         <td class="mono">${esc(a.key_masked)}</td>
         <td>${statusBadge(a)}${a.auth_failures > 0 && a.status === "ok" ? ` <span class="faint">${esc(t("acc.authFailures", { n: a.auth_failures }))}</span>` : ""}</td>
@@ -1112,15 +1353,16 @@ function renderAccounts(accounts) {
         <td class="num" style="text-align:right">${a.errors ? `<span style="color:var(--red)">${a.errors}</span>` : "0"}</td>
         <td class="nowrap dim">${esc(relTime(a.last_used_at))}</td>
         <td><div class="row-actions">
+          <button class="btn small" onclick="refreshAccountQuota('${a.id}')">${esc(t("quota.refreshOne"))}</button>
           <button class="btn small" onclick="testAccount('${a.id}')">${esc(t("common.test"))}</button>
           <button class="btn small" onclick="openAccountEdit('${a.id}', '${esc(a.name)}')">${esc(t("common.edit"))}</button>
           <button class="btn small" onclick="toggleAccount('${a.id}', ${a.enabled ? "false" : "true"})">${a.enabled ? esc(t("common.disable")) : esc(t("common.enable"))}</button>
           <button class="btn small danger" onclick="deleteAccount('${a.id}', '${esc(a.name)}')">${esc(t("common.delete"))}</button>
         </div></td>
       </tr>
+      <tr class="acc-quota"><td colspan="8" style="padding-top:10px;padding-bottom:5px">${quotaDetail(a)}</td></tr>
       ${a.last_error ? `<tr><td colspan="8" class="err-line">${esc(t("acc.lastError", { time: relTime(a.last_error_at), msg: a.last_error }))}</td></tr>` : ""}
-    `;}).join("")}
-    </tbody>
+    </tbody>`;}).join("")}
   </table>`;
 }
 
@@ -1490,6 +1732,7 @@ document.querySelectorAll("nav.tabs button").forEach(b =>
 $("#acc-add-btn").addEventListener("click", addAccount);
 $("#acc-key").addEventListener("keydown", e => { if (e.key === "Enter") addAccount(); });
 $("#acc-oauth-btn").addEventListener("click", openOAuthModal);
+$("#quota-refresh-all").addEventListener("click", refreshAllQuotas);
 $("#oauth-begin").addEventListener("click", startOAuth);
 $("#oauth-cancel").addEventListener("click", () => hideModal("#oauth-modal"));
 $("#oauth-cancel2").addEventListener("click", () => {

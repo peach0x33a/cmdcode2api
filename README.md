@@ -15,11 +15,12 @@ The project was originally named `cc-gateway`; it was renamed to avoid confusion
 - OpenAI base64 data `image_url` conversion to Command Code / Anthropic-style image blocks
 - Multiple Command Code accounts with round-robin rotation and automatic failover (401/403/429/5xx), including per-account 429 cooldown
 - Multiple local client API keys with per-key usage tracking, managed in the WebUI or `config.yaml`
-- Embedded single-file WebUI: usage dashboard, account/key management, model exposure editor, live settings, and log tail
+- Embedded single-file WebUI: usage dashboard, account/key management, model exposure editor, live settings, quota dashboard, and log tail
 - Browser OAuth helper for obtaining a Command Code API key (CLI or from the WebUI); each OAuth run adds an account
 - Local bearer-token auth for clients and a separate admin password for the WebUI
 - CORS enabled for local UI clients
-- Usage counters (global, per-account, and per-client-key) persisted to `usage.json`
+- Usage counters (global, per-account, and per-client-key) and cached quota snapshots persisted to `usage.json`
+- Command Code quota dashboard: 5-hour rolling / weekly / estimated monthly progress bars, credit balances, plan and billing period, refreshed in the background every 5 minutes
 - Health endpoint: `GET /health`
 - Usage endpoint: `GET /usage`
 
@@ -241,6 +242,14 @@ Set the base URL to your local gateway:
 http://localhost:11434/v1
 ```
 
+If nginx and cmdcode2api run on the same host, keep forwarding Cloudflare's
+`CF-Connecting-IP` and `X-Forwarded-For` headers. The server accepts these
+headers only from loopback proxy connections, then uses the resolved address
+for HTTP logs and admin login rate limiting. Direct connections with forged
+proxy headers continue to use their TCP peer address. If nginx itself also
+needs `$remote_addr` to represent the end user, configure
+`real_ip_header CF-Connecting-IP` and Cloudflare's published proxy CIDRs.
+
 Use any key from the `api_keys` list in `config.yaml` as the bearer token.
 
 ### curl example
@@ -344,14 +353,39 @@ pointed at any running instance.
 
 Features:
 
-- **Overview** — version, uptime, listen address, usage counters, account/key/model summaries
-- **Accounts** — add (paste a key or run OAuth with an optional callback URL), edit name/key, enable/disable, connectivity test, delete; per-account requests, tokens, errors, cooldown state, and last error. OAuth-added accounts are named after the Command Code user automatically
+- **Overview** — version, uptime, listen address, usage counters, account/key/model summaries, and a quota sync summary (synced / exceeded / low-balance accounts, last refresh)
+- **Accounts** — add (paste a key or run OAuth with an optional callback URL), edit name/key, enable/disable, connectivity test, quota refresh, delete; per-account requests, tokens, errors, cooldown state, last error, and quota (5-hour / weekly / estimated monthly bars, balances, plan, billing period). OAuth-added accounts are named after the Command Code user automatically
 - **Models** — checkbox list of upstream models; checked = exposed via `/v1/models` and callable, unchecked = hidden. This is the editor for `exclude_models` and applies live
 - **Keys** — create local client API keys (always server-generated), enable/disable, copy, delete; per-key request and token usage. Keys are masked in the list — reveal or copy them on demand (the full value is shown once at creation)
 - **Settings** — edit `base_url` (live), `host`/`port`/`webui` (persisted, applied on restart), and change the admin password (requires the current password; every existing admin session is kicked afterwards)
 - **Logs** — tail of the in-memory log ring (last 500 lines)
 
 Changes to accounts and settings are written back to `config.yaml` immediately.
+
+### Quota display
+
+The Accounts tab shows each account's Command Code quota, read with the same
+API key from the undocumented `/alpha/*` endpoints (`whoami`,
+`billing/credits`, `billing/subscriptions`, `usage/summary`):
+
+- **5-hour** and **weekly** bars come straight from the upstream
+  `windowLimits` objects. Bars grade amber at ≥50% used, heavier amber at
+  ≥75%, and red at ≥90%.
+- **Monthly** is *derived*: the API exposes no monthly window, so the cap
+  comes from the community CLI's plan mapping (`individual-pro` → 30,
+  `individual-pro-v1` → 80, …), with `used = cap − remaining credits`. It is
+  labelled as estimated; unknown plans fall back to balance-only display.
+- Credit balances (monthly remaining / purchased / free), plan name and
+  status, billing-period end, and billing-period totals.
+- A per-account **refresh quota** button and a **refresh all** button.
+
+Quota refresh runs once shortly after startup and every 5 minutes afterwards;
+the latest snapshot is cached in `usage.json` so it survives restarts. A failed
+query keeps the last successful snapshot and only records the error and check
+time. These endpoints come from
+[commandcode-usage](https://github.com/MAXeaglet/commandcode-usage); they are
+unofficial, so the parser tolerates field drift (camelCase or snake_case, epoch
+seconds / milliseconds / ISO timestamps, flat or `data`-wrapped responses).
 
 ### Admin API
 
@@ -365,6 +399,8 @@ POST   /admin/api/accounts             {"name": "...", "api_key": "..."}
 PATCH  /admin/api/accounts/{id}        {"enabled": true}, {"name": "..."} or {"api_key": "..."}
 DELETE /admin/api/accounts/{id}
 POST   /admin/api/accounts/{id}/test
+POST   /admin/api/accounts/{id}/quota/refresh
+POST   /admin/api/quotas/refresh       {"id": "..."} optional — omit to refresh every account
 GET    /admin/api/models
 PUT    /admin/api/models               {"exposed": ["model-id", ...]}
 GET    /admin/api/keys
@@ -379,6 +415,10 @@ POST   /admin/api/oauth/start
 GET    /admin/api/oauth/status
 POST   /admin/api/oauth/cancel
 ```
+
+`GET /admin/api/accounts` includes a nested `quota` object per account;
+`GET /admin/api/overview` includes a `quotas` summary (`synced`, `exceeded`,
+`low_balance`, `last_checked_at`).
 
 Security notes: admin authentication is rate limited per source IP
 (5 failed attempts in 10 minutes locks the source out for 15 minutes),

@@ -16,13 +16,15 @@ import (
 
 // registerAdminRoutes wires the admin JSON API used by the WebUI. It must be
 // mounted behind adminAuth.
-func registerAdminRoutes(mux *http.ServeMux, cc *CCClient, pool *AccountPool, keys *ClientKeyPool, cfg *Config, usage *UsageTracker, ring *logRing) {
+func registerAdminRoutes(mux *http.ServeMux, cc *CCClient, pool *AccountPool, keys *ClientKeyPool, cfg *Config, usage *UsageTracker, ring *logRing, quotas *QuotaService) {
 	mux.HandleFunc("GET /admin/api/overview", handleAdminOverview(cfg, pool, keys, usage))
 	mux.HandleFunc("GET /admin/api/accounts", handleAdminAccountsList(pool, usage))
-	mux.HandleFunc("POST /admin/api/accounts", handleAdminAccountAdd(pool, cfg, usage))
-	mux.HandleFunc("PATCH /admin/api/accounts/{id}", handleAdminAccountPatch(pool, cfg, usage))
+	mux.HandleFunc("POST /admin/api/accounts", handleAdminAccountAdd(pool, cfg, usage, quotas))
+	mux.HandleFunc("PATCH /admin/api/accounts/{id}", handleAdminAccountPatch(pool, cfg, usage, quotas))
 	mux.HandleFunc("DELETE /admin/api/accounts/{id}", handleAdminAccountDelete(pool, cfg, usage))
+	mux.HandleFunc("POST /admin/api/accounts/{id}/quota/refresh", handleAdminAccountQuotaRefresh(pool, usage, quotas))
 	mux.HandleFunc("POST /admin/api/accounts/{id}/test", handleAdminAccountTest(pool, cc))
+	mux.HandleFunc("POST /admin/api/quotas/refresh", handleAdminQuotaRefreshAll(pool, usage, quotas))
 	mux.HandleFunc("GET /admin/api/models", handleAdminModelsGet(cfg))
 	mux.HandleFunc("PUT /admin/api/models", handleAdminModelsPut(cfg))
 	mux.HandleFunc("GET /admin/api/keys", handleAdminKeysList(keys, usage))
@@ -33,7 +35,7 @@ func registerAdminRoutes(mux *http.ServeMux, cc *CCClient, pool *AccountPool, ke
 	mux.HandleFunc("GET /admin/api/settings", handleAdminSettingsGet(cfg))
 	mux.HandleFunc("PUT /admin/api/settings", handleAdminSettingsPut(cfg, cc, pool))
 	mux.HandleFunc("GET /admin/api/logs", handleAdminLogs(ring))
-	mux.HandleFunc("POST /admin/api/oauth/start", handleAdminOAuthStart(pool, cfg))
+	mux.HandleFunc("POST /admin/api/oauth/start", handleAdminOAuthStart(pool, cfg, quotas))
 	mux.HandleFunc("GET /admin/api/oauth/status", handleAdminOAuthStatus(pool))
 	mux.HandleFunc("POST /admin/api/oauth/cancel", handleAdminOAuthCancel())
 }
@@ -57,17 +59,23 @@ func subtleConstantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
-// adminAccount merges the ephemeral health view with durable usage counters.
+// adminAccount merges the ephemeral health view with durable usage counters
+// and the cached quota snapshot.
 type adminAccount struct {
 	AccountView
 	UsageSnapshotEntry
+	Quota *QuotaSnapshot `json:"quota,omitempty"`
 }
 
 func adminAccountViews(pool *AccountPool, usage *UsageTracker) []adminAccount {
 	views := pool.Views()
 	out := make([]adminAccount, 0, len(views))
 	for _, v := range views {
-		out = append(out, adminAccount{AccountView: v, UsageSnapshotEntry: usage.AccountUsage(v.ID)})
+		out = append(out, adminAccount{
+			AccountView:        v,
+			UsageSnapshotEntry: usage.AccountUsage(v.ID),
+			Quota:              usage.Quota(v.ID),
+		})
 	}
 	return out
 }
@@ -93,6 +101,7 @@ func handleAdminOverview(cfg *Config, pool *AccountPool, keys *ClientKeyPool, us
 		overview.Accounts = adminAccountsSummary{Total: total, Enabled: enabled, RateLimited: rateLimited}
 		overview.Keys = adminKeysSummary{Total: keyTotal, Enabled: keyEnabled}
 		overview.Models = adminModelsSummary{Loaded: loaded, Available: available}
+		overview.Quotas = quotaSummary(pool, usage)
 		writeAdminJSON(w, 200, overview)
 	}
 }
@@ -106,6 +115,7 @@ type adminOverview struct {
 	Accounts      adminAccountsSummary `json:"accounts"`
 	Keys          adminKeysSummary     `json:"keys"`
 	Models        adminModelsSummary   `json:"models"`
+	Quotas        adminQuotaSummary    `json:"quotas"`
 }
 
 type adminKeysSummary struct {
@@ -124,13 +134,46 @@ type adminModelsSummary struct {
 	Available int `json:"available"`
 }
 
+type adminQuotaSummary struct {
+	Synced        int        `json:"synced"`
+	Exceeded      int        `json:"exceeded"`
+	LowBalance    int        `json:"low_balance"`
+	LastCheckedAt *time.Time `json:"last_checked_at,omitempty"`
+}
+
+// quotaSummary aggregates the cached quota snapshots across the pool.
+func quotaSummary(pool *AccountPool, usage *UsageTracker) adminQuotaSummary {
+	var summary adminQuotaSummary
+	var latest time.Time
+	for _, view := range pool.Views() {
+		snap := usage.Quota(view.ID)
+		if snap == nil {
+			continue
+		}
+		summary.Synced++
+		if snap.Blocked() {
+			summary.Exceeded++
+		}
+		if snap.BelowThreshold {
+			summary.LowBalance++
+		}
+		if snap.LastChecked != nil && snap.LastChecked.After(latest) {
+			latest = *snap.LastChecked
+		}
+	}
+	if !latest.IsZero() {
+		summary.LastCheckedAt = &latest
+	}
+	return summary
+}
+
 func handleAdminAccountsList(pool *AccountPool, usage *UsageTracker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeAdminJSON(w, 200, map[string]any{"accounts": adminAccountViews(pool, usage)})
 	}
 }
 
-func handleAdminAccountAdd(pool *AccountPool, cfg *Config, usage *UsageTracker) http.HandlerFunc {
+func handleAdminAccountAdd(pool *AccountPool, cfg *Config, usage *UsageTracker, quotas *QuotaService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name   string `json:"name"`
@@ -158,12 +201,15 @@ func handleAdminAccountAdd(pool *AccountPool, cfg *Config, usage *UsageTracker) 
 		if len(modelCatalog) == 0 && acct.Enabled {
 			FetchProviderModels(cfg.UpstreamBaseURL(), acct.APIKey)
 		}
+		// The first quota query runs in the background so adding an account
+		// stays fast; the UI picks the snapshot up on its next poll.
+		quotas.RefreshAsync(acct)
 		log.Printf("account %q added via webui", acct.Name)
-		writeAdminJSON(w, 201, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(acct.ID)})
+		writeAdminJSON(w, 201, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(acct.ID), Quota: usage.Quota(acct.ID)})
 	}
 }
 
-func handleAdminAccountPatch(pool *AccountPool, cfg *Config, usage *UsageTracker) http.HandlerFunc {
+func handleAdminAccountPatch(pool *AccountPool, cfg *Config, usage *UsageTracker, quotas *QuotaService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		var body struct {
@@ -185,22 +231,29 @@ func handleAdminAccountPatch(pool *AccountPool, cfg *Config, usage *UsageTracker
 				return
 			}
 		}
+		keyChanged := false
 		if body.APIKey != nil {
 			newID, err := pool.SetKey(id, *body.APIKey)
 			if err != nil {
 				writeAdminError(w, r, http.StatusConflict, err.Error())
 				return
 			}
-			// The ID derives from the key; carry the usage history over.
+			// The ID derives from the key; carry the usage history over, but
+			// the cached quota belongs to the old credential and is dropped.
 			usage.MoveAccount(id, newID)
+			usage.DropQuota(id)
 			id = newID
+			keyChanged = true
 		}
 		if err := persistPool(pool, cfg); err != nil {
 			writeAdminError(w, r, 500, "saving config failed: "+err.Error())
 			return
 		}
 		acct := pool.Get(id)
-		writeAdminJSON(w, 200, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(id)})
+		if keyChanged && quotas != nil {
+			quotas.RefreshAsync(acct)
+		}
+		writeAdminJSON(w, 200, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(id), Quota: usage.Quota(id)})
 	}
 }
 
@@ -217,6 +270,52 @@ func handleAdminAccountDelete(pool *AccountPool, cfg *Config, usage *UsageTracke
 			return
 		}
 		writeAdminJSON(w, 200, map[string]any{"deleted": true})
+	}
+}
+
+// handleAdminAccountQuotaRefresh refreshes one account's quota synchronously
+// and returns the updated account row.
+func handleAdminAccountQuotaRefresh(pool *AccountPool, usage *UsageTracker, quotas *QuotaService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		acct := pool.Get(r.PathValue("id"))
+		if acct == nil {
+			writeAdminError(w, r, 404, "account not found")
+			return
+		}
+		if quotas == nil {
+			writeAdminError(w, r, http.StatusServiceUnavailable, "quota service unavailable")
+			return
+		}
+		quotas.RefreshAccount(r.Context(), acct)
+		writeAdminJSON(w, 200, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(acct.ID), Quota: usage.Quota(acct.ID)})
+	}
+}
+
+// handleAdminQuotaRefreshAll refreshes every account's quota, or a single one
+// when the body carries an id. It returns the full account list.
+func handleAdminQuotaRefreshAll(pool *AccountPool, usage *UsageTracker, quotas *QuotaService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if quotas == nil {
+			writeAdminError(w, r, http.StatusServiceUnavailable, "quota service unavailable")
+			return
+		}
+		var body struct {
+			ID string `json:"id"`
+		}
+		if r.Body != nil {
+			_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body)
+		}
+		if body.ID != "" {
+			acct := pool.Get(body.ID)
+			if acct == nil {
+				writeAdminError(w, r, 404, "account not found")
+				return
+			}
+			quotas.RefreshAccount(r.Context(), acct)
+		} else {
+			quotas.RefreshAll(r.Context())
+		}
+		writeAdminJSON(w, 200, map[string]any{"accounts": adminAccountViews(pool, usage)})
 	}
 }
 
@@ -605,7 +704,7 @@ var (
 	webOAuthFlow *OAuthFlow
 )
 
-func handleAdminOAuthStart(pool *AccountPool, cfg *Config) http.HandlerFunc {
+func handleAdminOAuthStart(pool *AccountPool, cfg *Config, quotas *QuotaService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			CallbackURL string `json:"callback_url"`
@@ -663,6 +762,7 @@ func handleAdminOAuthStart(pool *AccountPool, cfg *Config) http.HandlerFunc {
 			if len(modelCatalog) == 0 && acct.Enabled {
 				FetchProviderModels(cfg.UpstreamBaseURL(), acct.APIKey)
 			}
+			quotas.RefreshAsync(acct)
 			log.Printf("✓ OAuth account %q added via webui (user %s)", acct.Name, cb.UserName)
 		}()
 

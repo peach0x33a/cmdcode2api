@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"cmdcode2api/internal/i18n"
 	"cmdcode2api/internal/web"
 )
 
@@ -95,20 +96,20 @@ func adminAuth(cfg *Config, limiter *ipRateLimiter) func(http.Handler) http.Hand
 			if ok, retryAfter := limiter.Allow(ip); !ok {
 				seconds := int(retryAfter.Seconds()) + 1
 				w.Header().Set("Retry-After", strconv.Itoa(seconds))
-				writeAdminError(w, http.StatusTooManyRequests,
-					fmt.Sprintf("失败次数过多，请 %d 秒后重试", seconds))
+				writeAdminError(w, r, http.StatusTooManyRequests,
+					i18n.Message(i18n.FromRequest(r), "too many failed attempts, retry in %d seconds", seconds))
 				return
 			}
 			auth := r.Header.Get("Authorization")
 			if !strings.HasPrefix(auth, "Bearer ") {
 				limiter.Fail(ip)
-				writeAdminError(w, 401, "missing Authorization header")
+				writeAdminError(w, r, 401, "missing Authorization header")
 				return
 			}
 			key := strings.TrimPrefix(auth, "Bearer ")
 			if !subtleConstantTimeEqual(key, cfg.adminPassword()) {
 				limiter.Fail(ip)
-				writeAdminError(w, 401, "invalid admin password")
+				writeAdminError(w, r, 401, "invalid admin password")
 				return
 			}
 			limiter.Reset(ip)

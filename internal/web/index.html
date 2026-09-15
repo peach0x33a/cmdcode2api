@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>cmdcode2api 控制台</title>
+<title>cmdcode2api Console</title>
 <style>
   :root {
     --bg: #0e1116;
@@ -43,6 +43,9 @@
   header.bar .logo span { color: var(--accent); }
   header.bar .ver { color: var(--text-faint); font-family: var(--mono); font-size: 12px; }
   header.bar .spacer { flex: 1; }
+
+  select.lang-select { width: auto; padding: 4px 8px; font-size: 12.5px; }
+  .login-lang { display: flex; justify-content: flex-end; margin-bottom: 10px; }
 
   nav.tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
   nav.tabs button {
@@ -231,204 +234,214 @@
 </head>
 <body>
 
-<!-- 登录 -->
+<!-- login -->
 <div id="view-login" class="wrap" style="display:none">
   <div class="login-box">
-    <div class="title">cmdcode2api <span>控制台</span></div>
-    <div class="desc">使用配置文件中的 admin_password 登录管理接口</div>
+    <div class="login-lang">
+      <select class="lang-select" aria-label="Language">
+        <option value="en">English</option>
+        <option value="zh-CN">简体中文</option>
+      </select>
+    </div>
+    <div class="title">cmdcode2api <span data-i18n="app.console">Console</span></div>
+    <div class="desc" data-i18n="login.desc">Sign in to the admin API with admin_password from your config file.</div>
     <form id="login-form" autocomplete="on">
       <label class="field">
-        <span class="cap">服务器地址</span>
+        <span class="cap" data-i18n="login.serverAddress">Server address</span>
         <input type="text" id="login-base" name="server" autocomplete="url" placeholder="http://localhost:11434">
       </label>
       <label class="field">
-        <span class="cap">管理密码（admin_password）</span>
+        <span class="cap" data-i18n="login.passwordLabel">Admin password (admin_password)</span>
         <input type="text" id="login-user" name="username" value="admin" autocomplete="username" aria-hidden="true" tabindex="-1" style="position:absolute;left:-9999px;height:0;width:0;opacity:0">
-        <input type="password" id="login-token" name="password" autocomplete="current-password" placeholder="管理密码">
+        <input type="password" id="login-token" name="password" autocomplete="current-password" data-i18n-ph="login.passwordPlaceholder" placeholder="Admin password">
       </label>
       <label class="field" style="display:flex;align-items:center;gap:8px;cursor:pointer">
         <input type="checkbox" id="login-remember" checked style="width:auto;accent-color:var(--accent)">
-        <span class="cap" style="margin:0">记住密码（取消则仅在当前标签页内保留）</span>
+        <span class="cap" style="margin:0" data-i18n="login.remember">Remember password (otherwise kept only for this tab)</span>
       </label>
       <div class="login-err" id="login-err"></div>
-      <button type="submit" class="btn primary" id="login-btn" style="width:100%;padding:9px">连 接</button>
+      <button type="submit" class="btn primary" id="login-btn" style="width:100%;padding:9px" data-i18n="login.connect">Connect</button>
     </form>
   </div>
 </div>
 
-<!-- 主界面 -->
+<!-- main app -->
 <div id="view-app" class="wrap" style="display:none">
   <header class="bar">
-    <div class="logo">cmdcode2api <span>控制台</span></div>
+    <div class="logo">cmdcode2api <span data-i18n="app.console">Console</span></div>
     <div class="ver" id="ver"></div>
     <div class="spacer"></div>
-    <button class="btn small" id="logout-btn">退出</button>
+    <select class="lang-select" aria-label="Language">
+      <option value="en">English</option>
+      <option value="zh-CN">简体中文</option>
+    </select>
+    <button class="btn small" id="logout-btn" data-i18n="app.logout">Sign out</button>
   </header>
 
   <nav class="tabs">
-    <button data-tab="overview" class="active">概览</button>
-    <button data-tab="accounts">账号</button>
-    <button data-tab="models">模型</button>
-    <button data-tab="keys">密钥</button>
-    <button data-tab="settings">设置</button>
-    <button data-tab="logs">日志</button>
+    <button data-tab="overview" class="active" data-i18n="nav.overview">Overview</button>
+    <button data-tab="accounts" data-i18n="nav.accounts">Accounts</button>
+    <button data-tab="models" data-i18n="nav.models">Models</button>
+    <button data-tab="keys" data-i18n="nav.keys">Keys</button>
+    <button data-tab="settings" data-i18n="nav.settings">Settings</button>
+    <button data-tab="logs" data-i18n="nav.logs">Logs</button>
   </nav>
 
-  <!-- 概览 -->
+  <!-- overview -->
   <section id="tab-overview">
     <div class="cards" id="ov-cards"></div>
     <div class="panel">
-      <h3>账号状态</h3>
+      <h3 data-i18n="ov.title">Account status</h3>
       <div id="ov-accounts"></div>
     </div>
   </section>
 
-  <!-- 账号 -->
+  <!-- accounts -->
   <section id="tab-accounts" style="display:none">
     <div class="panel">
-      <h3>添加账号</h3>
+      <h3 data-i18n="acc.addTitle">Add account</h3>
       <div class="form-row">
-        <label class="field"><span class="cap">名称（可选）</span><input type="text" id="acc-name" placeholder="例如 backup"></label>
+        <label class="field"><span class="cap" data-i18n="acc.nameOptional">Name (optional)</span><input type="text" id="acc-name" data-i18n-ph="acc.namePlaceholder" placeholder="e.g. backup"></label>
         <label class="field"><span class="cap">Command Code API Key</span><input type="text" id="acc-key" placeholder="cc-…" class="mono"></label>
-        <button class="btn primary" id="acc-add-btn">添加</button>
-        <button class="btn" id="acc-oauth-btn">通过 OAuth 添加</button>
+        <button class="btn primary" id="acc-add-btn" data-i18n="acc.add">Add</button>
+        <button class="btn" id="acc-oauth-btn" data-i18n="acc.addOAuth">Add via OAuth</button>
       </div>
-      <p class="hint">多账号按轮询方式轮流使用；某个账号 429 限流时自动冷却并在期间跳过，401/403/5xx 自动切换到下一个账号。OAuth 需要浏览器能访问服务器的 127.0.0.1:5959-5968 回调端口。额度每 5 分钟自动刷新，也可在账号列表中手动刷新。</p>
+      <p class="hint" data-i18n="acc.hint">Accounts are used in round-robin order. A rate-limited (429) account goes into cooldown and is skipped until it recovers; 401/403/5xx fail over to the next account automatically. OAuth requires the browser to reach the server's callback ports 127.0.0.1:5959-5968. Quotas auto-refresh every 5 minutes; tap a refresh icon on an account to force a fresh check.</p>
     </div>
     <div class="panel">
       <h3 style="display:flex;align-items:center;justify-content:space-between">
-        <span>账号列表</span>
-        <button class="btn small" id="quota-refresh-all" style="font-weight:400;text-transform:none;letter-spacing:0">刷新全部额度</button>
+        <span data-i18n="acc.listTitle">Account list</span>
+        <button class="btn small" id="quota-refresh-all" style="font-weight:400;text-transform:none;letter-spacing:0" data-i18n="quota.refreshAll">Refresh all quotas</button>
       </h3>
       <div id="acc-table"></div>
     </div>
   </section>
 
-  <!-- 模型 -->
+  <!-- models -->
   <section id="tab-models" style="display:none">
     <div class="panel">
       <h3 style="display:flex;align-items:center;justify-content:space-between">
-        <span>对外暴露的模型</span>
+        <span data-i18n="models.title">Exposed models</span>
         <span style="display:flex;gap:8px;align-items:center;font-weight:400;text-transform:none;letter-spacing:0">
-          <input type="text" id="model-search" placeholder="搜索模型…" style="width:200px;padding:5px 10px;font-size:12.5px">
-          <button class="btn small" id="model-all-btn">全选</button>
-          <button class="btn small" id="model-none-btn">全不选</button>
+          <input type="text" id="model-search" data-i18n-ph="models.search" placeholder="Search models…" style="width:200px;padding:5px 10px;font-size:12.5px">
+          <button class="btn small" id="model-all-btn" data-i18n="models.selectAll">Select all</button>
+          <button class="btn small" id="model-none-btn" data-i18n="models.selectNone">Select none</button>
         </span>
       </h3>
-      <div id="model-list" class="model-grid"><div class="empty">加载中…</div></div>
-      <p class="hint">勾选 = 对外提供（<code>/v1/models</code> 可见、可调用）；取消勾选 = 隐藏并拒绝调用，等同于 exclude_models。更改即时生效并写回 config.yaml。</p>
+      <div id="model-list" class="model-grid"><div class="empty" data-i18n="models.loading">Loading…</div></div>
+      <p class="hint" data-i18n-html="models.hint">Checked = exposed (visible in <code>/v1/models</code> and callable); unchecked = hidden and rejected, equivalent to exclude_models. Changes apply immediately and are written back to config.yaml.</p>
     </div>
   </section>
 
-  <!-- 密钥 -->
+  <!-- keys -->
   <section id="tab-keys" style="display:none">
     <div class="panel">
-      <h3>新建密钥</h3>
+      <h3 data-i18n="keys.createTitle">Create key</h3>
       <div class="form-row">
-        <label class="field"><span class="cap">名称（可选）</span><input type="text" id="ck-name" placeholder="例如 my-agent"></label>
-        <button class="btn primary" id="ck-add-btn">新建</button>
+        <label class="field"><span class="cap" data-i18n="acc.nameOptional">Name (optional)</span><input type="text" id="ck-name" data-i18n-ph="keys.namePlaceholder" placeholder="e.g. my-agent"></label>
+        <button class="btn primary" id="ck-add-btn" data-i18n="keys.create">Create</button>
       </div>
-      <p class="hint">客户端密钥由服务端自动生成（无法手动指定），用于调用本网关的 OpenAI 兼容接口（Bearer 认证），每个密钥独立统计用量；完整值仅在创建时显示一次。</p>
+      <p class="hint" data-i18n="keys.hint">Client keys are generated server-side (they cannot be chosen) and authenticate OpenAI-compatible requests to this gateway via Bearer auth. Usage is tracked per key; the full value is shown only once, at creation.</p>
     </div>
     <div class="panel">
-      <h3>密钥列表</h3>
+      <h3 data-i18n="keys.listTitle">Key list</h3>
       <div id="ck-table"></div>
     </div>
   </section>
 
-  <!-- 设置 -->
+  <!-- settings -->
   <section id="tab-settings" style="display:none">
     <div class="panel">
-      <h3>上游</h3>
+      <h3 data-i18n="set.upstream">Upstream</h3>
       <label class="field">
-        <span class="cap">Base URL（即时生效）</span>
+        <span class="cap" data-i18n="set.baseUrl">Base URL (applies immediately)</span>
         <input type="text" id="set-baseurl" class="mono">
       </label>
     </div>
     <div class="panel">
-      <h3>服务</h3>
+      <h3 data-i18n="set.service">Service</h3>
       <div class="fields-2">
-        <label class="field"><span class="cap">Host（需重启）</span><input type="text" id="set-host" class="mono"></label>
-        <label class="field"><span class="cap">Port（需重启）</span><input type="text" id="set-port" class="mono"></label>
+        <label class="field"><span class="cap" data-i18n="set.host">Host (restart required)</span><input type="text" id="set-host" class="mono"></label>
+        <label class="field"><span class="cap" data-i18n="set.port">Port (restart required)</span><input type="text" id="set-port" class="mono"></label>
       </div>
-      <label class="field"><span class="cap">WebUI（需重启）</span>
+      <label class="field"><span class="cap" data-i18n="set.webui">WebUI (restart required)</span>
         <select id="set-webui">
-          <option value="true">启用</option>
-          <option value="false">禁用</option>
+          <option value="true" data-i18n="common.enabled">Enabled</option>
+          <option value="false" data-i18n="common.disabled">Disabled</option>
         </select>
       </label>
       <form id="pw-form" autocomplete="on">
-        <label class="field"><span class="cap">当前管理密码</span>
+        <label class="field"><span class="cap" data-i18n="set.currentPassword">Current admin password</span>
           <input type="password" id="set-password-old" name="password" autocomplete="current-password" required>
         </label>
-        <label class="field"><span class="cap">新管理密码（至少 8 位）</span>
+        <label class="field"><span class="cap" data-i18n="set.newPassword">New admin password (min 8 characters)</span>
           <input type="password" id="set-password" name="new-password" autocomplete="new-password" minlength="8" required>
         </label>
-        <button type="submit" class="btn primary">修改管理密码</button>
-        <span class="hint" style="margin-left:10px">修改成功后会踢出所有已登录的管理会话（包括当前浏览器），需用新密码重新登录。</span>
+        <button type="submit" class="btn primary" data-i18n="set.changePassword">Change admin password</button>
+        <span class="hint" style="margin-left:10px" data-i18n="set.passwordHint">All signed-in admin sessions (including this browser) are signed out after a change; sign in again with the new password.</span>
       </form>
       <div style="margin-top:16px">
-        <button class="btn primary" id="set-save-btn">保存设置</button>
+        <button class="btn primary" id="set-save-btn" data-i18n="set.save">Save settings</button>
       </div>
       <div class="restart-note" id="set-restart"></div>
     </div>
   </section>
 
-  <!-- 日志 -->
+  <!-- logs -->
   <section id="tab-logs" style="display:none">
     <div class="panel">
       <h3 style="display:flex;align-items:center;justify-content:space-between">
-        <span>最近日志（内存保留 500 行）</span>
+        <span data-i18n="logs.title">Recent logs (last 500 lines kept in memory)</span>
         <label style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-dim);font-size:12.5px">
-          <input type="checkbox" id="log-follow" checked style="width:auto"> 自动滚动
+          <input type="checkbox" id="log-follow" checked style="width:auto"> <span data-i18n="logs.autoScroll">Auto-scroll</span>
         </label>
       </h3>
-      <div class="logbox" id="logbox"><div class="empty">暂无日志</div></div>
+      <div class="logbox" id="logbox"><div class="empty" data-i18n="logs.empty">No logs yet</div></div>
     </div>
   </section>
 </div>
 
-<!-- 账号编辑弹窗 -->
+<!-- account edit modal -->
 <div class="modal-mask" id="acct-modal" style="display:none">
   <div class="modal">
-    <h3>编辑账号</h3>
+    <h3 data-i18n="acc.editTitle">Edit account</h3>
     <label class="field">
-      <span class="cap">名称</span>
+      <span class="cap" data-i18n="common.name">Name</span>
       <input type="text" id="acct-edit-name">
     </label>
     <label class="field">
-      <span class="cap">API Key（留空表示不修改）</span>
+      <span class="cap" data-i18n="acc.editKeyLabel">API key (leave blank to keep current)</span>
       <input type="text" id="acct-edit-key" placeholder="cc-…" class="mono">
     </label>
-    <p class="hint" style="margin:0 0 14px">更换 Key 后账号 ID 会变化，用量统计会自动迁移到新 ID。</p>
+    <p class="hint" style="margin:0 0 14px" data-i18n="acc.editHint">Changing the key changes the account ID; usage stats migrate to the new ID automatically.</p>
     <div class="form-row">
-      <button class="btn primary" id="acct-edit-save">保存</button>
+      <button class="btn primary" id="acct-edit-save" data-i18n="common.save">Save</button>
       <span class="spacer" style="flex:1"></span>
-      <button class="btn" id="acct-edit-cancel">取消</button>
+      <button class="btn" id="acct-edit-cancel" data-i18n="common.cancel">Cancel</button>
     </div>
   </div>
 </div>
 
-<!-- OAuth 弹窗 -->
+<!-- OAuth modal -->
 <div class="modal-mask" id="oauth-modal" style="display:none">
   <div class="modal">
-    <h3>通过 OAuth 添加账号</h3>
+    <h3 data-i18n="oauth.title">Add account via OAuth</h3>
     <label class="field">
-      <span class="cap">回调地址（可选，远程 / 容器部署时填写）</span>
+      <span class="cap" data-i18n="oauth.callbackLabel">Callback URL (optional; fill in for remote / container deployments)</span>
       <input type="text" id="oauth-callback" class="mono" placeholder="">
     </label>
-    <p class="hint" style="margin:0 0 12px">留空 = 使用服务器本地 <code>127.0.0.1:5959-5968</code> 回调（浏览器与服务器同机时可用）。浏览器无法访问服务器该端口时（远程部署），填一个<strong>浏览器可达</strong>的本服务地址，例如 <code id="oauth-callback-hint"></code>。</p>
+    <p class="hint" style="margin:0 0 12px" data-i18n-html="oauth.hint">Leave blank to use the server-local <code>127.0.0.1:5959-5968</code> callback (works when the browser runs on the same host). If the browser cannot reach those ports (remote deployment), enter a <strong>browser-reachable</strong> address of this service, e.g. <code id="oauth-callback-hint"></code>.</p>
     <div class="oauth-url" id="oauth-url" style="display:none"></div>
     <div class="form-row" id="oauth-begin-row" style="margin-bottom:6px">
-      <button class="btn primary" id="oauth-begin">开始授权</button>
+      <button class="btn primary" id="oauth-begin" data-i18n="oauth.begin">Start authorization</button>
       <span class="spacer" style="flex:1"></span>
-      <button class="btn" id="oauth-cancel">关闭</button>
+      <button class="btn" id="oauth-cancel" data-i18n="common.close">Close</button>
     </div>
     <div class="form-row" id="oauth-open-row" style="margin-bottom:6px;display:none">
-      <a class="btn primary" id="oauth-open" href="#" target="_blank" rel="noopener" style="padding:7px 14px">打开授权页面</a>
-      <button class="btn" id="oauth-copy">复制链接</button>
+      <a class="btn primary" id="oauth-open" href="#" target="_blank" rel="noopener" style="padding:7px 14px" data-i18n="oauth.open">Open authorization page</a>
+      <button class="btn" id="oauth-copy" data-i18n="oauth.copyLink">Copy link</button>
       <span class="spacer" style="flex:1"></span>
-      <button class="btn" id="oauth-cancel2">取消</button>
+      <button class="btn" id="oauth-cancel2" data-i18n="common.cancel">Cancel</button>
     </div>
     <div class="status-line" id="oauth-status" style="display:none"></div>
   </div>
@@ -444,14 +457,513 @@ function readStoredToken() {
   return localStorage.getItem("cc2api.token") || sessionStorage.getItem("cc2api.token") || "";
 }
 
+/* ---------- i18n ---------- */
+
+const I18N = {
+  en: {
+    "app.title": "cmdcode2api Console",
+    "app.console": "Console",
+    "app.logout": "Sign out",
+
+    "nav.overview": "Overview",
+    "nav.accounts": "Accounts",
+    "nav.models": "Models",
+    "nav.keys": "Keys",
+    "nav.settings": "Settings",
+    "nav.logs": "Logs",
+
+    "common.enabled": "Enabled",
+    "common.disabled": "Disabled",
+    "common.enable": "Enable",
+    "common.disable": "Disable",
+    "common.save": "Save",
+    "common.cancel": "Cancel",
+    "common.close": "Close",
+    "common.delete": "Delete",
+    "common.edit": "Edit",
+    "common.test": "Test",
+    "common.reveal": "Show",
+    "common.hide": "Hide",
+    "common.copy": "Copy",
+    "common.name": "Name",
+    "common.key": "Key",
+    "common.status": "Status",
+    "common.requests": "Requests",
+    "common.tokens": "Tokens",
+    "common.errors": "Errors",
+    "common.lastUsed": "Last used",
+    "common.actions": "Actions",
+    "common.listSep": ", ",
+
+    "quota.refreshAll": "Refresh all quotas",
+    "quota.refreshOne": "Refresh quota",
+    "quota.refreshing": "Refreshing quotas…",
+    "quota.refreshed": "Quotas refreshed: {n} account(s)",
+    "quota.syncStatus": "Quota sync",
+    "quota.syncValue": "{synced} of {total} synced",
+    "quota.exceeded": "{n} quota exceeded",
+    "quota.lowBalance": "{n} low balance",
+    "quota.lastChecked": "Last checked {when}",
+    "quota.notSynced": "Quota not synced — waiting for a background refresh or click a refresh icon",
+    "quota.noWindow": "No quota windows returned for this account",
+    "quota.errorPrefix": "Quota query error:",
+    "quota.lastCheckedShort": "checked {when}",
+
+    "quota.resetAfter": "Resets after {d}",
+    "quota.dhm": "{d}d {h}h",
+    "quota.hm": "{h}h {m}m",
+    "quota.mins": "{m}m",
+    "quota.kvExceeded": "Quota-exceeded accounts",
+    "quota.kvLowBalance": "Low-balance accounts",
+    "quota.kvLastChecked": "Last quota refresh",
+    "quota.refreshedOne": "Quota refreshed",
+
+    "quota.monthly": "Monthly",
+    "quota.weekly": "Weekly",
+    "quota.window.5h": "5 hours",
+    "quota.window.weekly": "Weekly",
+    "quota.window.monthly": "Monthly",
+    "quota.monthlyRemaining": "Monthly remaining {v}$",
+    "quota.purchasedBalance": "Purchased balance {v}$",
+    "quota.freeBalance": "Free balance {v}$",
+    "quota.plan": "Plan",
+    "quota.planStatus": "{plan} · {status}",
+    "quota.billingPeriod": "Billing period to {v}",
+    "quota.cancelAtPeriodEnd": "Cancel at period end",
+    "quota.lowBalanceBadge": "low balance",
+    "quota.exceededBadge": "{n} exceeded",
+    "quota.estimated": "(estimated)",
+    "quota.unknownReset": "Reset time unknown",
+    "quota.noResetPoint": "Not used yet, no reset point",
+    "quota.resetIn": "Resets in {d}",
+
+    "login.desc": "Sign in to the admin API with admin_password from your config file.",
+    "login.serverAddress": "Server address",
+    "login.passwordLabel": "Admin password (admin_password)",
+    "login.passwordPlaceholder": "Admin password",
+    "login.remember": "Remember password (otherwise kept only for this tab)",
+    "login.connect": "Connect",
+    "login.fillRequired": "Enter the server address and admin password.",
+    "login.connected": "Connected to {base}",
+    "login.expired": "Session expired, please sign in again.",
+    "login.rejected": "Sign-in failed: the admin password was rejected.",
+
+    "err.connect": "Cannot reach the server: {msg}",
+
+    "time.justNow": "just now",
+    "time.secondsAgo": "{n}s ago",
+    "time.minutesAgo": "{n} min ago",
+    "time.hoursAgo": "{n}h ago",
+    "time.daysAgo": "{n}d ago",
+    "time.recovered": "recovered",
+    "time.inSeconds": "in {n}s",
+    "time.inMinutes": "in {n} min",
+    "time.inHours": "in {n}h",
+    "time.dayShort": "{n}d",
+    "time.hourShort": "{n}h",
+    "time.minuteShort": "{n}m",
+
+    "uptime.dhm": "{d}d {h}h {m}m",
+    "uptime.hm": "{h}h {m}m",
+    "uptime.ms": "{m}m {s}s",
+    "uptime.s": "{s}s",
+
+    "ov.title": "Account status",
+    "ov.totalRequests": "Total requests",
+    "ov.running": "up {uptime}",
+    "ov.promptTokens": "Prompt Tokens",
+    "ov.completionTokens": "Completion Tokens",
+    "ov.cacheTokens": "Cache read / write",
+    "ov.accounts": "Accounts",
+    "ov.accountsValue": "{enabled} enabled / {total}",
+    "ov.rateLimitedCount": "{n} rate-limited",
+    "ov.clientKeys": "Client keys",
+    "ov.keysValue": "{enabled} enabled / {total}",
+    "ov.models": "Models",
+    "ov.modelsAvailable": "{n} available",
+    "ov.modelsLoaded": "{n} loaded",
+    "ov.listen": "Listen address",
+    "ov.webui": "WebUI",
+    "ov.rateLimited": "Rate-limited accounts",
+
+    "acc.addTitle": "Add account",
+    "acc.nameOptional": "Name (optional)",
+    "acc.namePlaceholder": "e.g. backup",
+    "acc.add": "Add",
+    "acc.addOAuth": "Add via OAuth",
+    "acc.hint": "Accounts are used in round-robin order. A rate-limited (429) account goes into cooldown and is skipped until it recovers; 401/403/5xx fail over to the next account automatically. OAuth requires the browser to reach the server's callback ports 127.0.0.1:5959-5968. Quotas auto-refresh every 5 minutes; tap a refresh icon on an account to force a fresh check.",
+    "acc.listTitle": "Account list",
+    "acc.empty": "No accounts yet — add an API key or use OAuth",
+    "acc.statusOk": "Healthy",
+    "acc.statusRateLimited": "Rate-limited",
+    "acc.statusAuthError": "Auth failed",
+    "acc.statusDisabled": "Disabled",
+    "acc.rateLimitedBadge": "rate-limited · {time}",
+    "acc.authFailures": "({n} auth failures)",
+    "acc.lastError": "Last error ({time}): {msg}",
+    "acc.keyRequired": "Enter an API key.",
+    "acc.added": "Account added.",
+    "acc.enabledToast": "Account enabled.",
+    "acc.disabledToast": "Account disabled.",
+    "acc.confirmDelete": "Delete account \"{name}\"?",
+    "acc.deleted": "Account deleted.",
+    "acc.updated": "Account updated.",
+    "acc.testing": "Testing connectivity…",
+    "acc.testOk": "Reachable: HTTP {status}, {models} models, {ms}ms",
+    "acc.testFail": "Test failed: {error}",
+    "acc.editTitle": "Edit account",
+    "acc.editKeyLabel": "API key (leave blank to keep current)",
+    "acc.editHint": "Changing the key changes the account ID; usage stats migrate to the new ID automatically.",
+
+    "models.title": "Exposed models",
+    "models.search": "Search models…",
+    "models.selectAll": "Select all",
+    "models.selectNone": "Select none",
+    "models.loading": "Loading…",
+    "models.hint": "Checked = exposed (visible in <code>/v1/models</code> and callable); unchecked = hidden and rejected, equivalent to exclude_models. Changes apply immediately and are written back to config.yaml.",
+    "models.noMatch": "No matching models",
+    "models.emptyCatalog": "Model catalog is empty (upstream returned nothing)",
+    "models.savedCount": "Saved: {n} models exposed",
+    "models.saved": "Exposed model list saved ({n} available)",
+
+    "keys.createTitle": "Create key",
+    "keys.namePlaceholder": "e.g. my-agent",
+    "keys.create": "Create",
+    "keys.hint": "Client keys are generated server-side (they cannot be chosen) and authenticate OpenAI-compatible requests to this gateway via Bearer auth. Usage is tracked per key; the full value is shown only once, at creation.",
+    "keys.listTitle": "Key list",
+    "keys.empty": "No keys yet — create one for your clients",
+    "keys.created": "Key created: {key}",
+    "keys.enabledToast": "Key enabled.",
+    "keys.disabledToast": "Key disabled.",
+    "keys.confirmDelete": "Delete key \"{name}\"? Clients using it lose access immediately.",
+    "keys.deleted": "Key deleted.",
+    "keys.copied": "Key copied.",
+
+    "set.upstream": "Upstream",
+    "set.baseUrl": "Base URL (applies immediately)",
+    "set.service": "Service",
+    "set.host": "Host (restart required)",
+    "set.port": "Port (restart required)",
+    "set.webui": "WebUI (restart required)",
+    "set.currentPassword": "Current admin password",
+    "set.newPassword": "New admin password (min 8 characters)",
+    "set.changePassword": "Change admin password",
+    "set.passwordHint": "All signed-in admin sessions (including this browser) are signed out after a change; sign in again with the new password.",
+    "set.save": "Save settings",
+    "set.saved": "Settings saved.",
+    "set.restartNote": "⚠ Written to config; these fields take effect after a restart: {fields}",
+    "set.fillPasswords": "Enter the current and the new password.",
+    "set.passwordChanged": "Admin password changed, please sign in again with the new password.",
+
+    "logs.title": "Recent logs (last 500 lines kept in memory)",
+    "logs.autoScroll": "Auto-scroll",
+    "logs.empty": "No logs yet",
+
+    "oauth.title": "Add account via OAuth",
+    "oauth.callbackLabel": "Callback URL (optional; fill in for remote / container deployments)",
+    "oauth.hint": "Leave blank to use the server-local <code>127.0.0.1:5959-5968</code> callback (works when the browser runs on the same host). If the browser cannot reach those ports (remote deployment), enter a <strong>browser-reachable</strong> address of this service, e.g. <code id=\"oauth-callback-hint\"></code>.",
+    "oauth.begin": "Start authorization",
+    "oauth.open": "Open authorization page",
+    "oauth.copyLink": "Copy link",
+    "oauth.linkCopied": "Link copied.",
+    "oauth.running": "Authorization already in progress, waiting for the callback…",
+    "oauth.waitingCustom": "Waiting for the Command Code page to return credentials to the callback URL you entered…",
+    "oauth.waiting": "Waiting for authorization…",
+    "oauth.success": "✅ Authorization succeeded, account \"{name}\" added",
+    "oauth.failed": "❌ Authorization failed: {error}",
+    "oauth.unknownError": "unknown error",
+  },
+
+  "zh-CN": {
+    "app.title": "cmdcode2api 控制台",
+    "app.console": "控制台",
+    "app.logout": "退出",
+
+    "nav.overview": "概览",
+    "nav.accounts": "账号",
+    "nav.models": "模型",
+    "nav.keys": "密钥",
+    "nav.settings": "设置",
+    "nav.logs": "日志",
+
+    "common.enabled": "启用",
+    "common.disabled": "禁用",
+    "common.enable": "启用",
+    "common.disable": "禁用",
+    "common.save": "保存",
+    "common.cancel": "取消",
+    "common.close": "关闭",
+    "common.delete": "删除",
+    "common.edit": "编辑",
+    "common.test": "测试",
+    "common.reveal": "显示",
+    "common.hide": "隐藏",
+    "common.copy": "复制",
+    "common.name": "名称",
+    "common.key": "密钥",
+    "common.status": "状态",
+    "common.requests": "请求",
+    "common.tokens": "Tokens",
+    "common.errors": "错误",
+    "common.lastUsed": "最近使用",
+    "common.actions": "操作",
+    "common.listSep": "、",
+
+    "quota.refreshAll": "刷新全部额度",
+    "quota.refreshOne": "刷新额度",
+    "quota.refreshing": "正在刷新额度…",
+    "quota.refreshed": "额度已刷新：{n} 个账号",
+    "quota.syncStatus": "额度同步",
+    "quota.syncValue": "{synced} / {total} 已同步",
+    "quota.exceeded": "{n} 额度超限",
+    "quota.lowBalance": "{n} 余额不足",
+    "quota.lastChecked": "上次检查 {when}",
+    "quota.notSynced": "额度未同步 —— 等待后台刷新或点击刷新图标",
+    "quota.noWindow": "本账号返回的额度窗口为空",
+    "quota.errorPrefix": "额度查询错误：",
+    "quota.lastCheckedShort": "已检查 {when}",
+
+    "quota.resetAfter": "重置于 {d} 后",
+    "quota.dhm": "{d}天{h}小时",
+    "quota.hm": "{h}小时{m}分钟",
+    "quota.mins": "{m}分钟",
+    "quota.kvExceeded": "额度超限账号",
+    "quota.kvLowBalance": "低余额账号",
+    "quota.kvLastChecked": "最近额度刷新",
+    "quota.refreshedOne": "额度已刷新",
+
+    "quota.monthly": "每月",
+    "quota.weekly": "每周",
+    "quota.window.5h": "5 小时",
+    "quota.window.weekly": "每周",
+    "quota.window.monthly": "每月",
+    "quota.monthlyRemaining": "本月剩余 {v}$",
+    "quota.purchasedBalance": "已购余额 {v}$",
+    "quota.freeBalance": "免费余额 {v}$",
+    "quota.plan": "套餐",
+    "quota.planStatus": "{plan} · {status}",
+    "quota.billingPeriod": "账期截至 {v}",
+    "quota.cancelAtPeriodEnd": "到期后取消",
+    "quota.lowBalanceBadge": "余额不足",
+    "quota.exceededBadge": "{n} 超限",
+    "quota.estimated": "（估计）",
+    "quota.unknownReset": "重置时间未知",
+    "quota.noResetPoint": "尚未使用，无重置点",
+    "quota.resetIn": "{d} 后重置",
+
+    "login.desc": "使用配置文件中的 admin_password 登录管理接口",
+    "login.serverAddress": "服务器地址",
+    "login.passwordLabel": "管理密码（admin_password）",
+    "login.passwordPlaceholder": "管理密码",
+    "login.remember": "记住密码（取消则仅在当前标签页内保留）",
+    "login.connect": "连 接",
+    "login.fillRequired": "请填写服务器地址和管理密码",
+    "login.connected": "已连接 {base}",
+    "login.expired": "登录已失效，请重新连接",
+    "login.rejected": "登录失败：管理密码被拒绝",
+
+    "err.connect": "无法连接服务器：{msg}",
+
+    "time.justNow": "刚刚",
+    "time.secondsAgo": "{n} 秒前",
+    "time.minutesAgo": "{n} 分钟前",
+    "time.hoursAgo": "{n} 小时前",
+    "time.daysAgo": "{n} 天前",
+    "time.recovered": "已恢复",
+    "time.inSeconds": "{n} 秒后",
+    "time.inMinutes": "{n} 分钟后",
+    "time.inHours": "{n} 小时后",
+    "time.dayShort": "{n}天",
+    "time.hourShort": "{n}小时",
+    "time.minuteShort": "{n}分钟",
+
+    "uptime.dhm": "{d}天 {h}小时 {m}分",
+    "uptime.hm": "{h}小时 {m}分",
+    "uptime.ms": "{m}分 {s}秒",
+    "uptime.s": "{s}秒",
+
+    "ov.title": "账号状态",
+    "ov.totalRequests": "总请求数",
+    "ov.running": "运行 {uptime}",
+    "ov.promptTokens": "Prompt Tokens",
+    "ov.completionTokens": "Completion Tokens",
+    "ov.cacheTokens": "Cache 读取 / 写入",
+    "ov.accounts": "账号",
+    "ov.accountsValue": "{enabled} 启用 / {total}",
+    "ov.rateLimitedCount": "{n} 个限流中",
+    "ov.clientKeys": "客户端密钥",
+    "ov.keysValue": "{enabled} 启用 / {total}",
+    "ov.models": "模型",
+    "ov.modelsAvailable": "{n} 可用",
+    "ov.modelsLoaded": "共加载 {n}",
+    "ov.listen": "监听地址",
+    "ov.webui": "WebUI",
+    "ov.rateLimited": "账号限流中",
+
+    "acc.addTitle": "添加账号",
+    "acc.nameOptional": "名称（可选）",
+    "acc.namePlaceholder": "例如 backup",
+    "acc.add": "添加",
+    "acc.addOAuth": "通过 OAuth 添加",
+    "acc.hint": "多账号按轮询方式轮流使用；某个账号 429 限流时自动冷却并在期间跳过，401/403/5xx 自动切换到下一个账号。OAuth 需要浏览器能访问服务器的 127.0.0.1:5959-5968 回调端口。额度每 5 分钟自动刷新，也可在账号列表中手动刷新。",
+    "acc.listTitle": "账号列表",
+    "acc.empty": "还没有账号 —— 添加一个 API Key 或使用 OAuth",
+    "acc.statusOk": "正常",
+    "acc.statusRateLimited": "限流中",
+    "acc.statusAuthError": "鉴权失败",
+    "acc.statusDisabled": "已禁用",
+    "acc.rateLimitedBadge": "限流中 · {time}",
+    "acc.authFailures": "（{n} 次鉴权失败）",
+    "acc.lastError": "最近错误（{time}）：{msg}",
+    "acc.keyRequired": "请填写 API Key",
+    "acc.added": "账号已添加",
+    "acc.enabledToast": "账号已启用",
+    "acc.disabledToast": "账号已禁用",
+    "acc.confirmDelete": "确定删除账号「{name}」？",
+    "acc.deleted": "账号已删除",
+    "acc.updated": "账号已更新",
+    "acc.testing": "正在测试连通性…",
+    "acc.testOk": "连通正常：HTTP {status}，{models} 个模型，{ms}ms",
+    "acc.testFail": "测试失败：{error}",
+    "acc.editTitle": "编辑账号",
+    "acc.editKeyLabel": "API Key（留空表示不修改）",
+    "acc.editHint": "更换 Key 后账号 ID 会变化，用量统计会自动迁移到新 ID。",
+
+    "models.title": "对外暴露的模型",
+    "models.search": "搜索模型…",
+    "models.selectAll": "全选",
+    "models.selectNone": "全不选",
+    "models.loading": "加载中…",
+    "models.hint": "勾选 = 对外提供（<code>/v1/models</code> 可见、可调用）；取消勾选 = 隐藏并拒绝调用，等同于 exclude_models。更改即时生效并写回 config.yaml。",
+    "models.noMatch": "没有匹配的模型",
+    "models.emptyCatalog": "模型目录为空（上游未返回）",
+    "models.savedCount": "已保存：{n} 个模型对外提供",
+    "models.saved": "模型暴露列表已保存（{n} 个可用）",
+
+    "keys.createTitle": "新建密钥",
+    "keys.namePlaceholder": "例如 my-agent",
+    "keys.create": "新建",
+    "keys.hint": "客户端密钥由服务端自动生成（无法手动指定），用于调用本网关的 OpenAI 兼容接口（Bearer 认证），每个密钥独立统计用量；完整值仅在创建时显示一次。",
+    "keys.listTitle": "密钥列表",
+    "keys.empty": "还没有密钥 —— 新建一把给客户端使用",
+    "keys.created": "密钥已创建：{key}",
+    "keys.enabledToast": "密钥已启用",
+    "keys.disabledToast": "密钥已禁用",
+    "keys.confirmDelete": "确定删除密钥「{name}」？使用它的客户端将立即失去访问权限。",
+    "keys.deleted": "密钥已删除",
+    "keys.copied": "密钥已复制",
+
+    "set.upstream": "上游",
+    "set.baseUrl": "Base URL（即时生效）",
+    "set.service": "服务",
+    "set.host": "Host（需重启）",
+    "set.port": "Port（需重启）",
+    "set.webui": "WebUI（需重启）",
+    "set.currentPassword": "当前管理密码",
+    "set.newPassword": "新管理密码（至少 8 位）",
+    "set.changePassword": "修改管理密码",
+    "set.passwordHint": "修改成功后会踢出所有已登录的管理会话（包括当前浏览器），需用新密码重新登录。",
+    "set.save": "保存设置",
+    "set.saved": "设置已保存",
+    "set.restartNote": "⚠ 已写入配置，以下字段需要重启服务后生效：{fields}",
+    "set.fillPasswords": "请填写当前密码和新密码",
+    "set.passwordChanged": "管理密码已修改，请用新密码重新登录",
+
+    "logs.title": "最近日志（内存保留 500 行）",
+    "logs.autoScroll": "自动滚动",
+    "logs.empty": "暂无日志",
+
+    "oauth.title": "通过 OAuth 添加账号",
+    "oauth.callbackLabel": "回调地址（可选，远程 / 容器部署时填写）",
+    "oauth.hint": "留空 = 使用服务器本地 <code>127.0.0.1:5959-5968</code> 回调（浏览器与服务器同机时可用）。浏览器无法访问服务器该端口时（远程部署），填一个<strong>浏览器可达</strong>的本服务地址，例如 <code id=\"oauth-callback-hint\"></code>。",
+    "oauth.begin": "开始授权",
+    "oauth.open": "打开授权页面",
+    "oauth.copyLink": "复制链接",
+    "oauth.linkCopied": "链接已复制",
+    "oauth.running": "已有授权流程进行中，等待回调…",
+    "oauth.waitingCustom": "等待 Command Code 页面向你填写的回调地址回传凭据…",
+    "oauth.waiting": "等待授权完成…",
+    "oauth.success": "✅ 授权成功，账号「{name}」已添加",
+    "oauth.failed": "❌ 授权失败：{error}",
+    "oauth.unknownError": "未知错误",
+  },
+};
+
+// Locales used for number/date formatting, keyed by UI language.
+const LOCALES = { en: "en-US", "zh-CN": "zh-CN" };
+
+function detectLang() {
+  const list = (navigator.languages && navigator.languages.length)
+    ? navigator.languages
+    : [navigator.language || ""];
+  for (const raw of list) {
+    const low = String(raw).toLowerCase();
+    if (low.startsWith("zh")) return "zh-CN";
+    if (low.startsWith("en")) return "en";
+  }
+  return "en";
+}
+
+// t("key", {name: "value"}) — falls back to English, then to the key itself.
+function t(key, params) {
+  const dict = I18N[state.lang] || I18N.en;
+  let s = dict[key];
+  if (s === undefined) s = I18N.en[key];
+  if (s === undefined) return key;
+  if (params) {
+    for (const name in params) s = s.replaceAll("{" + name + "}", String(params[name]));
+  }
+  return s;
+}
+
+function locale() { return LOCALES[state.lang] || "en-US"; }
+
+// Static markup carries data-i18n / data-i18n-html / data-i18n-ph / data-i18n-title.
+function applyI18n() {
+  document.title = t("app.title");
+  for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
+  // Only dictionary entries written as trusted static HTML are used here.
+  for (const el of document.querySelectorAll("[data-i18n-html]")) el.innerHTML = t(el.dataset.i18nHtml);
+  for (const el of document.querySelectorAll("[data-i18n-ph]")) el.placeholder = t(el.dataset.i18nPh);
+  for (const el of document.querySelectorAll("[data-i18n-title]")) el.title = t(el.dataset.i18nTitle);
+}
+
+function setLang(lang) {
+  state.lang = I18N[lang] ? lang : "en";
+  try { localStorage.setItem("cc2api.lang", state.lang); } catch (_) {}
+  document.documentElement.lang = state.lang;
+  for (const sel of document.querySelectorAll("select.lang-select")) sel.value = state.lang;
+  applyI18n();
+  rerenderDynamic();
+}
+
+// Re-render every dynamic section so it picks up the new language.
+function rerenderDynamic() {
+  if ($("#view-app").style.display === "none") return;
+  // Sections are re-rendered from cache (or refetched) regardless of the visible tab,
+  // so switching language never leaves a stale-language section behind.
+  if (state.token) refreshAll(); // overview cards + account table
+  if (state.models.length) renderModels();
+  if (state.keys) renderKeys(state.keys);
+  renderRestartNote();
+  if (state.tab === "logs") {
+    state.logsSeq = 0;
+    $("#logbox").innerHTML = `<div class="empty">${esc(t("logs.empty"))}</div>`;
+    loadLogs();
+  }
+}
+
 const state = {
   base: localStorage.getItem("cc2api.base") || "",
   token: readStoredToken(),
+  lang: "en",
   tab: "overview",
   logsSeq: 0,
   oauthTimer: null,
   models: [],
+  keys: null,
   editingAccount: null,
+  restartFields: [],
 };
 
 /* ---------- helpers ---------- */
@@ -462,7 +974,7 @@ function esc(s) {
     .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
-function fmtInt(n) { return Number(n || 0).toLocaleString("en-US"); }
+function fmtInt(n) { return Number(n || 0).toLocaleString(locale()); }
 
 function fmtTokens(n) {
   n = Number(n || 0);
@@ -475,29 +987,29 @@ function fmtTokens(n) {
 function fmtUptime(sec) {
   sec = Math.floor(sec);
   const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
-  if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
+  if (d > 0) return t("uptime.dhm", { d, h, m });
+  if (h > 0) return t("uptime.hm", { h, m });
+  if (m > 0) return t("uptime.ms", { m, s });
+  return t("uptime.s", { s });
 }
 
 function relTime(iso) {
   if (!iso) return "—";
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 5) return "刚刚";
-  if (diff < 60) return Math.floor(diff) + " 秒前";
-  if (diff < 3600) return Math.floor(diff / 60) + " 分钟前";
-  if (diff < 86400) return Math.floor(diff / 3600) + " 小时前";
-  return Math.floor(diff / 86400) + " 天前";
+  if (diff < 5) return t("time.justNow");
+  if (diff < 60) return t("time.secondsAgo", { n: Math.floor(diff) });
+  if (diff < 3600) return t("time.minutesAgo", { n: Math.floor(diff / 60) });
+  if (diff < 86400) return t("time.hoursAgo", { n: Math.floor(diff / 3600) });
+  return t("time.daysAgo", { n: Math.floor(diff / 86400) });
 }
 
 function inTime(iso) {
   if (!iso) return "—";
   const diff = (new Date(iso).getTime() - Date.now()) / 1000;
-  if (diff <= 0) return "已恢复";
-  if (diff < 60) return Math.ceil(diff) + " 秒后";
-  if (diff < 3600) return Math.ceil(diff / 60) + " 分钟后";
-  return Math.ceil(diff / 3600) + " 小时后";
+  if (diff <= 0) return t("time.recovered");
+  if (diff < 60) return t("time.inSeconds", { n: Math.ceil(diff) });
+  if (diff < 3600) return t("time.inMinutes", { n: Math.ceil(diff / 60) });
+  return t("time.inHours", { n: Math.ceil(diff / 3600) });
 }
 
 /* ---------- quota ---------- */
@@ -531,18 +1043,18 @@ function fmtDuration(sec) {
   const d = Math.floor(sec / 86400); sec %= 86400;
   const h = Math.floor(sec / 3600); sec %= 3600;
   const m = Math.floor(sec / 60);
-  if (d > 0) return d + "天" + h + "小时";
-  if (h > 0) return h + "小时" + m + "分钟";
-  return m + "分钟";
+  if (d > 0) return t("quota.dhm", { d, h });
+  if (h > 0) return t("quota.hm", { h, m });
+  return t("quota.mins", { m });
 }
 
 function quotaResetText(w) {
   if (!w.reset_at) {
-    return Number(w.used || 0) > 0 ? "重置时间未知" : "暂未使用，无重置点";
+    return Number(w.used || 0) > 0 ? t("quota.unknownReset") : t("quota.noResetPoint");
   }
   const at = new Date(w.reset_at).getTime();
-  if (!isFinite(at)) return "重置时间未知";
-  return "重置于 " + fmtDuration((at - Date.now()) / 1000) + " 后";
+  if (!isFinite(at)) return t("quota.unknownReset");
+  return t("quota.resetAfter", { d: fmtDuration((at - Date.now()) / 1000) });
 }
 
 function quotaBar(label, w, estimated) {
@@ -556,7 +1068,7 @@ function quotaBar(label, w, estimated) {
     meta += " · " + quotaResetText(w);
   }
   return `<div class="qbar">
-    <span class="qlabel">${esc(label)}${estimated ? ' <span class="faint">(按套餐估算)</span>' : ""}</span>
+    <span class="qlabel">${esc(label)}${estimated ? ' <span class="faint">(' + esc(t("quota.estimated")) + ')</span>' : ""}</span>
     <span class="track"><span class="fill lvl-${quotaLevel(ratio)}" style="width:${pct.toFixed(1)}%"></span></span>
     <span class="meta">${esc(meta)}</span>
   </div>`;
@@ -570,52 +1082,52 @@ function quotaMonthBar(q) {
   const remaining = q.monthly_credits;
   if (cap == null || remaining == null || cap <= 0) return "";
   const used = Math.max(0, cap - remaining);
-  return quotaBar("月度", { used, cap, exceeded: used >= cap, reset_at: plan.current_period_end }, true);
+  return quotaBar(t("quota.monthly"), { used, cap, exceeded: used >= cap, reset_at: plan.current_period_end }, true);
 }
 
 function quotaDetail(a) {
   const q = a.quota;
   if (!q) {
-    return `<div class="faint">额度未同步 —— 等待后台刷新或点击“刷新额度”</div>`;
+    return `<div class="faint">${esc(t("quota.notSynced"))}</div>`;
   }
   const bars = [
-    quotaBar("5 小时", q.five_hour, false),
-    quotaBar("本周", q.weekly, false),
+    quotaBar(t("quota.window.5h"), q.five_hour, false),
+    quotaBar(t("quota.weekly"), q.weekly, false),
     quotaMonthBar(q),
   ].filter(Boolean).join("");
   const meta = [];
-  if (q.monthly_credits != null) meta.push(`月度剩余 <b>${esc(fmtCredit(q.monthly_credits))}</b> $`);
-  if (q.purchased_credits != null) meta.push(`充值余额 <b>${esc(fmtCredit(q.purchased_credits))}</b> $`);
-  if (q.free_credits != null) meta.push(`免费余额 <b>${esc(fmtCredit(q.free_credits))}</b> $`);
-  if (q.plan && q.plan.name) meta.push(`套餐 <b>${esc(q.plan.name)}</b>${q.plan.status ? " · " + esc(q.plan.status) : ""}`);
-  if (q.plan && q.plan.current_period_end) meta.push(`账期至 <b>${esc(fmtDate(q.plan.current_period_end))}</b>`);
-  if (q.plan && q.plan.cancel_at_period_end) meta.push(`<span class="badge warn">到期取消</span>`);
-  if (q.below_threshold) meta.push(`<span class="badge warn">低余额</span>`);
-  if (q.exceeded) meta.push(`<span class="badge err">${esc(q.exceeded)} 超限</span>`);
+  if (q.monthly_credits != null) meta.push(t("quota.monthlyRemaining", { v: fmtCredit(q.monthly_credits) }));
+  if (q.purchased_credits != null) meta.push(t("quota.purchasedBalance", { v: fmtCredit(q.purchased_credits) }));
+  if (q.free_credits != null) meta.push(t("quota.freeBalance", { v: fmtCredit(q.free_credits) }));
+  if (q.plan && q.plan.name) meta.push('<span class="badge ok">' + esc(q.plan.name) + '</span>' + (q.plan.status ? ' · ' + esc(q.plan.status) : ''));
+  if (q.plan && q.plan.current_period_end) meta.push(t("quota.billingPeriod", { v: fmtDate(q.plan.current_period_end) }));
+  if (q.plan && q.plan.cancel_at_period_end) meta.push('<span class="badge warn">' + esc(t("quota.cancelAtPeriodEnd")) + '</span>');
+  if (q.below_threshold) meta.push('<span class="badge warn">' + esc(t("quota.lowBalanceBadge")) + '</span>');
+  if (q.exceeded) meta.push('<span class="badge err">' + esc(t("quota.exceededBadge", { n: q.exceeded })) + '</span>');
   const errs = [];
   if (q.last_error) errs.push(q.last_error);
-  if (q.failures && q.failures.length) errs.push(q.failures.join("；"));
+  if (q.failures && q.failures.length) errs.push(q.failures.join(", "));
   const metaHTML = meta.map(m => `<span>${m}</span>`).join("") +
-    (q.last_checked ? `<span class="faint">额度查询 ${esc(relTime(q.last_checked))}</span>` : "");
-  return `<div class="quota-bars">${bars || '<span class="faint">该账号未返回窗口额度</span>'}</div>
+    (q.last_checked ? `<span class="faint">${esc(t("quota.lastChecked", { when: relTime(q.last_checked) }))}</span>` : "");
+  return `<div class="quota-bars">${bars || `<span class="faint">${esc(t("quota.noWindow"))}</span>`}</div>
     ${metaHTML ? `<div class="quota-meta">${metaHTML}</div>` : ""}
-    ${errs.length ? `<div class="quota-err">额度查询错误：${esc(errs.join(" / "))}</div>` : ""}`;
+    ${errs.length ? `<div class="quota-err">${t("quota.errorPrefix")} ${esc(errs.join(", "))}</div>` : ""}`;
 }
 
 async function refreshAccountQuota(id) {
-  toast("正在刷新额度…");
+  toast(t("quota.refreshing"));
   try {
     await api("/admin/api/accounts/" + id + "/quota/refresh", { method: "POST" });
-    toast("额度已刷新");
+    toast(t("quota.refreshedOne"));
     refreshAll();
   } catch (e) { toast(e.message, true); }
 }
 
 async function refreshAllQuotas() {
-  toast("正在刷新全部额度…");
+  toast(t("quota.refreshing"));
   try {
     const r = await api("/admin/api/quotas/refresh", { method: "POST" });
-    toast("额度已刷新：" + ((r.accounts && r.accounts.length) || 0) + " 个账号");
+    toast(t("quota.refreshed", { n: (r.accounts && r.accounts.length) || 0 }));
     refreshAll();
   } catch (e) { toast(e.message, true); }
 }
@@ -631,10 +1143,19 @@ function toast(msg, isErr) {
   }, isErr ? 6000 : 3200);
 }
 
+// api calls the admin API. { base } and { token } override the stored session,
+// which lets callers probe credentials before anything is saved.
 async function api(path, opts = {}) {
+  const token = opts.token === undefined ? state.token : opts.token;
+  const base = opts.base === undefined ? state.base : opts.base;
   const init = {
     method: opts.method || "GET",
-    headers: { "Authorization": "Bearer " + state.token },
+    headers: {
+      "Authorization": "Bearer " + token,
+      // The browser would send its own UI language; the admin API should answer
+      // in the language selected here instead.
+      "Accept-Language": state.lang,
+    },
   };
   if (opts.body !== undefined) {
     init.headers["Content-Type"] = "application/json";
@@ -642,16 +1163,22 @@ async function api(path, opts = {}) {
   }
   let resp;
   try {
-    resp = await fetch(state.base + path, init);
+    resp = await fetch(base + path, init);
   } catch (e) {
-    throw new Error("无法连接服务器：" + e.message);
-  }
-  if (resp.status === 401) {
-    if (state.token) { logout("登录已失效，请重新连接"); }
-    throw new Error("unauthorized");
+    throw new Error(t("err.connect", { msg: e.message }));
   }
   let data = null;
   try { data = await resp.json(); } catch (_) {}
+  if (resp.status === 401) {
+    if (opts.token === undefined && state.token) {
+      // The stored session is no longer valid, so sign out. A rejected login
+      // attempt is handed to the caller instead, so that a typo never looks
+      // like an expired session.
+      logout(t("login.expired"));
+      throw new Error("unauthorized");
+    }
+    throw new Error((data && data.error) || t("login.rejected"));
+  }
   if (!resp.ok) {
     throw new Error((data && data.error) || ("HTTP " + resp.status));
   }
@@ -689,10 +1216,13 @@ function logout(msg) {
 async function tryConnect() {
   const base = $("#login-base").value.trim().replace(/\/+$/, "");
   const token = $("#login-token").value.trim();
-  if (!base || !token) { $("#login-err").textContent = "请填写服务器地址和管理密码"; return; }
-  state.base = base; state.token = token;
+  if (!base || !token) { $("#login-err").textContent = t("login.fillRequired"); return; }
   try {
-    const ov = await api("/admin/api/overview");
+    // Verify first and persist only what worked, so a rejected password leaves
+    // no session behind and is reported by the admin API's own message.
+    const ov = await api("/admin/api/overview", { base, token });
+    state.base = base;
+    state.token = token;
     localStorage.setItem("cc2api.base", base);
     localStorage.removeItem("cc2api.token");
     sessionStorage.removeItem("cc2api.token");
@@ -701,10 +1231,9 @@ async function tryConnect() {
     $("#login-err").textContent = "";
     renderOverview(ov);
     showApp();
-    toast("已连接 " + base);
+    toast(t("login.connected", { base }));
   } catch (e) {
-    if (e.message !== "unauthorized") $("#login-err").textContent = e.message;
-    state.token = "";
+    $("#login-err").textContent = e.message;
   }
 }
 
@@ -714,8 +1243,8 @@ function switchTab(tab) {
   state.tab = tab;
   document.querySelectorAll("nav.tabs button").forEach(b =>
     b.classList.toggle("active", b.dataset.tab === tab));
-  for (const t of ["overview", "accounts", "models", "keys", "settings", "logs"]) {
-    $("#tab-" + t).style.display = t === tab ? "" : "none";
+  for (const name of ["overview", "accounts", "models", "keys", "settings", "logs"]) {
+    $("#tab-" + name).style.display = name === tab ? "" : "none";
   }
   if (tab === "logs") loadLogs();
   if (tab === "settings") loadSettings();
@@ -728,7 +1257,7 @@ async function refreshAll() {
     const [ov, acc] = await Promise.all([api("/admin/api/overview"), api("/admin/api/accounts")]);
     renderOverview(ov);
     renderAccounts(acc.accounts);
-  } catch (e) { /* 401 已处理 */ }
+  } catch (e) { /* 401 already handled */ }
 }
 
 setInterval(() => {
@@ -745,18 +1274,18 @@ function renderOverview(ov) {
   const u = ov.usage;
   const quo = ov.quotas || {};
   const quotaSub = [];
-  if (quo.exceeded) quotaSub.push(quo.exceeded + " 个超限");
-  if (quo.low_balance) quotaSub.push(quo.low_balance + " 个低余额");
-  if (quo.last_checked_at) quotaSub.push("最近 " + relTime(quo.last_checked_at));
+  if (quo.exceeded) quotaSub.push(t('quota.exceeded', { n: quo.exceeded }));
+  if (quo.low_balance) quotaSub.push(t('quota.lowBalance', { n: quo.low_balance }));
+  if (quo.last_checked_at) quotaSub.push(t('quota.lastCheckedShort', { when: relTime(quo.last_checked_at) }));
   const cards = [
-    ["总请求数", fmtInt(u.total_requests), `运行 ${fmtUptime(ov.uptime_seconds)}`],
-    ["Prompt Tokens", fmtTokens(u.prompt_tokens), ""],
-    ["Completion Tokens", fmtTokens(u.completion_tokens), ""],
-    ["Cache 读取 / 写入", fmtTokens(u.cache_read_tokens) + " / " + fmtTokens(u.cache_write_tokens), ""],
-    ["账号", `${ov.accounts.enabled} 启用 / ${ov.accounts.total}`, ov.accounts.rate_limited > 0 ? ov.accounts.rate_limited + " 个限流中" : ""],
-    ["额度同步", `${quo.synced || 0} / ${ov.accounts.total}`, quotaSub.join(" · ")],
-    ["客户端密钥", `${ov.keys.enabled} 启用 / ${ov.keys.total}`, ""],
-    ["模型", `${ov.models.available} 可用`, `共加载 ${ov.models.loaded}`],
+    [t("ov.totalRequests"), fmtInt(u.total_requests), t("ov.running", { uptime: fmtUptime(ov.uptime_seconds) })],
+    [t("ov.promptTokens"), fmtTokens(u.prompt_tokens), ""],
+    [t("ov.completionTokens"), fmtTokens(u.completion_tokens), ""],
+    [t("ov.cacheTokens"), fmtTokens(u.cache_read_tokens) + " / " + fmtTokens(u.cache_write_tokens), ""],
+    [t("ov.accounts"), t("ov.accountsValue", { enabled: ov.accounts.enabled, total: ov.accounts.total }), ov.accounts.rate_limited > 0 ? t("ov.rateLimitedCount", { n: ov.accounts.rate_limited }) : ""],
+    [t("quota.syncStatus"), t("quota.syncValue", { synced: quo.synced || 0, total: ov.accounts.total }), quotaSub.join(" · ")],
+    [t("ov.clientKeys"), t("ov.keysValue", { enabled: ov.keys.enabled, total: ov.keys.total }), ""],
+    [t("ov.models"), t("ov.modelsAvailable", { n: ov.models.available }), t("ov.modelsLoaded", { n: ov.models.loaded })],
   ];
   $("#ov-cards").innerHTML = cards.map(([label, value, sub]) => `
     <div class="card">
@@ -767,47 +1296,50 @@ function renderOverview(ov) {
 
   const accs = ov.accounts;
   let html = `<div class="kv">
-    <span class="k">监听地址</span><span class="v">${esc(ov.listen)}</span>
-    <span class="k">WebUI</span><span class="v">${ov.webui ? "启用" : "禁用"}</span>
-    <span class="k">账号限流中</span><span class="v">${accs.rate_limited}</span>
-    <span class="k">额度超限账号</span><span class="v">${quo.exceeded || 0}</span>
-    <span class="k">低余额账号</span><span class="v">${quo.low_balance || 0}</span>
-    <span class="k">最近额度刷新</span><span class="v">${esc(relTime(quo.last_checked_at))}</span>
+    <span class="k">${esc(t("ov.listen"))}</span><span class="v">${esc(ov.listen)}</span>
+    <span class="k">${esc(t("ov.webui"))}</span><span class="v">${ov.webui ? esc(t("common.enabled")) : esc(t("common.disabled"))}</span>
+    <span class="k">${esc(t("ov.rateLimited"))}</span><span class="v">${accs.rate_limited}</span>
+    <span class="k">${esc(t("quota.kvExceeded"))}</span><span class="v">${quo.exceeded || 0}</span>
+    <span class="k">${esc(t("quota.kvLowBalance"))}</span><span class="v">${quo.low_balance || 0}</span>
+    <span class="k">${esc(t("quota.kvLastChecked"))}</span><span class="v">${esc(relTime(quo.last_checked_at))}</span>
   </div>`;
   $("#ov-accounts").innerHTML = html;
 }
 
 /* ---------- accounts ---------- */
 
-const STATUS_META = {
-  ok:           { cls: "ok",   text: "正常" },
-  rate_limited: { cls: "warn", text: "限流中" },
-  auth_error:   { cls: "err",  text: "鉴权失败" },
-  disabled:     { cls: "off",  text: "已禁用" },
-};
+function statusMeta(status) {
+  switch (status) {
+    case "ok":           return { cls: "ok",   text: t("acc.statusOk") };
+    case "rate_limited": return { cls: "warn", text: t("acc.statusRateLimited") };
+    case "auth_error":   return { cls: "err",  text: t("acc.statusAuthError") };
+    case "disabled":     return { cls: "off",  text: t("acc.statusDisabled") };
+    default:             return { cls: "off",  text: status };
+  }
+}
 
 function statusBadge(a) {
-  const meta = STATUS_META[a.status] || { cls: "off", text: a.status };
   if (a.status === "rate_limited" && a.rate_limited_until) {
-    return `<span class="badge warn" title="${esc(a.rate_limited_until)}">限流中 · ${esc(inTime(a.rate_limited_until))}</span>`;
+    return `<span class="badge warn" title="${esc(a.rate_limited_until)}">${esc(t("acc.rateLimitedBadge", { time: inTime(a.rate_limited_until) }))}</span>`;
   }
+  const meta = statusMeta(a.status);
   return `<span class="badge ${meta.cls}">${esc(meta.text)}</span>`;
 }
 
 function renderAccounts(accounts) {
   if (!accounts || !accounts.length) {
-    $("#acc-table").innerHTML = `<div class="empty">还没有账号 —— 添加一个 API Key 或使用 OAuth</div>`;
+    $("#acc-table").innerHTML = `<div class="empty">${esc(t("acc.empty"))}</div>`;
     return;
   }
   $("#acc-table").innerHTML = `
   <table>
     <thead><tr>
-      <th>名称</th><th>Key</th><th>状态</th>
-      <th style="text-align:right">请求</th>
-      <th style="text-align:right">Tokens</th>
-      <th style="text-align:right">错误</th>
-      <th>最近使用</th>
-      <th style="text-align:right">操作</th>
+      <th>${esc(t("common.name"))}</th><th>${esc(t("common.key"))}</th><th>${esc(t("common.status"))}</th>
+      <th style="text-align:right">${esc(t("common.requests"))}</th>
+      <th style="text-align:right">${esc(t("common.tokens"))}</th>
+      <th style="text-align:right">${esc(t("common.errors"))}</th>
+      <th>${esc(t("common.lastUsed"))}</th>
+      <th style="text-align:right">${esc(t("common.actions"))}</th>
     </tr></thead>
     ${accounts.map(a => {
       const tokens = (a.prompt_tokens || 0) + (a.completion_tokens || 0);
@@ -815,21 +1347,21 @@ function renderAccounts(accounts) {
       <tr class="acc-main">
         <td><strong>${esc(a.name)}</strong></td>
         <td class="mono">${esc(a.key_masked)}</td>
-        <td>${statusBadge(a)}${a.auth_failures > 0 && a.status === "ok" ? ` <span class="faint">(${a.auth_failures} 次鉴权失败)</span>` : ""}</td>
+        <td>${statusBadge(a)}${a.auth_failures > 0 && a.status === "ok" ? ` <span class="faint">${esc(t("acc.authFailures", { n: a.auth_failures }))}</span>` : ""}</td>
         <td class="num" style="text-align:right">${fmtInt(a.requests)}</td>
         <td class="num" style="text-align:right">${fmtTokens(tokens)}</td>
         <td class="num" style="text-align:right">${a.errors ? `<span style="color:var(--red)">${a.errors}</span>` : "0"}</td>
         <td class="nowrap dim">${esc(relTime(a.last_used_at))}</td>
         <td><div class="row-actions">
-          <button class="btn small" onclick="refreshAccountQuota('${a.id}')">刷新额度</button>
-          <button class="btn small" onclick="testAccount('${a.id}')">测试</button>
-          <button class="btn small" onclick="openAccountEdit('${a.id}', '${esc(a.name)}')">编辑</button>
-          <button class="btn small" onclick="toggleAccount('${a.id}', ${a.enabled ? "false" : "true"})">${a.enabled ? "禁用" : "启用"}</button>
-          <button class="btn small danger" onclick="deleteAccount('${a.id}', '${esc(a.name)}')">删除</button>
+          <button class="btn small" onclick="refreshAccountQuota('${a.id}')">${esc(t("quota.refreshOne"))}</button>
+          <button class="btn small" onclick="testAccount('${a.id}')">${esc(t("common.test"))}</button>
+          <button class="btn small" onclick="openAccountEdit('${a.id}', '${esc(a.name)}')">${esc(t("common.edit"))}</button>
+          <button class="btn small" onclick="toggleAccount('${a.id}', ${a.enabled ? "false" : "true"})">${a.enabled ? esc(t("common.disable")) : esc(t("common.enable"))}</button>
+          <button class="btn small danger" onclick="deleteAccount('${a.id}', '${esc(a.name)}')">${esc(t("common.delete"))}</button>
         </div></td>
       </tr>
       <tr class="acc-quota"><td colspan="8" style="padding-top:10px;padding-bottom:5px">${quotaDetail(a)}</td></tr>
-      ${a.last_error ? `<tr class="acc-err"><td colspan="8" class="err-line">最近错误（${esc(relTime(a.last_error_at))}）：${esc(a.last_error)}</td></tr>` : ""}
+      ${a.last_error ? `<tr><td colspan="8" class="err-line">${esc(t("acc.lastError", { time: relTime(a.last_error_at), msg: a.last_error }))}</td></tr>` : ""}
     </tbody>`;}).join("")}
   </table>`;
 }
@@ -837,11 +1369,11 @@ function renderAccounts(accounts) {
 async function addAccount() {
   const key = $("#acc-key").value.trim();
   const name = $("#acc-name").value.trim();
-  if (!key) { toast("请填写 API Key", true); return; }
+  if (!key) { toast(t("acc.keyRequired"), true); return; }
   try {
     await api("/admin/api/accounts", { method: "POST", body: { name, api_key: key } });
     $("#acc-key").value = ""; $("#acc-name").value = "";
-    toast("账号已添加");
+    toast(t("acc.added"));
     refreshAll();
   } catch (e) { toast(e.message, true); }
 }
@@ -849,16 +1381,16 @@ async function addAccount() {
 async function toggleAccount(id, enabled) {
   try {
     await api("/admin/api/accounts/" + id, { method: "PATCH", body: { enabled } });
-    toast(enabled ? "账号已启用" : "账号已禁用");
+    toast(enabled ? t("acc.enabledToast") : t("acc.disabledToast"));
     refreshAll();
   } catch (e) { toast(e.message, true); }
 }
 
 async function deleteAccount(id, name) {
-  if (!confirm(`确定删除账号「${name}」？`)) return;
+  if (!confirm(t("acc.confirmDelete", { name }))) return;
   try {
     await api("/admin/api/accounts/" + id, { method: "DELETE" });
-    toast("账号已删除");
+    toast(t("acc.deleted"));
     refreshAll();
   } catch (e) { toast(e.message, true); }
 }
@@ -880,17 +1412,17 @@ async function saveAccountEdit() {
   try {
     await api("/admin/api/accounts/" + id, { method: "PATCH", body });
     hideModal("#acct-modal");
-    toast("账号已更新");
+    toast(t("acc.updated"));
     refreshAll();
   } catch (e) { toast(e.message, true); }
 }
 
 async function testAccount(id) {
-  toast("正在测试连通性…");
+  toast(t("acc.testing"));
   try {
     const r = await api(`/admin/api/accounts/${id}/test`, { method: "POST" });
-    if (r.ok) toast(`连通正常：HTTP ${r.status}，${r.models} 个模型，${r.latency_ms}ms`);
-    else toast(`测试失败：${r.error || "HTTP " + r.status}`, true);
+    if (r.ok) toast(t("acc.testOk", { status: r.status, models: r.models, ms: r.latency_ms }));
+    else toast(t("acc.testFail", { error: r.error || ("HTTP " + r.status) }), true);
   } catch (e) { toast(e.message, true); }
 }
 
@@ -901,7 +1433,7 @@ async function loadModels() {
     const r = await api("/admin/api/models");
     state.models = r.models || [];
     renderModels();
-  } catch (e) { /* 401 已处理 */ }
+  } catch (e) { /* 401 already handled */ }
 }
 
 function renderModels() {
@@ -909,10 +1441,10 @@ function renderModels() {
   const q = ($("#model-search").value || "").trim().toLowerCase();
   const items = state.models.filter(m => !q || m.id.toLowerCase().includes(q));
   if (!items.length) {
-    box.innerHTML = `<div class="empty">${q ? "没有匹配的模型" : "模型目录为空（上游未返回）"}</div>`;
+    box.innerHTML = `<div class="empty">${esc(q ? t("models.noMatch") : t("models.emptyCatalog"))}</div>`;
     return;
   }
-  box.innerHTML = items.map((m, i) => `
+  box.innerHTML = items.map(m => `
     <label class="${m.exposed ? "" : "hidden-model"}">
       <input type="checkbox" data-mid="${esc(m.id)}" ${m.exposed ? "checked" : ""}>
       <span class="mid">${esc(m.id)}</span>
@@ -924,7 +1456,7 @@ async function saveModels() {
     .map(cb => cb.dataset.mid);
   try {
     await api("/admin/api/models", { method: "PUT", body: { exposed } });
-    toast("模型暴露列表已保存（" + exposed.length + " 个可用）");
+    toast(t("models.saved", { n: exposed.length }));
   } catch (e) { toast(e.message, true); }
 }
 
@@ -947,7 +1479,7 @@ document.addEventListener("change", async e => {
 async function saveModelsState(exposedIds) {
   try {
     await api("/admin/api/models", { method: "PUT", body: { exposed: exposedIds } });
-    toast("已保存：" + exposedIds.length + " 个模型对外提供");
+    toast(t("models.savedCount", { n: exposedIds.length }));
   } catch (e) { toast(e.message, true); }
 }
 
@@ -958,17 +1490,17 @@ const revealedKeys = new Set();
 function renderKeys(keys) {
   revealedKeys.clear();
   if (!keys || !keys.length) {
-    $("#ck-table").innerHTML = `<div class="empty">还没有密钥 —— 新建一把给客户端使用</div>`;
+    $("#ck-table").innerHTML = `<div class="empty">${esc(t("keys.empty"))}</div>`;
     return;
   }
   $("#ck-table").innerHTML = `
   <table>
     <thead><tr>
-      <th>名称</th><th>密钥</th><th>状态</th>
-      <th style="text-align:right">请求</th>
-      <th style="text-align:right">Tokens</th>
-      <th>最近使用</th>
-      <th style="text-align:right">操作</th>
+      <th>${esc(t("common.name"))}</th><th>${esc(t("common.key"))}</th><th>${esc(t("common.status"))}</th>
+      <th style="text-align:right">${esc(t("common.requests"))}</th>
+      <th style="text-align:right">${esc(t("common.tokens"))}</th>
+      <th>${esc(t("common.lastUsed"))}</th>
+      <th style="text-align:right">${esc(t("common.actions"))}</th>
     </tr></thead>
     <tbody>
     ${keys.map(k => {
@@ -976,15 +1508,15 @@ function renderKeys(keys) {
       return `<tr>
         <td><strong>${esc(k.name)}</strong></td>
         <td class="mono" id="ckval-${k.id}" data-masked="${esc(k.key_masked)}">${esc(k.key_masked)}</td>
-        <td>${k.enabled ? `<span class="badge ok">启用</span>` : `<span class="badge off">已禁用</span>`}</td>
+        <td>${k.enabled ? `<span class="badge ok">${esc(t("common.enabled"))}</span>` : `<span class="badge off">${esc(t("common.disabled"))}</span>`}</td>
         <td class="num" style="text-align:right">${fmtInt(k.requests)}</td>
         <td class="num" style="text-align:right">${fmtTokens(tokens)}</td>
         <td class="nowrap dim">${esc(relTime(k.last_used_at))}</td>
         <td><div class="row-actions">
-          <button class="btn small" id="ckeye-${k.id}" onclick="revealKey('${k.id}')">显示</button>
-          <button class="btn small" onclick="copyKey('${k.id}')">复制</button>
-          <button class="btn small" onclick="toggleKey('${k.id}', ${k.enabled ? "false" : "true"})">${k.enabled ? "禁用" : "启用"}</button>
-          <button class="btn small danger" onclick="deleteKey('${k.id}', '${esc(k.name)}')">删除</button>
+          <button class="btn small" id="ckeye-${k.id}" onclick="revealKey('${k.id}')">${esc(t("common.reveal"))}</button>
+          <button class="btn small" onclick="copyKey('${k.id}')">${esc(t("common.copy"))}</button>
+          <button class="btn small" onclick="toggleKey('${k.id}', ${k.enabled ? "false" : "true"})">${k.enabled ? esc(t("common.disable")) : esc(t("common.enable"))}</button>
+          <button class="btn small danger" onclick="deleteKey('${k.id}', '${esc(k.name)}')">${esc(t("common.delete"))}</button>
         </div></td>
       </tr>`;
     }).join("")}
@@ -995,8 +1527,9 @@ function renderKeys(keys) {
 async function loadKeys() {
   try {
     const r = await api("/admin/api/keys");
-    renderKeys(r.keys);
-  } catch (e) { /* 401 已处理 */ }
+    state.keys = r.keys || [];
+    renderKeys(state.keys);
+  } catch (e) { /* 401 already handled */ }
 }
 
 async function addKey() {
@@ -1004,7 +1537,7 @@ async function addKey() {
   try {
     const created = await api("/admin/api/keys", { method: "POST", body: { name } });
     $("#ck-name").value = "";
-    toast("密钥已创建：" + created.key);
+    toast(t("keys.created", { key: created.key }));
     loadKeys();
   } catch (e) { toast(e.message, true); }
 }
@@ -1012,16 +1545,16 @@ async function addKey() {
 async function toggleKey(id, enabled) {
   try {
     await api("/admin/api/keys/" + id, { method: "PATCH", body: { enabled } });
-    toast(enabled ? "密钥已启用" : "密钥已禁用");
+    toast(enabled ? t("keys.enabledToast") : t("keys.disabledToast"));
     loadKeys();
   } catch (e) { toast(e.message, true); }
 }
 
 async function deleteKey(id, name) {
-  if (!confirm(`确定删除密钥「${name}」？使用它的客户端将立即失去访问权限。`)) return;
+  if (!confirm(t("keys.confirmDelete", { name }))) return;
   try {
     await api("/admin/api/keys/" + id, { method: "DELETE" });
-    toast("密钥已删除");
+    toast(t("keys.deleted"));
     loadKeys();
   } catch (e) { toast(e.message, true); }
 }
@@ -1037,20 +1570,20 @@ async function revealKey(id) {
   if (revealedKeys.has(id)) {
     revealedKeys.delete(id);
     cell.textContent = cell.dataset.masked;
-    btn.textContent = "显示";
+    btn.textContent = t("common.reveal");
     return;
   }
   try {
     cell.textContent = await fetchKeyValue(id);
     revealedKeys.add(id);
-    btn.textContent = "隐藏";
+    btn.textContent = t("common.hide");
   } catch (e) { toast(e.message, true); }
 }
 
 async function copyKey(id) {
   try {
     await navigator.clipboard.writeText(await fetchKeyValue(id));
-    toast("密钥已复制");
+    toast(t("keys.copied"));
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1065,7 +1598,18 @@ async function loadSettings() {
     $("#set-webui").value = s.webui ? "true" : "false";
     $("#set-password").value = "";
     $("#set-password-old").value = "";
-  } catch (e) { /* 401 已处理 */ }
+  } catch (e) { /* 401 already handled */ }
+}
+
+function renderRestartNote() {
+  const note = $("#set-restart");
+  const need = state.restartFields || [];
+  if (need.length && $("#view-app").style.display !== "none") {
+    note.style.display = "";
+    note.textContent = t("set.restartNote", { fields: need.join(t("common.listSep")) });
+  } else {
+    note.style.display = "none";
+  }
 }
 
 async function saveSettings() {
@@ -1077,15 +1621,9 @@ async function saveSettings() {
   };
   try {
     const r = await api("/admin/api/settings", { method: "PUT", body });
-    toast("设置已保存");
-    const need = r.restart_required || [];
-    const note = $("#set-restart");
-    if (need.length) {
-      note.style.display = "";
-      note.textContent = "⚠ 已写入配置，以下字段需要重启服务后生效：" + need.join("、");
-    } else {
-      note.style.display = "none";
-    }
+    toast(t("set.saved"));
+    state.restartFields = r.restart_required || [];
+    renderRestartNote();
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1102,23 +1640,24 @@ async function loadLogs() {
       const frag = document.createDocumentFragment();
       for (const e of r.entries) {
         const line = document.createElement("div");
-        line.innerHTML = `<span class="t">${esc(new Date(e.time).toLocaleTimeString())}</span>${esc(e.line)}`;
+        line.innerHTML = `<span class="t">${esc(new Date(e.time).toLocaleTimeString(locale()))}</span>${esc(e.line)}`;
         frag.appendChild(line);
       }
       box.appendChild(frag);
       while (box.childElementCount > 1200) box.removeChild(box.firstChild);
       if (follow) box.scrollTop = box.scrollHeight;
     } else if (!box.childElementCount) {
-      box.innerHTML = `<div class="empty">暂无日志</div>`;
+      box.innerHTML = `<div class="empty">${esc(t("logs.empty"))}</div>`;
     }
-  } catch (e) { /* 401 已处理 */ }
+  } catch (e) { /* 401 already handled */ }
 }
 
 /* ---------- oauth ---------- */
 
 function openOAuthModal() {
   $("#oauth-callback").value = "";
-  $("#oauth-callback-hint").textContent = location.origin + "/admin/api/oauth/callback";
+  const hint = $("#oauth-callback-hint");
+  if (hint) hint.textContent = location.origin + "/admin/api/oauth/callback";
   $("#oauth-callback").placeholder = location.origin + "/admin/api/oauth/callback";
   $("#oauth-url").style.display = "none";
   $("#oauth-status").style.display = "none";
@@ -1137,10 +1676,10 @@ function startOAuth() {
     $("#oauth-open-row").style.display = "";
     $("#oauth-status").style.display = "";
     $("#oauth-status").innerHTML = r.already_running
-      ? `<span class="spinner"></span>已有授权流程进行中，等待回调…`
+      ? `<span class="spinner"></span>${esc(t("oauth.running"))}`
       : (callbackURL
-        ? `<span class="spinner"></span>等待 Command Code 页面向你填写的回调地址回传凭据…`
-        : `<span class="spinner"></span>等待授权完成…`);
+        ? `<span class="spinner"></span>${esc(t("oauth.waitingCustom"))}`
+        : `<span class="spinner"></span>${esc(t("oauth.waiting"))}`);
     startOAuthPolling();
   }).catch(e => toast(e.message, true));
 }
@@ -1152,12 +1691,12 @@ function startOAuthPolling() {
       const r = await api("/admin/api/oauth/status");
       if (r.state === "success") {
         stopOAuthPolling();
-        $("#oauth-status").innerHTML = `✅ 授权成功，账号「${esc(r.account_name || "")}」已添加`;
+        $("#oauth-status").innerHTML = esc(t("oauth.success", { name: r.account_name || "" }));
         refreshAll();
         setTimeout(closeOAuth, 1600);
       } else if (r.state === "failed") {
         stopOAuthPolling();
-        $("#oauth-status").innerHTML = `❌ 授权失败：${esc(r.error || "未知错误")}`;
+        $("#oauth-status").innerHTML = esc(t("oauth.failed", { error: r.error || t("oauth.unknownError") }));
       }
     } catch (_) {}
   }, 2000);
@@ -1184,6 +1723,9 @@ $("#login-form").addEventListener("submit", e => { e.preventDefault(); tryConnec
 $("#login-base").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("#login-token").focus(); } });
 $("#logout-btn").addEventListener("click", () => logout());
 
+document.querySelectorAll("select.lang-select").forEach(sel =>
+  sel.addEventListener("change", () => setLang(sel.value)));
+
 document.querySelectorAll("nav.tabs button").forEach(b =>
   b.addEventListener("click", () => switchTab(b.dataset.tab)));
 
@@ -1197,7 +1739,6 @@ $("#oauth-cancel2").addEventListener("click", () => {
   api("/admin/api/oauth/cancel", { method: "POST" }).catch(() => {});
   closeOAuth();
 });
-$("#oauth-begin-row").closest; // no-op guard against stray references
 $("#ck-add-btn").addEventListener("click", addKey);
 $("#ck-name").addEventListener("keydown", e => { if (e.key === "Enter") addKey(); });
 
@@ -1209,7 +1750,7 @@ $("#model-search").addEventListener("input", renderModels);
 $("#model-all-btn").addEventListener("click", () => setAllModels(true));
 $("#model-none-btn").addEventListener("click", () => setAllModels(false));
 $("#oauth-copy").addEventListener("click", () => {
-  navigator.clipboard.writeText($("#oauth-url").textContent).then(() => toast("链接已复制"));
+  navigator.clipboard.writeText($("#oauth-url").textContent).then(() => toast(t("oauth.linkCopied")));
 });
 $("#oauth-cancel").addEventListener("click", () => {
   api("/admin/api/oauth/cancel", { method: "POST" }).catch(() => {});
@@ -1223,15 +1764,18 @@ $("#pw-form").addEventListener("submit", async e => {
   e.preventDefault();
   const newPassword = $("#set-password").value;
   const oldPassword = $("#set-password-old").value;
-  if (!newPassword || !oldPassword) { toast("请填写当前密码和新密码", true); return; }
+  if (!newPassword || !oldPassword) { toast(t("set.fillPasswords"), true); return; }
   try {
     await api("/admin/api/settings", { method: "PUT", body: { admin_password: newPassword, old_password: oldPassword } });
-    toast("管理密码已修改，请用新密码重新登录");
-    logout("管理密码已修改，请使用新密码重新登录");
+    toast(t("set.passwordChanged"));
+    logout(t("set.passwordChanged"));
   } catch (err) { toast(err.message, true); }
 });
 
 /* ---------- boot ---------- */
+
+state.lang = localStorage.getItem("cc2api.lang") || detectLang();
+setLang(state.lang);
 
 if (state.token) {
   api("/admin/api/overview").then(ov => {

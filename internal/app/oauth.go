@@ -96,7 +96,7 @@ func StartOAuthFlow(opts OAuthOptions) (*OAuthFlow, error) {
 			}
 		}
 		if err != nil {
-			return nil, fmt.Errorf("无法启动回调服务器: %w", err)
+			return nil, fmt.Errorf("start callback server: %w", err)
 		}
 	}
 
@@ -142,7 +142,7 @@ func StartOAuthFlow(opts OAuthOptions) (*OAuthFlow, error) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
 			json.NewEncoder(w).Encode(map[string]any{"success": true})
-			errCh <- fmt.Errorf("授权被取消: %s", errMsg[0])
+			errCh <- fmt.Errorf("authorization canceled: %s", errMsg[0])
 			return
 		}
 
@@ -151,7 +151,7 @@ func StartOAuthFlow(opts OAuthOptions) (*OAuthFlow, error) {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]any{
 				"success": false,
-				"error":   "缺少必要字段",
+				"error":   "api_key and state are required",
 			})
 			return
 		}
@@ -239,7 +239,7 @@ func (f *OAuthFlow) deliver(cb oauthCallback) error {
 	default:
 	}
 	if cb.State != f.State {
-		return fmt.Errorf("state token 不匹配，可能被篡改")
+		return fmt.Errorf("state token mismatch (possible tampering)")
 	}
 	f.mu.Lock()
 	f.result = &cb
@@ -259,7 +259,7 @@ func (f *OAuthFlow) Wait(timeout time.Duration) (oauthCallback, error) {
 	select {
 	case cb := <-f.resultCh:
 		if cb.State != f.State {
-			err := fmt.Errorf("state token 不匹配，可能被篡改")
+			err := fmt.Errorf("state token mismatch (possible tampering)")
 			f.finish(err)
 			return oauthCallback{}, err
 		}

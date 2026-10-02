@@ -14,7 +14,7 @@
 - 浏览器 OAuth 助手获取 Command Code API Key（CLI 或 WebUI），每次授权添加一个账号
 - 客户端 Bearer Token 鉴权，WebUI 使用独立管理密码
 - 用量计数（全局、按账号、按密钥）与额度快照持久化在 `usage.json`
-- base64 `image_url` 转 Command Code 图片块；为本地 UI 客户端开启 CORS
+- 多模态图片输入：支持 base64 `image_url`、字符串形式 `image_url`、`input_image` 以及 Anthropic `image` 块，并转换为 Command Code 图片块；为本地 UI 客户端开启 CORS
 - `GET /health` 与 `GET /usage` 端点
 
 ## 快速开始
@@ -293,7 +293,14 @@ deepseek-ai/deepseek-v4-flash       ✗ provider 前缀错误
 
 **支持的请求形式**：纯文本消息、多模态 content 数组、`stream: true` 的 SSE 流式响应、`stream: false` 的 JSON 响应。
 
-**图片**：多模态 `image_url` 必须使用 `data:image/...;base64,...` 形式；远程 HTTP(S) 图片地址返回 `400 invalid_request_error`，服务不会主动下载远程图片。
+**图片**：网关接受多种图片形态，并转换为 Command Code 图片块：
+
+- `{"type":"image_url","image_url":{"url":"data:image/...;base64,..."}}` —— 标准 OpenAI
+- `{"type":"image_url","image_url":"data:image/...;base64,..."}` —— 字符串形式
+- `{"type":"input_image","image_url":"data:image/...;base64,..."}`
+- `{"type":"image","source":{"type":"base64","media_type":"...","data":"..."}}` —— Anthropic 风格
+
+图片数据必须是内联 base64（`data:image/...;base64,...`）。远程 HTTP(S) 图片地址及其它 URL scheme 返回 `400 invalid_request_error`，服务不会主动下载远程图片。
 
 上游 `inputTokenDetails.cacheReadTokens` 在响应中对应 `usage.prompt_tokens_details.cached_tokens`。`cacheWriteTokens` 可在 `/usage` 查看，但不出现在 Chat Completions 响应中——OpenAI 的标准 usage 结构没有 cache-write 字段。
 

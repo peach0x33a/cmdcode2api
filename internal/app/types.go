@@ -137,6 +137,106 @@ type ImageURL struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// rawContentPart is the wire shape of one content part as sent by clients. Its
+// accessors normalize the image variants clients actually use.
+type rawContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text"`
+	ImageURL json.RawMessage `json:"image_url"`
+	Source   json.RawMessage `json:"source"`
+}
+
+// UnmarshalJSON accepts every image shape common OpenAI-compatible clients
+// emit and normalizes it to the canonical
+// {"type":"image_url","image_url":{"url":...}} form so the conversion layer
+// only ever sees one representation. It also accepts the Anthropic
+// {"type":"image","source":{...}} block. Unknown types are kept verbatim so
+// contentToCC can reject them with a precise message.
+func (p *ContentPart) UnmarshalJSON(data []byte) error {
+	var raw rawContentPart
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	p.Type = raw.Type
+	p.Text = raw.Text
+	if raw.Type == "text" {
+		return nil
+	}
+
+	switch raw.Type {
+	case "image_url", "input_image":
+		imageURL, detail, err := raw.imageURL()
+		if err != nil {
+			return err
+		}
+		p.Type = "image_url"
+		p.ImageURL = &ImageURL{URL: imageURL, Detail: detail}
+	case "image":
+		// Anthropic-style block. Fall back to a plain image_url if a client
+		// sends {"type":"image","image_url":...} instead of a source object.
+		if imageURL, err := raw.anthropicSource(); err != nil {
+			return err
+		} else if imageURL != "" {
+			p.Type = "image_url"
+			p.ImageURL = &ImageURL{URL: imageURL}
+			return nil
+		}
+		imageURL, detail, err := raw.imageURL()
+		if err != nil {
+			return err
+		}
+		p.Type = "image_url"
+		p.ImageURL = &ImageURL{URL: imageURL, Detail: detail}
+	}
+	return nil
+}
+
+// imageURL accepts both the standard object form {"url":...,"detail":...} and
+// the bare string form "data:...".
+func (r rawContentPart) imageURL() (url, detail string, err error) {
+	if len(r.ImageURL) == 0 || string(r.ImageURL) == "null" {
+		return "", "", nil
+	}
+	var asString string
+	if err := json.Unmarshal(r.ImageURL, &asString); err == nil {
+		return asString, "", nil
+	}
+	var obj ImageURL
+	if err := json.Unmarshal(r.ImageURL, &obj); err != nil {
+		return "", "", fmt.Errorf("image_url must be a string or an object with a url")
+	}
+	return obj.URL, obj.Detail, nil
+}
+
+// anthropicSource converts {"type":"base64","media_type":...,"data":...} (or a
+// url source) into a data URL the rest of the pipeline understands. It returns
+// an empty string when no source is present.
+func (r rawContentPart) anthropicSource() (string, error) {
+	if len(r.Source) == 0 || string(r.Source) == "null" {
+		return "", nil
+	}
+	var src struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+		URL       string `json:"url"`
+	}
+	if err := json.Unmarshal(r.Source, &src); err != nil {
+		return "", fmt.Errorf("image source must be an object")
+	}
+	if src.URL != "" {
+		return src.URL, nil
+	}
+	if src.Data == "" {
+		return "", nil
+	}
+	mediaType := src.MediaType
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	return "data:" + mediaType + ";base64," + src.Data, nil
+}
+
 type Tool struct {
 	Type     string       `json:"type"` // "function"
 	Function ToolFunction `json:"function"`

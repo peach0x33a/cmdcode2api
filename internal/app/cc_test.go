@@ -413,3 +413,27 @@ func TestUpstreamClientIdentityHeaders(t *testing.T) {
 		t.Errorf("ccCLIVersion = %q, want a dotted version", ccCLIVersion)
 	}
 }
+
+func TestContentPartNormalizesImageShapes(t *testing.T) {
+	const dataURL = "data:image/png;base64,QUJD"
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"openai object", `{"type":"image_url","image_url":{"url":"` + dataURL + `","detail":"high"}}`},
+		{"openai string", `{"type":"image_url","image_url":"` + dataURL + `"}`},
+		{"responses input_image", `{"type":"input_image","image_url":"` + dataURL + `"}`},
+		{"anthropic source", `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"QUJD"}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var part ContentPart
+			if err := json.Unmarshal([]byte(c.raw), &part); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if part.Type != "image_url" || part.ImageURL == nil || part.ImageURL.URL != dataURL {
+				t.Fatalf("normalized part = %#v, want type=image_url url=%q", part, dataURL)
+			}
+		})
+	}
+}

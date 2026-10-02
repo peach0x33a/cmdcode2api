@@ -14,7 +14,7 @@
 - Browser OAuth helper for obtaining a Command Code API key (CLI or WebUI); each OAuth run adds an account
 - Local bearer-token auth for clients, separate admin password for the WebUI
 - Usage counters (global, per-account, per-client-key) and cached quota snapshots persisted to `usage.json`
-- Base64 `image_url` conversion to Command Code image blocks; CORS enabled for local UI clients
+- Multimodal image input: base64 `image_url`, string-form `image_url`, `input_image`, and Anthropic `image` blocks, converted to Command Code image blocks; CORS enabled for local UI clients
 - `GET /health` and `GET /usage` endpoints
 
 ## Quick start
@@ -293,7 +293,14 @@ deepseek-ai/deepseek-v4-flash       ✗ wrong provider prefix
 
 **Supported request styles:** plain text messages, multimodal content arrays, `stream: true` server-sent events, and `stream: false` JSON responses.
 
-**Images:** multimodal `image_url` values must be base64 `data:image/...;base64,...` URLs. Remote HTTP(S) image URLs are rejected with `400 invalid_request_error` — the gateway never downloads remote images.
+**Images:** the gateway accepts several image shapes and converts them to Command Code image blocks:
+
+- `{"type":"image_url","image_url":{"url":"data:image/...;base64,..."}}` — standard OpenAI
+- `{"type":"image_url","image_url":"data:image/...;base64,..."}` — string form
+- `{"type":"input_image","image_url":"data:image/...;base64,..."}`
+- `{"type":"image","source":{"type":"base64","media_type":"...","data":"..."}}` — Anthropic style
+
+Image data must be inline base64 (`data:image/...;base64,...`). Remote HTTP(S) image URLs and any other URL scheme are rejected with `400 invalid_request_error` — the gateway never downloads remote images.
 
 Upstream `inputTokenDetails.cacheReadTokens` is exposed in the response as `usage.prompt_tokens_details.cached_tokens`. `cacheWriteTokens` is available in `/usage` but not in the Chat Completions response, because OpenAI's standard usage schema has no cache-write field.
 

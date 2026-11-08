@@ -34,7 +34,7 @@ func TestPlanInfoLongestPrefix(t *testing.T) {
 		{"individual-pro", "Pro", 30, true},
 		{"individual-pro-v1", "Pro", 80, true},
 		{"individual_pro", "Pro", 30, true},
-		{"individual-goat", "GOAT", 70, true},
+		{"individual-goat", "GOAT", 100, true},
 		{"teams-pro", "Teams Pro", 40, true},
 		{"individual-max", "Max", 150, true},
 		{"enterprise-unknown", "", 0, false},
@@ -185,6 +185,40 @@ func TestFetchQuotaSnapshotHappyPath(t *testing.T) {
 		if up.versions[i] != ccCLIVersion {
 			t.Fatalf("request %d x-command-code-version = %q, want %q", i, up.versions[i], ccCLIVersion)
 		}
+	}
+}
+
+func TestFetchQuotaSnapshotAppliesPlanWindowCaps(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/alpha/billing/credits":
+			fmt.Fprint(w, `{"credits":{"monthlyCredits":70,"planId":"individual-goat"},"windowLimits":{"limited":true,"fiveHour":{"used":5,"cap":14},"weekly":{"used":40,"cap":35,"exceeded":true}}}`)
+		case "/alpha/billing/subscriptions":
+			fmt.Fprint(w, `{"data":{"planId":"individual-goat","status":"active"}}`)
+		case "/alpha/usage/summary":
+			fmt.Fprint(w, `{"data":{"totalCost":10,"totalCredits":10}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	snap, err := fetchQuotaSnapshot(context.Background(), srv.Client(), srv.URL, "cc-key")
+	if err != nil {
+		t.Fatalf("fetch failed: %v", err)
+	}
+	if snap.Plan == nil || snap.Plan.MonthlyCredits == nil || *snap.Plan.MonthlyCredits != 100 {
+		t.Fatalf("GOAT plan = %+v", snap.Plan)
+	}
+	if snap.FiveHour == nil || snap.FiveHour.Cap != 20 {
+		t.Fatalf("GOAT five hour window = %+v", snap.FiveHour)
+	}
+	if snap.Weekly == nil || snap.Weekly.Cap != 50 || !snap.Weekly.Exceeded {
+		t.Fatalf("GOAT weekly window = %+v", snap.Weekly)
+	}
+	if snap.MonthlyCredits == nil || *snap.MonthlyCredits != 90 {
+		t.Fatalf("GOAT remaining credits = %v, want 90", snap.MonthlyCredits)
 	}
 }
 

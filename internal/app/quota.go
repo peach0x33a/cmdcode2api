@@ -102,13 +102,19 @@ func (q *QuotaSnapshot) Blocked() bool {
 type planSpec struct {
 	Name           string
 	MonthlyCredits float64
+	// FiveHourCredits and WeeklyCredits override the upstream rolling caps when
+	// non-zero. The upstream endpoint scales its windows from the base
+	// per-model allowance, so for models whose allowance exceeds that base it
+	// reports caps lower than the plan's published limits.
+	FiveHourCredits float64
+	WeeklyCredits   float64
 }
 
 // knownPlans mirrors the community CLI's planId mapping. Unknown plans are
 // reported by ID with no monthly cap, so the UI hides the derived monthly bar.
 var knownPlans = map[string]planSpec{
 	"individual-go":       {Name: "Go", MonthlyCredits: 10},
-	"individual-goat":     {Name: "GOAT", MonthlyCredits: 70},
+	"individual-goat":     {Name: "GOAT", MonthlyCredits: 100, FiveHourCredits: 20, WeeklyCredits: 50},
 	"individual-pro":      {Name: "Pro", MonthlyCredits: 30},
 	"individual-pro-v1":   {Name: "Pro", MonthlyCredits: 80},
 	"individual-provider": {Name: "Provider", MonthlyCredits: 15},
@@ -313,6 +319,43 @@ func buildQuotaPlan(planID string, data map[string]any) *QuotaPlan {
 	return plan
 }
 
+// applyPlanWindows replaces the upstream rolling caps with the plan's published
+// limits. The upstream caps are derived from a base per-model allowance, so
+// they under-report plans or models with a higher allowance.
+func applyPlanWindows(snap *QuotaSnapshot) {
+	if snap == nil || snap.Plan == nil {
+		return
+	}
+	spec, ok := planInfo(snap.Plan.PlanID)
+	if !ok {
+		return
+	}
+	if spec.FiveHourCredits > 0 && snap.FiveHour != nil {
+		snap.FiveHour.Cap = spec.FiveHourCredits
+	}
+	if spec.WeeklyCredits > 0 && snap.Weekly != nil {
+		snap.Weekly.Cap = spec.WeeklyCredits
+	}
+}
+
+// applyPlanRemaining rewrites the upstream monthly balance for plans whose
+// published allowance is higher than the upstream base allowance. The
+// remaining figure becomes the plan cap minus the billing-period spend.
+func applyPlanRemaining(snap *QuotaSnapshot) {
+	if snap == nil || snap.Plan == nil || snap.Plan.MonthlyCredits == nil || snap.Usage == nil {
+		return
+	}
+	spec, ok := planInfo(snap.Plan.PlanID)
+	if !ok || (spec.FiveHourCredits == 0 && spec.WeeklyCredits == 0) {
+		return
+	}
+	remaining := *snap.Plan.MonthlyCredits - snap.Usage.TotalCredits
+	if remaining < 0 {
+		remaining = 0
+	}
+	snap.MonthlyCredits = &remaining
+}
+
 func parseQuotaUsage(raw map[string]any) *QuotaUsage {
 	if raw == nil {
 		return nil
@@ -469,6 +512,7 @@ func fetchQuotaSnapshot(ctx context.Context, client *http.Client, baseURL, apiKe
 			snap.Plan = buildQuotaPlan(planID, data)
 		}
 	}
+	applyPlanWindows(snap)
 
 	// 4. usage/summary → billing-period aggregates.
 	if usageResp, err := quotaGet(ctx, client, base+"/alpha/usage/summary", apiKey); err != nil {
@@ -480,6 +524,7 @@ func fetchQuotaSnapshot(ctx context.Context, client *http.Client, baseURL, apiKe
 		}
 		snap.Usage = parseQuotaUsage(root)
 	}
+	applyPlanRemaining(snap)
 
 	if len(failures) > 0 {
 		snap.Failures = failures

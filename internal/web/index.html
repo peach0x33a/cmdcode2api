@@ -1186,13 +1186,16 @@ function quotaBar(label, w, estimated) {
 }
 
 // The API exposes no monthly window: cap comes from the plan mapping and
-// used = cap − remaining monthly credits. Hidden for unknown plans.
+// used is the billing-period spend, falling back to cap − remaining credits.
+// Hidden for unknown plans.
 function quotaMonthBar(q) {
   const plan = q.plan || {};
   const cap = plan.monthly_credits;
   const remaining = q.monthly_credits;
-  if (cap == null || remaining == null || cap <= 0) return "";
-  const used = Math.max(0, cap - remaining);
+  const spent = q.usage ? Number(q.usage.total_credits) : NaN;
+  if (cap == null || cap <= 0) return "";
+  const used = isFinite(spent) ? spent : (remaining != null ? Math.max(0, cap - remaining) : null);
+  if (used == null) return "";
   return quotaBar(t("quota.monthly"), { used, cap, exceeded: used >= cap, reset_at: plan.current_period_end }, true);
 }
 

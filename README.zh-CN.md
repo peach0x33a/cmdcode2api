@@ -9,7 +9,7 @@
 - OpenAI 兼容的 `POST /v1/chat/completions`（流式与非流式）与 `GET /v1/models`
 - 多 Command Code 账号轮询使用，`401`/`403`/`429`/`5xx` 自动故障转移，含账号级 429 冷却
 - 多客户端密钥，每把密钥独立统计请求与 token 用量
-- Command Code 额度仪表盘：5 小时 / 本周 / 按月估算进度条、余额、套餐与账期，后台每 5 分钟刷新
+- Command Code 额度仪表盘：5 小时 / 本周 / 按月估算进度条、余额、套餐与账期，后台每 5 分钟刷新；每个账号带可折叠的「提升额度」跟踪器，依据官方各模型额度表估算提升模型的剩余美元额度
 - 内嵌单文件 WebUI：用量总览、账号/密钥管理、模型开放编辑器、在线设置、日志查看
 - 浏览器 OAuth 助手获取 Command Code API Key（CLI 或 WebUI），每次授权添加一个账号
 - 客户端 Bearer Token 鉴权，WebUI 使用独立管理密码
@@ -206,9 +206,11 @@ http://localhost:11434/webui
 「账号」页展示每个账号的 Command Code 额度，使用同一个 API Key 读取未公开的 `/alpha/*` 接口（`whoami`、`billing/credits`、`billing/subscriptions`、`usage/summary`）：
 
 - **5 小时**、**本周**进度条直接来自上游 `windowLimits`；已用 ≥50% 显示黄色、≥75% 深黄、≥90% 红色。
-- **月度**为推算值：接口没有月度窗口对象，上限来自社区 CLI 的套餐映射（`individual-pro` → 30、`individual-pro-v1` → 80 等），已用 = 上限 − 剩余月度额度，界面上标注"按套餐估算"；未知套餐仅显示余额。
-- 余额（月度剩余 / 充值 / 免费）、套餐名称与状态、账期结束时间、账期用量统计。
+- **月度**为推算值：接口没有月度窗口对象，上限取实际观察到的额度（剩余月度额度 + 账期已用额度）。Command Code 的积分窗口和月度额度按模型换算，因此这里跟随当前使用的模型，而不是写死的美元上限。账期用量接口不可用时，退回社区 CLI 的套餐映射（`individual-pro` → 30、`individual-pro-v1` → 80 等）。
+- 余额（月度剩余 / 充值 / 免费）、套餐名称与状态、账期结束时间、账期用量统计。进度条与余额一律按接口返回的「积分」显示，不会写成美元。
+- Command Code 按套餐发放积分池，并按模型换算。GOAT 使用 DeepSeek V4.1 Flash 时积分池为 70：5 小时窗口 14、本周窗口 35、月度额度 70，正好是官方宣传的 $20 / $50 / $100 的 0.7 倍。也就是说 35 积分/周约等于 $50 的 DeepSeek V4.1 Flash 原价用量；进度条到 100% 就是套餐真实窗口上限，不是更小的美元上限。其它套餐与模型各自上报自己的上限，这里不做硬编码。
 - 账号页提供单账号「刷新额度」与「刷新全部额度」按钮（后者立即返回，后台刷新）。
+- 每张卡片带可折叠的**提升额度**跟踪器。Command Code 按模型公布月度额度（官方「提升用量」活动），但都从同一个积分池扣费，因此不同模型的「每积分对应多少美元」并不相同。表格列出每个提升模型的官方额度、相对积分池的倍率，以及按账号剩余积分换算的剩余美元额度；摘要行还给出 5 小时 / 本周窗口的估算。额度表抓取自 Command Code 定价文档并内嵌进二进制（`internal/app/allowances.json`，当前 98 个模型），不联网、无需配置。这些美元数字都是**估算**（标 `est`），积分数字仍然权威；Provider、Ultra、Max 等没有公开逐模型额度表的套餐不显示该跟踪器。
 
 额度会在启动后不久自动刷新一次，之后每 5 分钟刷新一次，快照缓存在 `usage.json` 中，重启后仍然保留。查询失败时保留上一次成功的数据，只更新错误与查询时间。接口路径取自
 [commandcode-usage](https://github.com/MAXeaglet/commandcode-usage)，属未公开接口，解析层兼容字段漂移（camelCase / snake_case、秒 / 毫秒 / ISO 时间、顶层或 `data` 嵌套）。
@@ -241,7 +243,7 @@ GET    /admin/api/oauth/status
 POST   /admin/api/oauth/cancel
 ```
 
-`GET /admin/api/accounts` 每个账号带嵌套 `quota` 对象；`GET /admin/api/overview` 带 `quotas` 汇总（`synced`、`exceeded`、`low_balance`、`last_checked_at`）。
+`GET /admin/api/accounts` 每个账号带嵌套 `quota` 对象和 `boosted` 对象（`plan`、`pool_credits`、`standard_usd`、`standard_models`、`models[]`：`allowance_usd` / `factor` / `remaining_usd` / `five_hour_usd` / `weekly_usd`，以及额度表来源与抓取日期）；`GET /admin/api/overview` 带 `quotas` 汇总（`synced`、`exceeded`、`low_balance`、`last_checked_at`）。
 
 ## HTTP API
 

@@ -65,7 +65,8 @@ func subtleConstantTimeEqual(a, b string) bool {
 type adminAccount struct {
 	AccountView
 	UsageSnapshotEntry
-	Quota *QuotaSnapshot `json:"quota,omitempty"`
+	Quota   *QuotaSnapshot `json:"quota,omitempty"`
+	Boosted *BoostedView   `json:"boosted,omitempty"`
 }
 
 // localizeQuotaSnapshot returns a shallow copy of snap with the user-facing
@@ -93,10 +94,12 @@ func adminAccountViews(pool *AccountPool, usage *UsageTracker, r *http.Request) 
 	views := pool.Views()
 	out := make([]adminAccount, 0, len(views))
 	for _, v := range views {
+		snap := localizeQuotaSnapshot(i18n.FromRequest(r), usage.Quota(v.ID))
 		out = append(out, adminAccount{
 			AccountView:        v,
 			UsageSnapshotEntry: usage.AccountUsage(v.ID),
-			Quota:              localizeQuotaSnapshot(i18n.FromRequest(r), usage.Quota(v.ID)),
+			Quota:              snap,
+			Boosted:            BoostedFor(snap),
 		})
 	}
 	return out
@@ -227,7 +230,8 @@ func handleAdminAccountAdd(pool *AccountPool, cfg *Config, usage *UsageTracker, 
 		// stays fast; the UI picks the snapshot up on its next poll.
 		quotas.RefreshAsync(acct)
 		log.Printf("account %q added via webui", acct.Name)
-		writeAdminJSON(w, 201, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(acct.ID), Quota: usage.Quota(acct.ID)})
+		snap := localizeQuotaSnapshot(i18n.FromRequest(r), usage.Quota(acct.ID))
+		writeAdminJSON(w, 201, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(acct.ID), Quota: snap, Boosted: BoostedFor(snap)})
 	}
 }
 
@@ -275,7 +279,8 @@ func handleAdminAccountPatch(pool *AccountPool, cfg *Config, usage *UsageTracker
 		if keyChanged && quotas != nil {
 			quotas.RefreshAsync(acct)
 		}
-		writeAdminJSON(w, 200, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(id), Quota: usage.Quota(id)})
+		snap := localizeQuotaSnapshot(i18n.FromRequest(r), usage.Quota(id))
+		writeAdminJSON(w, 200, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(id), Quota: snap, Boosted: BoostedFor(snap)})
 	}
 }
 
@@ -309,7 +314,8 @@ func handleAdminAccountQuotaRefresh(pool *AccountPool, usage *UsageTracker, quot
 			return
 		}
 		quotas.RefreshAccount(r.Context(), acct)
-		writeAdminJSON(w, 200, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(acct.ID), Quota: localizeQuotaSnapshot(i18n.FromRequest(r), usage.Quota(acct.ID))})
+		snap := localizeQuotaSnapshot(i18n.FromRequest(r), usage.Quota(acct.ID))
+		writeAdminJSON(w, 200, adminAccount{AccountView: acct.View(), UsageSnapshotEntry: usage.AccountUsage(acct.ID), Quota: snap, Boosted: BoostedFor(snap)})
 	}
 }
 

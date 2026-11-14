@@ -9,7 +9,7 @@
 - OpenAI-compatible `POST /v1/chat/completions` (streaming and non-streaming) and `GET /v1/models`
 - Multiple Command Code accounts with round-robin rotation and automatic failover (`401`/`403`/`429`/5xx), including per-account 429 cooldown
 - Multiple local client API keys with per-key request and token accounting
-- Command Code quota dashboard: 5-hour / weekly / estimated monthly progress bars, credit balances, plan and billing period, refreshed in the background every 5 minutes
+- Command Code quota dashboard: 5-hour / weekly / estimated monthly progress bars, credit balances, plan and billing period, refreshed in the background every 5 minutes; a collapsible per-account tracker estimates each boosted model's remaining USD allowance from the official per-model allowance table
 - Embedded single-file WebUI: usage dashboard, account/key management, model exposure editor, live settings, and log tail
 - Browser OAuth helper for obtaining a Command Code API key (CLI or WebUI); each OAuth run adds an account
 - Local bearer-token auth for clients, separate admin password for the WebUI
@@ -206,9 +206,11 @@ Security notes: admin authentication is rate limited per source IP (5 failed att
 The Accounts tab shows each account's Command Code quota, read with the same API key from the undocumented `/alpha/*` endpoints (`whoami`, `billing/credits`, `billing/subscriptions`, `usage/summary`):
 
 - **5-hour** and **weekly** bars come straight from the upstream `windowLimits` objects. Bars grade amber at ≥50% used, heavier amber at ≥75%, and red at ≥90%.
-- **Monthly** is *derived*: the API exposes no monthly window, so the cap comes from the community CLI's plan mapping (`individual-pro` → 30, `individual-pro-v1` → 80, …), with `used = cap − remaining credits`. It is labelled as estimated; unknown plans fall back to balance-only display.
-- Credit balances (monthly remaining / purchased / free), plan name and status, billing-period end, and billing-period totals.
+- **Monthly** is *derived*: the API exposes no monthly window, so the cap is the observed allowance, `remaining credits + billing-period spend`. Command Code scales the credit windows and the monthly allowance per model, so this follows the model actually in use instead of a hardcoded dollar figure. When the usage aggregate is unavailable the UI falls back to the community CLI's plan mapping (`individual-pro` → 30, `individual-pro-v1` → 80, …).
+- Credit balances (monthly remaining / purchased / free), plan name and status, billing-period end, and billing-period totals. Every bar and balance is labelled in **plan credits**, the unit the API reports, never in USD.
+- Command Code grants a credit pool per plan and scales it per model. On GOAT with DeepSeek V4.1 Flash the pool is 70 credits, split into a 14-credit 5-hour window, a 35-credit weekly window, and the 70-credit monthly allowance — 0.7× the advertised $20 / $50 / $100, so 35 credits/week is roughly $50 of list-price DeepSeek V4.1 Flash usage. A bar at 100% therefore means the plan's real window limit, not a smaller dollar cap. Other plans and models report their own caps; nothing is hardcoded here.
 - A per-account **refresh quota** button and a **refresh all** button (which returns immediately and refreshes in the background).
+- Each card has a collapsible **Boosted allowance** tracker. Command Code publishes a monthly allowance per model (the "boosted usage" deals), all charged from the same credit pool, so one model's dollars per credit differ from another's. The table shows, per boosted model, its advertised allowance, the multiplier against the plan's credit pool, and the remaining USD allowance derived from the account's remaining credits; the summary line also estimates the 5-hour and weekly windows. The catalog is captured from the Command Code pricing docs (`internal/app/allowances.json`, currently 98 models) and embedded in the binary - no network call, no configuration. These USD figures are **estimates** labelled `est`; the credit numbers remain authoritative, and plans without a published per-model table (Provider, Ultra, Max) show no tracker.
 
 Quota refresh runs once shortly after startup and every 5 minutes afterwards; the latest snapshot is cached in `usage.json` so it survives restarts. A failed query keeps the last successful snapshot and only records the error and check time. These endpoints come from [commandcode-usage](https://github.com/MAXeaglet/commandcode-usage); they are unofficial, so the parser tolerates field drift (camelCase or snake_case, epoch seconds / milliseconds / ISO timestamps, flat or `data`-wrapped responses).
 
@@ -241,7 +243,7 @@ GET    /admin/api/oauth/status
 POST   /admin/api/oauth/cancel
 ```
 
-`GET /admin/api/accounts` includes a nested `quota` object per account; `GET /admin/api/overview` includes a `quotas` summary (`synced`, `exceeded`, `low_balance`, `last_checked_at`).
+`GET /admin/api/accounts` includes a nested `quota` object per account and a `boosted` object (`plan`, `pool_credits`, `standard_usd`, `standard_models`, `models[]` with `allowance_usd` / `factor` / `remaining_usd` / `five_hour_usd` / `weekly_usd`, plus the catalog source and capture date); `GET /admin/api/overview` includes a `quotas` summary (`synced`, `exceeded`, `low_balance`, `last_checked_at`).
 
 ## HTTP API
 

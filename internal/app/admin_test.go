@@ -140,6 +140,28 @@ func TestAdminAccountLifecycle(t *testing.T) {
 		t.Fatal("account still enabled in pool")
 	}
 
+	// Credit-pause threshold via PATCH
+	_, payload = adminRequest(t, srv, "PATCH", "/admin/api/accounts/"+id, "admin-pass-123",
+		map[string]any{"pause_below_credits": 7.5})
+	if payload["pause_below_credits"] != 7.5 {
+		t.Fatalf("patched pause threshold = %v, want 7.5", payload["pause_below_credits"])
+	}
+	if got := pool.Get(id).PauseThreshold(); got != 7.5 {
+		t.Fatalf("pool threshold = %v, want 7.5", got)
+	}
+	saved, err = loadConfig(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.CommandCode.Accounts) != 1 || saved.CommandCode.Accounts[0].PauseBelowCredits != 7.5 {
+		t.Fatalf("persisted threshold = %+v", saved.CommandCode.Accounts)
+	}
+	resp, _ = adminRequest(t, srv, "PATCH", "/admin/api/accounts/"+id, "admin-pass-123",
+		map[string]any{"pause_below_credits": -1})
+	if resp.StatusCode != 400 {
+		t.Fatalf("negative threshold status = %d, want 400", resp.StatusCode)
+	}
+
 	// Delete
 	resp, _ = adminRequest(t, srv, "DELETE", "/admin/api/accounts/"+id, "admin-pass-123", nil)
 	if resp.StatusCode != 200 {

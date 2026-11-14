@@ -173,6 +173,8 @@ func runServer(cc *CCClient, cfg *Config, usage *UsageTracker, ring *logRing) er
 	}
 	keys := NewClientKeyPool(cfg.APIKeys)
 	quotas := NewQuotaService(cc, pool, usage)
+	// Honor persisted credit floors before the first request can be routed.
+	quotas.ApplyCached()
 
 	mux := http.NewServeMux()
 

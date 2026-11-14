@@ -13,6 +13,9 @@ type AccountConfig struct {
 	Name    string `yaml:"name"`
 	APIKey  string `yaml:"api_key"`
 	Enabled *bool  `yaml:"enabled,omitempty"` // nil means enabled
+	// PauseBelowCredits parks this account while its remaining monthly
+	// balance is at or below this USD amount. Zero disables the guard.
+	PauseBelowCredits float64 `yaml:"pause_below_credits,omitempty"`
 }
 
 func (a AccountConfig) IsEnabled() bool {

@@ -136,6 +136,7 @@ commandcode:
     - name: main
       api_key: your-command-code-api-key
       enabled: true
+      pause_below_credits: 10
     - name: backup
       api_key: another-command-code-api-key
 host: localhost
@@ -165,6 +166,7 @@ New configs exclude `gpt-`, `claude-`, and `gemini-` by default. These prefixes 
 Every chat request is sent with the next enabled account in round-robin order. When an account fails with `401`, `403`, `429`, or a 5xx, the request is retried with the next account automatically:
 
 - A `429` puts the account into cooldown for the upstream `Retry-After` duration (60 seconds by default); cooldown accounts are skipped until they recover. If every enabled account is cooling down, the client receives `429 rate_limit_error` with the earliest recovery time.
+- `pause_below_credits` parks an account while its remaining monthly credits are at or below that value (`0` disables it). The value is counted in plan credits, not USD — the same unit the quota bars show. Parked accounts are skipped and resume automatically once a quota refresh shows the balance recovered. If every enabled account is parked, the client receives `503 quota_paused`.
 - `400`/`422` (bad request) and client-canceled contexts are not retried.
 - Failover happens before any bytes are sent to the client; once a stream has started it is never replayed on another account.
 - Per-account request/token counters persist in `usage.json`; error state, last error, and cooldown windows are runtime-only and visible in the WebUI.
@@ -220,7 +222,7 @@ The UI talks to a JSON API under `/admin/api/*`, authenticated with `Authorizati
 GET    /admin/api/overview
 GET    /admin/api/accounts
 POST   /admin/api/accounts             {"name": "...", "api_key": "..."}
-PATCH  /admin/api/accounts/{id}        {"enabled": true}, {"name": "..."} or {"api_key": "..."}
+PATCH  /admin/api/accounts/{id}        {"enabled": true}, {"name": "..."}, {"api_key": "..."} or {"pause_below_credits": 10}
 DELETE /admin/api/accounts/{id}
 POST   /admin/api/accounts/{id}/test
 POST   /admin/api/accounts/{id}/quota/refresh

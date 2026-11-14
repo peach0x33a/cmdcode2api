@@ -239,6 +239,19 @@ func (c *CCClient) Send(ctx context.Context, req *ChatRequest) (*http.Response, 
 		return nil, lastAcct, lastErr
 	}
 
+	if paused := pool.PausedCount(); paused > 0 {
+		message := fmt.Sprintf("%d Command Code account(s) paused below the remaining-credit threshold", paused)
+		if wait := pool.EarliestRateLimitWait(time.Now()).Round(time.Second); wait > 0 {
+			message += fmt.Sprintf("; next rate-limited account available in %s", wait)
+		}
+		return nil, nil, &upstreamAPIError{
+			Status:  http.StatusServiceUnavailable,
+			Type:    "server_error",
+			Code:    "quota_paused",
+			Message: message,
+		}
+	}
+
 	wait := pool.EarliestRateLimitWait(time.Now()).Round(time.Second)
 	retryAfter := ""
 	message := "all Command Code accounts are rate limited"

@@ -46,6 +46,59 @@ func TestAccountPoolRoundRobin(t *testing.T) {
 	}
 }
 
+func TestAccountPauseBelowCredits(t *testing.T) {
+	pool := NewAccountPool([]AccountConfig{{Name: "main", APIKey: "key-a", PauseBelowCredits: 5}})
+	acct := pool.Get(accountID("key-a"))
+	if acct == nil {
+		t.Fatal("account missing")
+	}
+
+	// At the floor the account parks: Acquire must skip it.
+	acct.ApplyQuotaThreshold(floatPtr(5))
+	if !acct.Paused() {
+		t.Fatal("account not paused at the threshold")
+	}
+	if got := pool.Acquire(); got != nil {
+		t.Fatalf("Acquire() = %v, want nil for a paused pool", got)
+	}
+	if n := pool.PausedCount(); n != 1 {
+		t.Fatalf("PausedCount() = %d, want 1", n)
+	}
+	view := acct.View()
+	if view.Status != "paused" || !view.Paused || view.PauseBelowCredits != 5 {
+		t.Fatalf("view = %+v, want paused at 5", view)
+	}
+
+	// Recovery above the floor resumes it.
+	acct.ApplyQuotaThreshold(floatPtr(5.01))
+	if acct.Paused() {
+		t.Fatal("account still paused after recovery")
+	}
+	if got := pool.Acquire(); got != acct {
+		t.Fatalf("Acquire() = %v, want the recovered account", got)
+	}
+
+	// Lowering the floor re-evaluates immediately against the last balance.
+	acct.ApplyQuotaThreshold(floatPtr(3))
+	if !acct.Paused() {
+		t.Fatal("account not paused at 3 with a floor of 5")
+	}
+	pool.SetPauseBelowCredits(acct.ID, 2)
+	if acct.Paused() {
+		t.Fatal("lowering the floor did not resume the account")
+	}
+	if got := pool.Config(); len(got) != 1 || got[0].PauseBelowCredits != 2 {
+		t.Fatalf("persisted config = %+v", got)
+	}
+
+	// Zero clears the guard; an unknown balance never pauses on its own.
+	pool.SetPauseBelowCredits(acct.ID, 0)
+	acct.ApplyQuotaThreshold(nil)
+	if acct.Paused() {
+		t.Fatal("account paused with the guard disabled")
+	}
+}
+
 func TestAccountPoolSkipsDisabledAndRateLimited(t *testing.T) {
 	pool := poolWithKeys("key-a", "key-b", "key-c")
 	pool.SetEnabled(accountID("key-a"), false)
@@ -76,7 +129,7 @@ func TestAccountPoolAllLimitedReturnsNil(t *testing.T) {
 }
 
 func TestAccountRecordFailureTracksAuthFailures(t *testing.T) {
-	a := newAccount("x", "key-x", true)
+	a := newAccount("x", "key-x", true, 0)
 	a.RecordFailure(&upstreamAPIError{Status: http.StatusUnauthorized, Message: "bad key"})
 	a.RecordFailure(&upstreamAPIError{Status: http.StatusForbidden, Message: "no"})
 	view := a.View()
@@ -296,7 +349,7 @@ func TestShouldFailoverMatrix(t *testing.T) {
 
 func TestUsageForAccountRecordsSeparately(t *testing.T) {
 	usage := &UsageTracker{}
-	acct := newAccount("main", "key-a", true)
+	acct := newAccount("main", "key-a", true, 0)
 
 	usage.ForAccount(acct).Record(10, 20, 0, 0)
 	usage.ForAccount(acct).Record(1, 2, 3, 0)
@@ -324,7 +377,7 @@ func TestUsageSnapshotPersistsAccounts(t *testing.T) {
 	t.Cleanup(func() { usageFile = oldFile })
 
 	usage := &UsageTracker{}
-	usage.ForAccount(newAccount("main", "key-a", true)).Record(5, 6, 0, 0)
+	usage.ForAccount(newAccount("main", "key-a", true, 0)).Record(5, 6, 0, 0)
 	if err := usage.save(); err != nil {
 		t.Fatal(err)
 	}

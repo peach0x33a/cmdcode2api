@@ -60,6 +60,4 @@ jobs:
             --base master \
             --head "$branch" \
             --title "chore: vendor latest catalog" \
-            --body "Automated snapshot update from [commandcode-catalog](https://github.com/peach0x33a/commandcode-catalog).
-
-The workflow ran \`go vet\`, \`go test\`, and a build before opening this PR. It is opened with the repository's \`GITHUB_TOKEN\`, so the PR checks do not run on their own; the master build runs after merge."
+            --body "Automated snapshot update from commandcode-catalog. The workflow ran \`go vet\`, \`go test\`, and a build before opening this PR; the PR checks do not run on their own because it was opened with \`GITHUB_TOKEN\`, and the master build runs after merge."

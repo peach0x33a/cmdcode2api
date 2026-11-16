@@ -1,4 +1,4 @@
-{"source":"https://commandcode.ai/docs/resources/pricing-limits","captured":"2026-11-16","models":[
+{"schema":1,"source":"https://commandcode.ai/docs/resources/pricing-limits","captured":"2026-11-16","models":[
 {"id":"claude-fable-5","name":"Claude Fable 5","category":"premium","go":6,"goat":20,"pro":20},
 {"id":"claude-fable-5-1","name":"Claude Fable 5.1","category":"premium","go":6,"goat":20,"pro":20},
 {"id":"claude-fable-5-2","name":"Claude Fable 5.2","category":"premium","go":6,"goat":20,"pro":20},
@@ -95,6 +95,7 @@
 {"id":"step-3.7-flash","name":"Step 3.7 Flash","category":"opensource","go":6,"goat":20,"pro":30},
 {"id":"step-5-preview","name":"Step 5 Preview","category":"opensource","go":6,"goat":20,"pro":30},
 {"id":"tencent/hy3-paid","name":"Tencent Hy3","category":"opensource","go":10,"goat":70,"pro":80},
+{"id":"tencent/hy4-flash","name":"Tencent Hy4 Flash","category":"opensource","go":6,"goat":15,"pro":25},
 {"id":"tencent/hy4-preview","name":"Tencent Hy4 Preview","category":"opensource","go":6,"goat":20,"pro":30},
 {"id":"typesafe/jev","name":"Jev","category":"opensource","go":6,"goat":20,"pro":30},
 {"id":"typesafe/jev-1.14.0","name":"Jev 1.14.0","category":"opensource","go":6,"goat":20,"pro":30}

@@ -32,10 +32,19 @@ type Account struct {
 	lastUsedAt       time.Time
 	rateLimitedUntil time.Time
 	authFailures     int
+	pauseBelow       float64
+	paused           bool
+	lastRemaining    *float64
 }
 
-func newAccount(name, apiKey string, enabled bool) *Account {
-	return &Account{ID: accountID(apiKey), Name: name, APIKey: apiKey, Enabled: enabled}
+func newAccount(name, apiKey string, enabled bool, pauseBelow float64) *Account {
+	return &Account{
+		ID:         accountID(apiKey),
+		Name:       name,
+		APIKey:     apiKey,
+		Enabled:    enabled,
+		pauseBelow: pauseBelow,
+	}
 }
 
 // accountID derives a stable identifier from the key so stats survive renames
@@ -56,6 +65,55 @@ func (a *Account) RateLimited(now time.Time) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return now.Before(a.rateLimitedUntil)
+}
+
+// Paused reports whether the credit threshold currently parks this account.
+// A paused account is skipped by the pool but keeps its configuration and
+// history; it resumes automatically once the balance recovers.
+func (a *Account) Paused() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.paused
+}
+
+// PauseThreshold returns the configured remaining-credit floor, 0 when unset.
+func (a *Account) PauseThreshold() float64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.pauseBelow
+}
+
+// SetPauseThreshold changes the floor and re-evaluates the pause state against
+// the last observed balance, so lowering it takes effect immediately.
+func (a *Account) SetPauseThreshold(v float64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.pauseBelow = v
+	a.applyPauseLocked()
+}
+
+// ApplyQuotaThreshold re-evaluates the pause state from the latest remaining
+// monthly balance. A nil balance means the value is unknown (no quota data
+// yet) and leaves the current state untouched.
+func (a *Account) ApplyQuotaThreshold(remaining *float64) {
+	if remaining == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	value := *remaining
+	a.lastRemaining = &value
+	a.applyPauseLocked()
+}
+
+// applyPauseLocked parks the account when the balance is at or below the
+// configured floor. The caller holds a.mu.
+func (a *Account) applyPauseLocked() {
+	if a.pauseBelow <= 0 || a.lastRemaining == nil {
+		a.paused = false
+		return
+	}
+	a.paused = *a.lastRemaining <= a.pauseBelow
 }
 
 func (a *Account) RecordSuccess() {
@@ -99,18 +157,20 @@ const authErrorThreshold = 3
 // AccountView is the JSON projection of an account for the admin API. It never
 // contains the raw key.
 type AccountView struct {
-	ID               string     `json:"id"`
-	Name             string     `json:"name"`
-	KeyMasked        string     `json:"key_masked"`
-	Enabled          bool       `json:"enabled"`
-	RateLimited      bool       `json:"rate_limited"`
-	Status           string     `json:"status"`
-	Errors           int64      `json:"errors"`
-	AuthFailures     int        `json:"auth_failures"`
-	LastError        string     `json:"last_error,omitempty"`
-	LastErrorAt      *time.Time `json:"last_error_at,omitempty"`
-	LastUsedAt       *time.Time `json:"last_used_at,omitempty"`
-	RateLimitedUntil *time.Time `json:"rate_limited_until,omitempty"`
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	KeyMasked         string     `json:"key_masked"`
+	Enabled           bool       `json:"enabled"`
+	RateLimited       bool       `json:"rate_limited"`
+	Paused            bool       `json:"paused"`
+	PauseBelowCredits float64    `json:"pause_below_credits"`
+	Status            string     `json:"status"`
+	Errors            int64      `json:"errors"`
+	AuthFailures      int        `json:"auth_failures"`
+	LastError         string     `json:"last_error,omitempty"`
+	LastErrorAt       *time.Time `json:"last_error_at,omitempty"`
+	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
+	RateLimitedUntil  *time.Time `json:"rate_limited_until,omitempty"`
 }
 
 func (a *Account) View() AccountView {
@@ -119,12 +179,14 @@ func (a *Account) View() AccountView {
 	defer a.mu.Unlock()
 
 	view := AccountView{
-		ID:           a.ID,
-		Name:         a.Name,
-		KeyMasked:    a.MaskedKey(),
-		Enabled:      a.Enabled,
-		Errors:       a.Errors.Load(),
-		AuthFailures: a.authFailures,
+		ID:                a.ID,
+		Name:              a.Name,
+		KeyMasked:         a.MaskedKey(),
+		Enabled:           a.Enabled,
+		Paused:            a.paused,
+		PauseBelowCredits: a.pauseBelow,
+		Errors:            a.Errors.Load(),
+		AuthFailures:      a.authFailures,
 	}
 	if a.lastError != "" {
 		view.LastError = a.lastError
@@ -147,6 +209,8 @@ func (a *Account) View() AccountView {
 		view.Status = "rate_limited"
 	case a.authFailures >= authErrorThreshold:
 		view.Status = "auth_error"
+	case a.paused:
+		view.Status = "paused"
 	default:
 		view.Status = "ok"
 	}
@@ -166,14 +230,15 @@ func NewAccountPool(list []AccountConfig) *AccountPool {
 		if strings.TrimSpace(ac.APIKey) == "" {
 			continue
 		}
-		pool.accounts = append(pool.accounts, newAccount(ac.Name, ac.APIKey, ac.IsEnabled()))
+		pool.accounts = append(pool.accounts, newAccount(ac.Name, ac.APIKey, ac.IsEnabled(), ac.PauseBelowCredits))
 	}
 	return pool
 }
 
-// Acquire picks the next eligible account in round-robin order. Disabled and
-// rate-limited accounts are skipped; nil means every enabled account is
-// currently rate limited (or the pool is empty).
+// Acquire picks the next eligible account in round-robin order. Disabled,
+// rate-limited and credit-paused accounts are skipped; nil means every enabled
+// account is currently cooling down or parked below its threshold (or the pool
+// is empty).
 func (p *AccountPool) Acquire() *Account {
 	now := time.Now()
 	p.mu.RLock()
@@ -186,7 +251,7 @@ func (p *AccountPool) Acquire() *Account {
 	start := int((p.cursor.Add(1) - 1) % uint64(n))
 	for i := 0; i < n; i++ {
 		a := p.accounts[(start+i)%n]
-		if !a.Enabled || a.RateLimited(now) {
+		if !a.Enabled || a.RateLimited(now) || a.Paused() {
 			continue
 		}
 		return a
@@ -259,7 +324,7 @@ func (p *AccountPool) Add(name, apiKey string, enabled bool) (*Account, error) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	account := newAccount(name, apiKey, enabled)
+	account := newAccount(name, apiKey, enabled, 0)
 	p.accounts = append(p.accounts, account)
 	return account, nil
 }
@@ -283,6 +348,31 @@ func (p *AccountPool) SetEnabled(id string, enabled bool) bool {
 	}
 	a.Enabled = enabled
 	return true
+}
+
+// SetPauseBelowCredits updates one account's remaining-credit floor. Zero
+// clears the guard and resumes the account immediately.
+func (p *AccountPool) SetPauseBelowCredits(id string, v float64) bool {
+	a := p.Get(id)
+	if a == nil {
+		return false
+	}
+	a.SetPauseThreshold(v)
+	return true
+}
+
+// PausedCount reports how many enabled accounts are parked below their
+// credit threshold.
+func (p *AccountPool) PausedCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	n := 0
+	for _, a := range p.accounts {
+		if a.Enabled && a.Paused() {
+			n++
+		}
+	}
+	return n
 }
 
 func (p *AccountPool) Rename(id, name string) bool {
@@ -387,9 +477,10 @@ func (p *AccountPool) Config() []AccountConfig {
 	for _, a := range p.accounts {
 		enabled := a.Enabled
 		list = append(list, AccountConfig{
-			Name:    a.Name,
-			APIKey:  a.APIKey,
-			Enabled: &enabled,
+			Name:              a.Name,
+			APIKey:            a.APIKey,
+			Enabled:           &enabled,
+			PauseBelowCredits: a.PauseThreshold(),
 		})
 	}
 	return list

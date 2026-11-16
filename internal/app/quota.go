@@ -591,6 +591,7 @@ func (s *QuotaService) RefreshAccount(ctx context.Context, acct *Account) *Quota
 	snap.LastChecked = &now
 	snap.LastError = ""
 	s.usage.SetQuota(acct.ID, snap)
+	acct.ApplyQuotaThreshold(snap.MonthlyCredits)
 	s.persist()
 	return snap
 }
@@ -607,6 +608,20 @@ func cloneForQuotaError(prev *QuotaSnapshot, message string, at time.Time) *Quot
 	snap.LastChecked = &at
 	snap.Failures = nil
 	return &snap
+}
+
+// ApplyCached seeds the pause state from persisted snapshots. Without it a
+// restart would route to accounts that were already parked until the first
+// refresh completes.
+func (s *QuotaService) ApplyCached() {
+	if s == nil {
+		return
+	}
+	for _, acct := range s.pool.List() {
+		if snap := s.usage.Quota(acct.ID); snap != nil {
+			acct.ApplyQuotaThreshold(snap.MonthlyCredits)
+		}
+	}
 }
 
 // RefreshAsync refreshes one account without blocking the caller.

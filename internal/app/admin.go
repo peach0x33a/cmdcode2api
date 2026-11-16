@@ -235,13 +235,24 @@ func handleAdminAccountPatch(pool *AccountPool, cfg *Config, usage *UsageTracker
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		var body struct {
-			Enabled *bool   `json:"enabled"`
-			Name    *string `json:"name"`
-			APIKey  *string `json:"api_key"`
+			Enabled           *bool    `json:"enabled"`
+			Name              *string  `json:"name"`
+			APIKey            *string  `json:"api_key"`
+			PauseBelowCredits *float64 `json:"pause_below_credits"`
 		}
 		if err := decodeJSONBody(w, r, &body); err != nil {
 			writeAdminError(w, r, 400, err.Error())
 			return
+		}
+		if body.PauseBelowCredits != nil {
+			if *body.PauseBelowCredits < 0 {
+				writeAdminError(w, r, 400, "pause_below_credits cannot be negative")
+				return
+			}
+			if !pool.SetPauseBelowCredits(id, *body.PauseBelowCredits) {
+				writeAdminError(w, r, 404, "account not found")
+				return
+			}
 		}
 		if body.Enabled != nil && !pool.SetEnabled(id, *body.Enabled) {
 			writeAdminError(w, r, 404, "account not found")

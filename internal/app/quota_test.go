@@ -844,3 +844,52 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+func TestQuotaServiceApplyCachedRestoresPause(t *testing.T) {
+	pool := NewAccountPool([]AccountConfig{{Name: "main", APIKey: "cc-key", PauseBelowCredits: 5}})
+	acct := pool.Get(accountID("cc-key"))
+	usage := &UsageTracker{}
+	remaining := 4.0
+	usage.SetQuota(acct.ID, &QuotaSnapshot{MonthlyCredits: &remaining})
+	svc := NewQuotaService(NewCCClientWithPool(pool, "http://127.0.0.1:0"), pool, usage)
+	if acct.Paused() {
+		t.Fatal("account paused before the cached snapshot is applied")
+	}
+	svc.ApplyCached()
+	if !acct.Paused() {
+		t.Fatal("cached snapshot did not restore the pause after restart")
+	}
+	if got := pool.Acquire(); got != nil {
+		t.Fatalf("Acquire() = %v, want nil from the restored pause", got)
+	}
+}
+
+func TestQuotaRefreshPausesBelowThreshold(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/alpha/billing/credits":
+			fmt.Fprint(w, `{"credits":{"monthlyCredits":4,"planId":"individual-go"},"windowLimits":{"fiveHour":{"used":1,"cap":10},"weekly":{"used":2,"cap":20}}}`)
+		case "/alpha/billing/subscriptions":
+			fmt.Fprint(w, `{"data":{"planId":"individual-go","status":"active"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	pool := NewAccountPool([]AccountConfig{{Name: "main", APIKey: "cc-key", PauseBelowCredits: 5}})
+	acct := pool.Get(accountID("cc-key"))
+	svc := NewQuotaService(NewCCClientWithPool(pool, srv.URL), pool, &UsageTracker{})
+
+	snap := svc.RefreshAccount(context.Background(), acct)
+	if snap == nil || snap.MonthlyCredits == nil || *snap.MonthlyCredits != 4 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if !acct.Paused() {
+		t.Fatal("refresh with 4 credits did not pause an account floored at 5")
+	}
+	if got := pool.Acquire(); got != nil {
+		t.Fatalf("Acquire() = %v, want nil while paused", got)
+	}
+}

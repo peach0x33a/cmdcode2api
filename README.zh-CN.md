@@ -136,6 +136,7 @@ commandcode:
     - name: main
       api_key: your-command-code-api-key
       enabled: true
+      pause_below_credits: 10
     - name: backup
       api_key: another-command-code-api-key
 host: localhost
@@ -165,6 +166,7 @@ exclude_models:
 每次 chat 请求按轮询方式使用下一个启用的账号。账号返回 `401`、`403`、`429` 或 5xx 时自动换下一个账号重试：
 
 - `429`：按上游 `Retry-After` 冷却该账号（缺省 60 秒），冷却期内跳过；全部账号都在冷却时向客户端返回 `429 rate_limit_error` 和最早恢复时间。
+- `pause_below_credits`：账号剩余月度积分不高于该值时暂停使用（`0` 表示关闭）。该数值按套餐积分计算，不是美元，与额度进度条同一单位。暂停的账号会被跳过，积分刷新后自动恢复。所有启用账号都暂停时，客户端收到 `503 quota_paused`。
 - `400` / `422`（请求本身有问题）与客户端主动取消不重试。
 - 故障转移只发生在向客户端写出任何字节之前；流式响应一旦开始不会在另一个账号上重放。
 - 每个账号的请求 / token 计数持久化在 `usage.json`；错误信息、冷却窗口等运行时状态可在 WebUI 中查看。
@@ -221,7 +223,7 @@ UI 通过 `/admin/api/*` 访问管理接口，鉴权方式为 `Authorization: Be
 GET    /admin/api/overview
 GET    /admin/api/accounts
 POST   /admin/api/accounts             {"name": "...", "api_key": "..."}
-PATCH  /admin/api/accounts/{id}        {"enabled": true} 或 {"name": "..."}
+PATCH  /admin/api/accounts/{id}        {"enabled": true}、{"name": "..."} 或 {"pause_below_credits": 10}
 DELETE /admin/api/accounts/{id}
 POST   /admin/api/accounts/{id}/test
 POST   /admin/api/accounts/{id}/quota/refresh

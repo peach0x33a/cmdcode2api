@@ -151,8 +151,10 @@ func TestFetchQuotaSnapshotHappyPath(t *testing.T) {
 	if !snap.Limited || snap.Exceeded != "weekly" {
 		t.Fatalf("limit flags = limited:%v exceeded:%q", snap.Limited, snap.Exceeded)
 	}
+	// The cap is the observed allowance (remaining 12.5 + spend 8.5), not the
+	// plan mapping estimate.
 	if snap.Plan == nil || snap.Plan.PlanID != "individual-pro-v1" || snap.Plan.Name != "Pro" ||
-		snap.Plan.MonthlyCredits == nil || *snap.Plan.MonthlyCredits != 80 ||
+		snap.Plan.MonthlyCredits == nil || *snap.Plan.MonthlyCredits != 21 ||
 		snap.Plan.Status != "active" || !snap.Plan.CancelAtPeriodEnd || snap.Plan.CurrentPeriodEnd == nil {
 		t.Fatalf("plan = %+v", snap.Plan)
 	}
@@ -188,12 +190,12 @@ func TestFetchQuotaSnapshotHappyPath(t *testing.T) {
 	}
 }
 
-func TestFetchQuotaSnapshotAppliesPlanWindowCaps(t *testing.T) {
+func TestFetchQuotaSnapshotKeepsUpstreamWindowCaps(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/alpha/billing/credits":
-			fmt.Fprint(w, `{"credits":{"monthlyCredits":70,"planId":"individual-goat"},"windowLimits":{"limited":true,"fiveHour":{"used":5,"cap":14},"weekly":{"used":40,"cap":35,"exceeded":true}}}`)
+			fmt.Fprint(w, `{"credits":{"monthlyCredits":60,"planId":"individual-goat"},"windowLimits":{"limited":true,"fiveHour":{"used":5,"cap":14},"weekly":{"used":35,"cap":35,"exceeded":true}}}`)
 		case "/alpha/billing/subscriptions":
 			fmt.Fprint(w, `{"data":{"planId":"individual-goat","status":"active"}}`)
 		case "/alpha/usage/summary":
@@ -208,17 +210,21 @@ func TestFetchQuotaSnapshotAppliesPlanWindowCaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch failed: %v", err)
 	}
-	if snap.Plan == nil || snap.Plan.MonthlyCredits == nil || *snap.Plan.MonthlyCredits != 100 {
-		t.Fatalf("GOAT plan = %+v", snap.Plan)
+	// The upstream allowance is per-model, so the plan cap must be derived from
+	// remaining + spend instead of a static dollar figure.
+	if snap.Plan == nil || snap.Plan.MonthlyCredits == nil || *snap.Plan.MonthlyCredits != 70 {
+		t.Fatalf("GOAT plan = %+v, want a derived 70 credit allowance", snap.Plan)
 	}
-	if snap.FiveHour == nil || snap.FiveHour.Cap != 20 {
-		t.Fatalf("GOAT five hour window = %+v", snap.FiveHour)
+	// Credit windows come from the upstream untouched.
+	if snap.FiveHour == nil || snap.FiveHour.Cap != 14 {
+		t.Fatalf("GOAT five hour window = %+v, want the upstream cap 14", snap.FiveHour)
 	}
-	if snap.Weekly == nil || snap.Weekly.Cap != 50 || !snap.Weekly.Exceeded {
-		t.Fatalf("GOAT weekly window = %+v", snap.Weekly)
+	if snap.Weekly == nil || snap.Weekly.Cap != 35 || !snap.Weekly.Exceeded {
+		t.Fatalf("GOAT weekly window = %+v, want the upstream cap 35", snap.Weekly)
 	}
-	if snap.MonthlyCredits == nil || *snap.MonthlyCredits != 90 {
-		t.Fatalf("GOAT remaining credits = %v, want 90", snap.MonthlyCredits)
+	// The remaining balance is the upstream value; it must not be rewritten.
+	if snap.MonthlyCredits == nil || *snap.MonthlyCredits != 60 {
+		t.Fatalf("GOAT remaining credits = %v, want the upstream 60", snap.MonthlyCredits)
 	}
 }
 
@@ -253,7 +259,9 @@ func TestFetchQuotaSnapshotSnakeCaseAndNested(t *testing.T) {
 	if snap.Weekly == nil || snap.Weekly.Used != 1 || snap.Weekly.Cap != 20 || !snap.Weekly.Exceeded {
 		t.Fatalf("weekly window = %+v", snap.Weekly)
 	}
-	if snap.Plan == nil || snap.Plan.Name != "unknown-plan" || snap.Plan.MonthlyCredits != nil {
+	// Unknown plans still get an observed allowance: remaining 12.5 + spend 0.3.
+	if snap.Plan == nil || snap.Plan.Name != "unknown-plan" || snap.Plan.MonthlyCredits == nil ||
+		*snap.Plan.MonthlyCredits < 12.8-1e-9 || *snap.Plan.MonthlyCredits > 12.8+1e-9 {
 		t.Fatalf("unknown plan = %+v", snap.Plan)
 	}
 	if snap.Plan.CurrentPeriodEnd == nil || snap.Plan.CurrentPeriodEnd.UTC().Year() != 2030 {

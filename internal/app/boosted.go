@@ -12,11 +12,12 @@ import (
 // usage" deals). The pool is charged in plan credits, so one model's dollars
 // per credit differ from another's: GOAT grants a 70-credit pool and, on
 // DeepSeek V4.1 Flash, a $100 allowance (1 credit buys $1.43 of usage).
-// allowances.json is captured from the docs model catalog; it is reference
-// data, not configuration, and the upstream credit numbers stay authoritative.
-// Regenerate it with `go generate ./internal/app`.
+// allowances.json is vendored from the commandcode-catalog repository, which
+// captures the docs model catalog; it is reference data, not configuration, and
+// the upstream credit numbers stay authoritative. Refresh it with
+// `go generate ./internal/app`.
 //
-//go:generate go run ../../cmd/gen-allowances -out allowances.json
+//go:generate go run ../../cmd/vendor-allowances -out allowances.json
 //go:embed allowances.json
 var allowancesJSON []byte
 
